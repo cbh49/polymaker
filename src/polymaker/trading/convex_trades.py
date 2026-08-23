@@ -118,8 +118,32 @@ class ConvexTradeClient:
             raw=raw,
         )
 
-    def complete(self, trade_key_value: str, payload: dict[str, Any]) -> None:
-        self._post("/trades/complete", {"tradeKey": trade_key_value, "payload": payload})
+    def complete(
+        self,
+        trade_key_value: str,
+        payload: dict[str, Any],
+        *,
+        token_id: str | None = None,
+        start_time: int | None = None,
+        buy_price: float | None = None,
+        shares: float | None = None,
+    ) -> None:
+        body: dict[str, Any] = {"tradeKey": trade_key_value, "payload": payload}
+        token_id = token_id or _optional_str(payload.get("token_id"))
+        start_time = (
+            start_time if start_time is not None else _optional_int(payload.get("start_time_ms"))
+        )
+        buy_price = buy_price if buy_price is not None else _optional_float(payload.get("buy_price"))
+        shares = shares if shares is not None else _optional_float(payload.get("shares"))
+        if token_id is not None:
+            body["tokenId"] = token_id
+        if start_time is not None:
+            body["startTime"] = start_time
+        if buy_price is not None:
+            body["buyPrice"] = buy_price
+        if shares is not None:
+            body["shares"] = shares
+        self._post("/trades/complete", body)
 
     def release(self, trade_key_value: str) -> None:
         try:
@@ -146,3 +170,28 @@ class ConvexTradeClient:
 
 def prediction_date_today() -> str:
     return date.today().isoformat()
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if n != n:
+        return None
+    return n

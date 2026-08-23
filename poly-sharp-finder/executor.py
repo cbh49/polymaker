@@ -24,6 +24,7 @@ from polymaker.config import Config
 from polymaker.domain import MarketMeta, Side
 from polymaker.execution.gateway import ExecutionGateway
 from polymaker.trading.convex_trades import ConvexTradeClient, prediction_date_today, trade_key
+from polymaker.trading.fill import enrich_fill
 
 
 class SignalExecutor:
@@ -151,6 +152,7 @@ class SignalExecutor:
                 ask=ask,
                 action="dry_run",
                 detail=detail,
+                token_id=token_id,
             )
             _append_filled(self._trade.intents_log, intent)
             return {
@@ -200,16 +202,23 @@ class SignalExecutor:
             self._already.discard(key)
             return {"action": "failed", "detail": f"order error: {exc}", "usd": usd}
 
-        payload = _build_intent(
-            sig=sig,
-            market=market,
-            key=key,
-            day=self._today,
-            buy_team=buy_team,
-            token_side=token_side,
-            usd=usd,
+        payload = enrich_fill(
+            _build_intent(
+                sig=sig,
+                market=market,
+                key=key,
+                day=self._today,
+                buy_team=buy_team,
+                token_side=token_side,
+                usd=usd,
+                ask=ask,
+                resp=resp,
+                token_id=token_id,
+            ),
+            token_id=token_id,
+            start_time_iso=market.start_time or None,
             ask=ask,
-            resp=resp,
+            resp=resp if isinstance(resp, dict) else None,
         )
         payload["ledger_key"] = ledger_key
         status = str(resp.get("status", resp.get("error", ""))).lower()
@@ -322,6 +331,7 @@ def _build_intent(
     action: str | None = None,
     detail: str | None = None,
     resp: dict[str, Any] | None = None,
+    token_id: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "ts": time.time(),
@@ -337,6 +347,10 @@ def _build_intent(
         "usd": usd,
         "ask": ask,
     }
+    if token_id:
+        payload["token_id"] = token_id
+    if market.start_time:
+        payload["start_time"] = market.start_time
     if action is not None:
         payload["action"] = action
     if detail is not None:

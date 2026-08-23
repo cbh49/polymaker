@@ -157,6 +157,7 @@ async def test_executor_dry_run_when_price_below_max_ask(tmp_path: Path) -> None
     result = await ex.on_signal(_whale_sig(market, price=0.45))  # type: ignore[arg-type]
     assert result is not None
     assert result["action"] == "dry_run"
+    assert result["token_id"] == "yes"
 
 
 @pytest.mark.asyncio

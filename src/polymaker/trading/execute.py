@@ -13,6 +13,7 @@ from polymaker.config import Config
 from polymaker.domain import Side
 from polymaker.execution.gateway import ExecutionGateway
 from polymaker.trading.convex_trades import ConvexTradeClient, prediction_date_today
+from polymaker.trading.fill import enrich_fill
 from polymaker.trading.match import MatchedPlay
 from polymaker.trading.sharp import SharpPlay, load_sharp_plays
 
@@ -189,19 +190,26 @@ async def _trade_one(
 
     status = str(resp.get("status", resp.get("error", ""))).lower()
     action = "bought" if "error" not in status and not resp.get("error") else "failed"
-    fill = {
-        "ts": time.time(),
-        "key": key,
-        "slug": m.slug,
-        "outcome": m.token.outcome,
-        "league": m.play.league,
-        "matchup": m.play.matchup,
-        "side": m.play.side,
-        "tier": m.play.tier,
-        "usd": usd,
-        "ask": ask,
-        "resp": resp,
-    }
+    start_iso = m.meta.start_time_iso or m.play.game_time_utc
+    fill = enrich_fill(
+        {
+            "ts": time.time(),
+            "key": key,
+            "slug": m.slug,
+            "outcome": m.token.outcome,
+            "league": m.play.league,
+            "matchup": m.play.matchup,
+            "side": m.play.side,
+            "tier": m.play.tier,
+            "usd": usd,
+            "ask": ask,
+            "resp": resp,
+        },
+        token_id=m.token.token_id,
+        start_time_iso=start_iso,
+        ask=ask,
+        resp=resp if isinstance(resp, dict) else None,
+    )
     if action == "failed":
         convex.release(key)
         return SharpTradeResult(
