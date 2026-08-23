@@ -1,0 +1,14 @@
+[Unit]
+Description=Polymaker MLB/WNBA sharp-money scrape + trade (oneshot)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/polymaker
+EnvironmentFile=/etc/polymaker.env
+TimeoutStartSec=20min
+ExecStart=/usr/bin/docker compose -f /opt/polymaker/infra/docker-compose.yml run --rm --no-build sharp
+# Pick up a refreshed watch_list.json without waiting for a crash.
+ExecStartPost=-/usr/bin/docker restart polymaker-monitor
+Nice=5

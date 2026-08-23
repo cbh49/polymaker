@@ -1,0 +1,28 @@
+[
+  {
+    "condition_id": "0xabc123...",
+    "league": "MLB",
+    "label": "Boston Red Sox vs New York Yankees ML",
+    "yes_token_id": "1234567890",
+    "no_token_id": "0987654321",
+    "yes_outcome": "New York Yankees",
+    "no_outcome": "Boston Red Sox",
+    "slug": "mlb-bos-nyy-2026-08-16",
+    "sharp_tier": "A",
+    "sharp_side": "New York Yankees",
+    "sharp_composite_gap": 18.5
+  },
+  {
+    "condition_id": "0xdef456...",
+    "league": "WNBA",
+    "label": "New York Liberty vs Las Vegas Aces ML",
+    "yes_token_id": "1122334455",
+    "no_token_id": "5544332211",
+    "yes_outcome": "Las Vegas Aces",
+    "no_outcome": "New York Liberty",
+    "slug": "wnba-ny-lva-2026-08-16",
+    "sharp_tier": null,
+    "sharp_side": null,
+    "sharp_composite_gap": null
+  }
+]

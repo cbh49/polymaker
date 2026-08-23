@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Polymaker sharp-money pipeline every 30 minutes
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/30
+Persistent=true
+Unit=polymaker-sharp.service
+
+[Install]
+WantedBy=timers.target

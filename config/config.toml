@@ -1,0 +1,52 @@
+# polymaker config. Secrets live in .env, never here.
+
+[wallet]
+# chain: Polygon mainnet
+chain_id = 137
+# signature_type — pick based on how your Polymarket account was created:
+#   0 = EOA (funds held directly by your key; no proxy)
+#   1 = email/magic proxy wallet
+#   2 = older browser-wallet Gnosis Safe proxy
+#   3 = POLY_1271 deposit wallet (current architecture)
+# Rule of thumb: if POLY_FUNDER equals the address derived from your private
+# key, use 0. Only use 1/2/3 when the funder is a different proxy/deposit
+# address. Wrong type -> order signer / API KEY errors. `polymaker doctor`
+# will surface this.
+signature_type = 2
+clob_host = "https://clob.polymarket.com"
+gamma_host = "https://gamma-api.polymarket.com"
+data_api_host = "https://data-api.polymarket.com"
+polygon_rpc = "https://polygon-bor-rpc.publicnode.com"
+
+[catalog]
+include_politics = true
+series_slugs = ["mlb", "wnba", "ufc"]  # Gamma series_slug values for sports discovery
+look_ahead_days = 3             # keep games with eventDate today UTC through +N days
+skip_live_events = true         # exclude games that are not pre-game (startTime vs UTC)
+pregame_buffer_minutes = 5      # require startTime more than N minutes in the future
+min_liquidity = 1000.0
+sports_rewards_only = false
+
+[execution]
+rate_budget_fraction = 0.25     # fraction of documented API limits we allow
+post_only = false               # false allows market (taker) buys
+max_orders_per_batch = 15
+
+[sharp]
+# Sharp-money JSON from data-aggregation/find_sharp_money.py → Polymarket buys.
+mlb_path = "data-aggregation/output/mlb_sharp_money.json"
+wnba_path = "data-aggregation/output/wnba_sharp_money.json"
+ufc_path = "data-aggregation/output/ufc_sharp_money.json"
+usd_tier_a = 25.0
+usd_tier_b = 10.0
+min_tier = "B"                  # "A" = Tier A only; "B" = A+B
+markets = ["moneyline"]         # catalog is moneyline-only today
+require_rlm = false
+max_ask = 0.55                  # never auto-buy if best ask / last price is above this
+# min_edge = 0.02               # optional: require ask <= fair_prob - min_edge
+filled_log = "journal/sharp_trades.jsonl"
+
+[paths]
+db = "state.db"
+journal_dir = "journal"
+log_dir = "logs"

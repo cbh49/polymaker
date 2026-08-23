@@ -1,0 +1,39 @@
+# Alternate config dir (same knobs as config/config.toml).
+[wallet]
+chain_id = 137
+signature_type = 2
+clob_host = "https://clob.polymarket.com"
+gamma_host = "https://gamma-api.polymarket.com"
+data_api_host = "https://data-api.polymarket.com"
+polygon_rpc = "https://polygon-bor-rpc.publicnode.com"
+
+[catalog]
+include_politics = true
+series_slugs = ["mlb", "wnba", "ufc"]
+look_ahead_days = 3
+skip_live_events = true
+pregame_buffer_minutes = 5
+min_liquidity = 1000.0
+sports_rewards_only = false
+
+[execution]
+rate_budget_fraction = 0.15
+post_only = false
+max_orders_per_batch = 15
+
+[sharp]
+mlb_path = "data-aggregation/output/mlb_sharp_money.json"
+wnba_path = "data-aggregation/output/wnba_sharp_money.json"
+ufc_path = "data-aggregation/output/ufc_sharp_money.json"
+usd_tier_a = 25.0
+usd_tier_b = 10.0
+min_tier = "B"
+markets = ["moneyline"]
+require_rlm = false
+max_ask = 0.55
+filled_log = "livecfg/journal/sharp_trades.jsonl"
+
+[paths]
+db = "livecfg/state.db"
+journal_dir = "livecfg/journal"
+log_dir = "livecfg/logs"

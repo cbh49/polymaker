@@ -1,0 +1,17 @@
+[Unit]
+Description=Polymaker live signal monitor (whale + convergence)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+WorkingDirectory=/opt/polymaker
+EnvironmentFile=/etc/polymaker.env
+ExecStartPre=-/usr/bin/docker compose -f /opt/polymaker/infra/docker-compose.yml pull monitor
+ExecStart=/usr/bin/docker compose -f /opt/polymaker/infra/docker-compose.yml up --no-build --abort-on-container-exit monitor
+ExecStop=/usr/bin/docker compose -f /opt/polymaker/infra/docker-compose.yml stop monitor
+
+[Install]
+WantedBy=multi-user.target

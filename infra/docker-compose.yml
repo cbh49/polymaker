@@ -1,0 +1,54 @@
+# Hosted on the eu-west-1 EC2 instance. Secrets come from /etc/polymaker.env
+# (populated from SSM at boot).
+#
+#   docker compose -f infra/docker-compose.yml up -d monitor
+#   docker compose -f infra/docker-compose.yml run --rm sharp
+services:
+  monitor:
+    image: ${POLYMAKER_IMAGE:-polymaker:latest}
+    container_name: polymaker-monitor
+    restart: unless-stopped
+    env_file:
+      - /etc/polymaker.env
+    working_dir: /app
+    volumes:
+      - /etc/polymaker.env:/app/.env:ro
+      - /var/lib/polymaker/journal:/app/journal
+      - /var/lib/polymaker/logs:/app/logs
+      - /var/lib/polymaker/output:/app/data-aggregation/output
+      - /var/lib/polymaker/signals:/app/poly-sharp-finder/signals
+      - /var/lib/polymaker/intents:/app/poly-sharp-finder/intents
+      - /var/lib/polymaker/watch_list.json:/app/poly-sharp-finder/watch_list.json
+      - /var/lib/polymaker/state.db:/app/state.db
+    command:
+      - python
+      - scripts/run_monitor.py
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  sharp:
+    image: ${POLYMAKER_IMAGE:-polymaker:latest}
+    container_name: polymaker-sharp
+    env_file:
+      - /etc/polymaker.env
+    working_dir: /app
+    volumes:
+      - /etc/polymaker.env:/app/.env:ro
+      - /var/lib/polymaker/journal:/app/journal
+      - /var/lib/polymaker/logs:/app/logs
+      - /var/lib/polymaker/output:/app/data-aggregation/output
+      - /var/lib/polymaker/signals:/app/poly-sharp-finder/signals
+      - /var/lib/polymaker/intents:/app/poly-sharp-finder/intents
+      - /var/lib/polymaker/watch_list.json:/app/poly-sharp-finder/watch_list.json
+      - /var/lib/polymaker/state.db:/app/state.db
+    command:
+      - python
+      - scripts/run_sharp_pipeline.py
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
