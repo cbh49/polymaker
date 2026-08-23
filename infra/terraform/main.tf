@@ -112,8 +112,33 @@ resource "aws_iam_role_policy" "runtime" {
         ]
         Resource = "*"
       },
+      {
+        Sid    = "CloudWatchLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:DescribeLogStreams",
+          "logs:DescribeLogGroups",
+          "logs:PutLogEvents",
+        ]
+        Resource = [
+          aws_cloudwatch_log_group.polymaker.arn,
+          "${aws_cloudwatch_log_group.polymaker.arn}:*",
+        ]
+      },
     ]
   })
+}
+
+resource "aws_cloudwatch_log_stream" "monitor" {
+  name           = "monitor"
+  log_group_name = aws_cloudwatch_log_group.polymaker.name
+}
+
+resource "aws_cloudwatch_log_stream" "sharp" {
+  name           = "sharp"
+  log_group_name = aws_cloudwatch_log_group.polymaker.name
 }
 
 resource "aws_iam_instance_profile" "instance" {

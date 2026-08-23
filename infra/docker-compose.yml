@@ -24,10 +24,13 @@ services:
       - python
       - scripts/run_monitor.py
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "20m"
-        max-file: "5"
+        awslogs-region: eu-west-1
+        awslogs-group: /polymaker/trading-bot
+        awslogs-stream: monitor
+        mode: non-blocking
+        max-buffer-size: 4m
 
   sharp:
     image: ${POLYMAKER_IMAGE:-polymaker:latest}
@@ -48,7 +51,10 @@ services:
       - python
       - scripts/run_sharp_pipeline.py
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "20m"
-        max-file: "5"
+        awslogs-region: eu-west-1
+        awslogs-group: /polymaker/trading-bot
+        awslogs-stream: sharp
+        mode: non-blocking
+        max-buffer-size: 4m

@@ -48,6 +48,17 @@ Optional SSH: `-var='key_name=my-key' -var='ssh_cidr=x.x.x.x/32'`.
 
 On boot, user-data pulls `/polymaker/*` into `/etc/polymaker.env`, starts the monitor, and enables the 30-minute timer.
 
+## Logs (CloudWatch)
+
+Container stdout/stderr from the monitor and sharp pipeline go to log group **`/polymaker/trading-bot`** in **eu-west-1**.
+
+- Monitor stream: `monitor`
+- Sharp pipeline stream: `sharp`
+
+Console: https://eu-west-1.console.aws.amazon.com/cloudwatch/home?region=eu-west-1#logsV2:log-groups/log-group/$252Fpolymaker$252Ftrading-bot
+
+You do not need a Session Manager shell to read these. Local `docker-compose.local.yml` still uses json-file logs and does not send to CloudWatch.
+
 ## 4. First-boot checks (SSM Session Manager)
 
 ```bash

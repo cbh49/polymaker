@@ -17,3 +17,7 @@ output "region" {
 output "ssm_parameter_prefix" {
   value = "/polymaker/"
 }
+
+output "cloudwatch_log_group" {
+  value = aws_cloudwatch_log_group.polymaker.name
+}
