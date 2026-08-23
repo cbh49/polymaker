@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup, NavigableString
 
+from mlb_team_map import DEFAULT_ABBREVS, load_abbr_to_name
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
-DEFAULT_ABBREVS = REPO_ROOT / "MLB" / "links" / "mlbTeamAbbrevations.json"
 DEFAULT_OUT = {
     "MLB": SCRIPT_DIR / "output" / "covers_mlb_odds.json",
     "WNBA": SCRIPT_DIR / "output" / "covers_wnba_odds.json",
@@ -93,13 +93,7 @@ HEADERS = {
 
 
 def load_abbr_to_team(path: Path) -> dict[str, str]:
-    mapping: dict[str, str] = dict(ABBR_ALIASES)
-    if path.exists():
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            for abbr, name in raw.items():
-                if isinstance(abbr, str) and isinstance(name, str):
-                    mapping[abbr.strip().upper()] = name.strip()
+    mapping = load_abbr_to_name(path)
     mapping.update(ABBR_ALIASES)
     return mapping
 

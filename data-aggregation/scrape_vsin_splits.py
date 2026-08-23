@@ -37,10 +37,12 @@ from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
 
+from mlb_team_map import DEFAULT_ABBREVS
+from mlb_team_map import DEFAULT_MATCHUPS
+from mlb_team_map import load_abbr_maps
+from mlb_team_map import load_matchups
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
-DEFAULT_MATCHUPS = REPO_ROOT / "MLB" / "json" / "matchups.json"
-DEFAULT_ABBREVS = REPO_ROOT / "MLB" / "links" / "mlbTeamAbbrevations.json"
 DEFAULT_OUT = SCRIPT_DIR / "output" / "vsin_betting_splits.json"
 DEFAULT_WNBA_OUT = SCRIPT_DIR / "output" / "vsin_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "vsin_ufc_betting_splits.json"
@@ -75,53 +77,6 @@ TEAM_NAME_ALIASES: dict[str, str] = {
     "chicago white sox": "Chicago White Sox",
     "washington nationals": "Washington Nationals",
 }
-
-
-def load_abbr_maps(path: Path) -> tuple[dict[str, str], dict[str, str]]:
-    """Return (abbr->name, normalized_name->abbr)."""
-    abbr_to_name: dict[str, str] = {
-        "AZ": "Arizona Diamondbacks",
-        "ARI": "Arizona Diamondbacks",
-        "CWS": "Chicago White Sox",
-        "CHW": "Chicago White Sox",
-        "WSH": "Washington Nationals",
-        "WAS": "Washington Nationals",
-        "ATH": "Athletics",
-        "OAK": "Athletics",
-    }
-    if path.exists():
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            for abbr, name in raw.items():
-                if isinstance(abbr, str) and isinstance(name, str):
-                    abbr_to_name[abbr.strip().upper()] = name.strip()
-
-    def _is_standard_abbr(abbr: str) -> bool:
-        # Prefer codes like BAL/AZ/CWS over display aliases like BOS./K.C.
-        return bool(re.fullmatch(r"[A-Z]{2,3}", abbr))
-
-    name_to_abbr: dict[str, str] = {}
-    for abbr, name in abbr_to_name.items():
-        key = name.strip().lower()
-        if key not in name_to_abbr or (
-            _is_standard_abbr(abbr) and not _is_standard_abbr(name_to_abbr[key])
-        ):
-            name_to_abbr[key] = abbr
-    # Prefer common display abbrs when duplicates exist.
-    name_to_abbr["arizona diamondbacks"] = "AZ"
-    name_to_abbr["chicago white sox"] = "CWS"
-    name_to_abbr["washington nationals"] = "WSH"
-    name_to_abbr["athletics"] = "ATH"
-    return abbr_to_name, name_to_abbr
-
-
-def load_matchups(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list):
-        return []
-    return [row for row in raw if isinstance(row, dict)]
 
 
 def normalize_team_name(name: str) -> str:
@@ -374,7 +329,7 @@ def scrape(
         abbr_to_name, name_to_abbr = load_abbr_maps(abbrevs_path)
         matchups = load_matchups(matchups_path or DEFAULT_MATCHUPS)
         normalize_name_fn = normalize_team_name
-        filter_day = None
+        filter_day = day
 
     html = fetch_html(page_url)
     games = parse_games(

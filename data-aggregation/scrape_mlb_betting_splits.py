@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from scrape_covers_odds import merge_covers_into_game
@@ -46,6 +47,8 @@ from scrape_vsin_splits import scrape as scrape_vsin
 from slate_alignment import game_slate_date as _game_slate_date
 from slate_alignment import native_dates as _native_dates
 from slate_alignment import same_slate as _same_slate
+
+from mlb_team_map import canonical_abbr as _mlb_abbr
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "mlb_betting_splits.json"
@@ -71,12 +74,34 @@ def _find_game(
     if found is not None:
         return found
     key = (str(game.get("away") or "").lower(), str(game.get("home") or "").lower())
-    return by_teams.get(key)
+    found = by_teams.get(key)
+    if found is not None:
+        return found
+    away = _mlb_abbr(str(game.get("away_abbr") or game.get("away") or ""))
+    home = _mlb_abbr(str(game.get("home_abbr") or game.get("home") or ""))
+    if not away or not home:
+        return None
+    for other in by_matchup.values():
+        o_away = _mlb_abbr(str(other.get("away_abbr") or other.get("away") or ""))
+        o_home = _mlb_abbr(str(other.get("home_abbr") or other.get("home") or ""))
+        if o_away == away and o_home == home:
+            return other
+    return None
 
 
 def _on_slate(game: dict[str, Any], day: date) -> bool:
     game_day = _game_slate_date(game)
     return game_day is None or game_day == day
+
+
+def _scrape_or_empty(name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    try:
+        result = fn()
+        if isinstance(result, dict):
+            return result
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: {name} scrape failed: {exc}", file=sys.stderr)
+    return {"games": [], "game_count": 0, "source": name}
 
 
 def main() -> None:
@@ -93,11 +118,11 @@ def main() -> None:
 
     day = date.fromisoformat(args.date) if args.date else datetime.now(PAGE_TZ).date()
 
-    pp = scrape_playerprops(day=day)
-    sbd = scrape_sbd(day=day)
-    vsin = scrape_vsin()
-    eva = scrape_eva()
-    covers = scrape_covers(league="MLB")
+    pp = _scrape_or_empty("PlayerProps", lambda: scrape_playerprops(day=day))
+    sbd = _scrape_or_empty("SportsBettingDime", lambda: scrape_sbd(day=day))
+    vsin = _scrape_or_empty("VSiN", lambda: scrape_vsin(day=day))
+    eva = _scrape_or_empty("EV Analytics", lambda: scrape_eva())
+    covers = _scrape_or_empty("Covers", lambda: scrape_covers(league="MLB"))
     pp_native = _native_dates(pp.get("games") or [])
     sbd_native = _native_dates(sbd.get("games") or [])
     vsin_native = _native_dates(vsin.get("games") or [])
@@ -284,7 +309,10 @@ def main() -> None:
     }
 
     prev_by_matchup = load_previous_games(args.out)
-    poly = scrape_polymarket(league="MLB", games=pp.get("games") or [], day=day)
+    poly = _scrape_or_empty(
+        "Polymarket",
+        lambda: scrape_polymarket(league="MLB", games=pp.get("games") or [], day=day),
+    )
     poly_by_matchup, poly_by_teams = _index_games(poly.get("games") or [])
     poly_merged = 0
     for game in pp.get("games") or []:
@@ -304,7 +332,10 @@ def main() -> None:
         "playerprops.ai + sportsbettingdime.com + data.vsin.com + "
         "evanalytics.com + covers.com + polymarket"
     )
+    pp["league"] = "MLB"
+    pp["date"] = day.isoformat()
     pp["scraped_at"] = datetime.now(PAGE_TZ).astimezone().isoformat()
+    pp["game_count"] = len(pp.get("games") or [])
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(pp, indent=2) + "\n", encoding="utf-8")

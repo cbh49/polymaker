@@ -30,10 +30,9 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from mlb_team_map import DEFAULT_ABBREVS, DEFAULT_MATCHUPS, load_abbr_to_name, load_matchups
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
-DEFAULT_MATCHUPS = REPO_ROOT / "MLB" / "json" / "matchups.json"
-DEFAULT_ABBREVS = REPO_ROOT / "MLB" / "links" / "mlbTeamAbbrevations.json"
 DEFAULT_OUT = SCRIPT_DIR / "output" / "mlb_betting_splits.json"
 
 API_URL = "https://playerprops.ai/api/betprops/v2/betting-splits"
@@ -72,23 +71,9 @@ def pacific_day_window(day: date) -> tuple[str, str]:
 
 
 def load_abbr_to_team(path: Path) -> dict[str, str]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    mapping: dict[str, str] = {}
-    if isinstance(raw, dict):
-        for abbr, name in raw.items():
-            if isinstance(abbr, str) and isinstance(name, str):
-                mapping[abbr.strip().upper()] = name.strip()
+    mapping = load_abbr_to_name(path)
     mapping.update(PLAYERPROPS_ABBR_ALIASES)
     return mapping
-
-
-def load_matchups(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list):
-        return []
-    return [row for row in raw if isinstance(row, dict)]
 
 
 def team_name_from_abbr(abbr: str, abbr_map: dict[str, str]) -> str | None:
@@ -305,10 +290,8 @@ def scrape(
     matchups_path: Path = DEFAULT_MATCHUPS,
     abbrevs_path: Path = DEFAULT_ABBREVS,
 ) -> dict[str, Any]:
-    abbr_map = load_abbr_to_team(abbrevs_path) if abbrevs_path.exists() else dict(
-        PLAYERPROPS_ABBR_ALIASES
-    )
-    matchups = load_matchups(matchups_path) if matchups_path.exists() else []
+    abbr_map = load_abbr_to_team(abbrevs_path)
+    matchups = load_matchups(matchups_path)
 
     payload = fetch_splits(day)
     events = payload.get("events") or []

@@ -29,10 +29,9 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from mlb_team_map import DEFAULT_ABBREVS, DEFAULT_MATCHUPS, load_abbr_to_name, load_matchups
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
-DEFAULT_MATCHUPS = REPO_ROOT / "MLB" / "json" / "matchups.json"
-DEFAULT_ABBREVS = REPO_ROOT / "MLB" / "links" / "mlbTeamAbbrevations.json"
 DEFAULT_OUT = SCRIPT_DIR / "output" / "sbd_betting_splits.json"
 
 PAGE_URL = "https://www.sportsbettingdime.com/mlb/public-betting-trends/"
@@ -70,25 +69,9 @@ ABBR_ALIASES: dict[str, str] = {
 
 
 def load_abbr_to_team(path: Path) -> dict[str, str]:
-    mapping: dict[str, str] = dict(ABBR_ALIASES)
-    if not path.exists():
-        return mapping
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        for abbr, name in raw.items():
-            if isinstance(abbr, str) and isinstance(name, str):
-                mapping[abbr.strip().upper()] = name.strip()
+    mapping = load_abbr_to_name(path)
     mapping.update(ABBR_ALIASES)
     return mapping
-
-
-def load_matchups(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list):
-        return []
-    return [row for row in raw if isinstance(row, dict)]
 
 
 def team_name_from_abbr(abbr: str, abbr_map: dict[str, str]) -> str | None:

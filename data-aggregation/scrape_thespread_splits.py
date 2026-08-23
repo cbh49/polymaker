@@ -27,12 +27,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from scrape_browser import fetch_rendered_html
+import requests
+
+from scrape_browser import DEFAULT_USER_AGENT, fetch_rendered_html
 from wnba_team_map import (
     DEFAULT_MATCHUPS,
     canonical_abbr,
@@ -345,6 +348,61 @@ def parse_mma_games(html: str, day: date) -> list[dict[str, Any]]:
     return games
 
 
+def _fetch_static_html(url: str) -> str:
+    with requests.Session() as session:
+        session.trust_env = False
+        resp = session.get(
+            url,
+            headers={
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml;q=0.9",
+            },
+            timeout=30,
+        )
+    resp.raise_for_status()
+    try:
+        return resp.content.decode("utf-8")
+    except UnicodeDecodeError:
+        return resp.content.decode("latin-1")
+
+
+def _html_has_selector_token(html: str, wait_selector: str) -> bool:
+    if not html or not wait_selector:
+        return False
+    from bs4 import BeautifulSoup
+
+    return bool(BeautifulSoup(html, "html.parser").select(wait_selector))
+
+
+def _fetch_thespread_html(
+    page_url: str,
+    wait_selector: str,
+    *,
+    headed: bool,
+) -> str:
+    html = ""
+    try:
+        html = _fetch_static_html(page_url)
+    except (requests.RequestException, UnicodeDecodeError) as exc:
+        print(f"Warning: TheSpread HTTP fetch failed: {exc}", file=sys.stderr)
+    if _html_has_selector_token(html, wait_selector):
+        return html
+    try:
+        html = fetch_rendered_html(
+            page_url,
+            wait_selector=wait_selector,
+            headed=headed,
+            require_selector=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: TheSpread browser fetch failed: {exc}", file=sys.stderr)
+    if not _html_has_selector_token(html, wait_selector):
+        blocked = "just a moment" in html.lower() or "cf-browser-verification" in html
+        why = "Cloudflare challenge" if blocked else "no betting rows"
+        print(f"Warning: TheSpread page had {why}; continuing without it", file=sys.stderr)
+    return html
+
+
 def merge_thespread_into_game(game: dict[str, Any], spread_game: dict[str, Any]) -> None:
     """Copy TheSpread open/live prices onto matching sides.
 
@@ -390,12 +448,12 @@ def scrape(
     day = day or datetime.now(PAGE_TZ).date()
     page_url = url or PAGE_URLS.get(league, PAGE_URL)
     if league == "UFC":
-        html = fetch_rendered_html(page_url, wait_selector=".tse-game", headed=headed)
-        games = parse_mma_games(html, day)
+        html = _fetch_thespread_html(page_url, ".tse-game", headed=headed)
+        games = parse_mma_games(html, day) if html else []
     else:
         matchups = load_matchups(matchups_path)
-        html = fetch_rendered_html(page_url, wait_selector=".datarow", headed=headed)
-        games = parse_games(html, day, matchups)
+        html = _fetch_thespread_html(page_url, ".datarow", headed=headed)
+        games = parse_games(html, day, matchups) if html else []
     return {
         "source": "thespread.com",
         "source_page": page_url,

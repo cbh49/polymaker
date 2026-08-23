@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from scrape_covers_odds import merge_covers_into_game
@@ -81,6 +82,16 @@ def _on_slate(game: dict[str, Any], day: date) -> bool:
     return game_day is None or game_day == day
 
 
+def _scrape_or_empty(name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    try:
+        result = fn()
+        if isinstance(result, dict):
+            return result
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: {name} scrape failed: {exc}", file=sys.stderr)
+    return {"games": [], "game_count": 0, "source": name}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Scrape + merge WNBA betting splits from DraftKings, TheSpread, VSiN, and EV Analytics"
@@ -96,11 +107,13 @@ def main() -> None:
 
     day = date.fromisoformat(args.date) if args.date else datetime.now(PAGE_TZ).date()
 
-    dk = scrape_dk(day=day, headed=args.headed)
-    spread = scrape_thespread(day=day, headed=args.headed)
-    vsin = scrape_vsin(league="WNBA", day=day)
-    eva = scrape_eva(league="WNBA")
-    covers = scrape_covers(league="WNBA")
+    dk = _scrape_or_empty("DraftKings", lambda: scrape_dk(day=day, headed=args.headed))
+    spread = _scrape_or_empty(
+        "TheSpread", lambda: scrape_thespread(day=day, headed=args.headed)
+    )
+    vsin = _scrape_or_empty("VSiN", lambda: scrape_vsin(league="WNBA", day=day))
+    eva = _scrape_or_empty("EV Analytics", lambda: scrape_eva(league="WNBA"))
+    covers = _scrape_or_empty("Covers", lambda: scrape_covers(league="WNBA"))
     dk_native = _native_dates(dk.get("games") or [])
     spread_native = _native_dates(spread.get("games") or [])
     vsin_native = _native_dates(vsin.get("games") or [])
@@ -287,7 +300,10 @@ def main() -> None:
     }
 
     prev_by_matchup = load_previous_games(args.out)
-    poly = scrape_polymarket(league="WNBA", games=dk.get("games") or [], day=day)
+    poly = _scrape_or_empty(
+        "Polymarket",
+        lambda: scrape_polymarket(league="WNBA", games=dk.get("games") or [], day=day),
+    )
     poly_by_matchup, poly_by_teams = _index_games(poly.get("games") or [])
     poly_merged = 0
     for game in dk.get("games") or []:
@@ -310,6 +326,7 @@ def main() -> None:
     dk["league"] = "WNBA"
     dk["date"] = day.isoformat()
     dk["scraped_at"] = datetime.now(PAGE_TZ).astimezone().isoformat()
+    dk["game_count"] = len(dk.get("games") or [])
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(dk, indent=2) + "\n", encoding="utf-8")
