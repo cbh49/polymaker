@@ -57,7 +57,9 @@ def format_amount(size_usd: float) -> str:
 
 
 def format_price(price: float) -> str:
-    return f"{float(price):.2f}"
+    """Polymarket 0–1 price as cents, e.g. 0.46 → 46¢."""
+    cents = int(round(float(price) * 100))
+    return f"{cents}¢"
 
 
 def format_whale_tweet(sig: Signal, market: WatchedMarket | None = None) -> str:
@@ -70,7 +72,7 @@ def format_whale_tweet(sig: Signal, market: WatchedMarket | None = None) -> str:
     body = (
         f"🐋 WHALE {league} PLAY\n"
         f"\n"
-        f"A trader just placed {format_amount(size_usd)} on {play} at {format_price(price)}\n"
+        f"A Polymarket trader just placed {format_amount(size_usd)} on {play} at {format_price(price)}\n"
         f"\n"
         f"{_CTA}\n"
         f"\n"

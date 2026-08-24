@@ -60,12 +60,21 @@ def test_team_nickname_two_word() -> None:
     assert team_nickname("Toronto Blue Jays") == "Blue Jays"
 
 
+def test_format_price_as_cents() -> None:
+    from whale_tweets import format_price
+
+    assert format_price(0.46) == "46¢"
+    assert format_price(0.4) == "40¢"
+    assert format_price(0.999) == "100¢"
+
+
 def test_format_whale_tweet_mlb_cubs() -> None:
     text = format_whale_tweet(_sig(), _market())
     assert "🐋 WHALE MLB PLAY" in text
+    assert "A Polymarket trader just placed" in text
     assert "$60,000" in text
     assert "Cubs ML" in text
-    assert "at 0.62" in text
+    assert "at 62¢" in text
     assert "#MLB" in text
     assert "#Polymarket" in text
     assert "#Gambling𝕏" in text
@@ -79,7 +88,7 @@ def test_format_whale_tweet_red_sox_no_side() -> None:
     text = format_whale_tweet(sig, market)
     assert "Red Sox ML" in text
     assert "$125,500" in text
-    assert "at 0.40" in text
+    assert "at 40¢" in text
     assert len(text) <= TWEET_CHAR_LIMIT
 
 
