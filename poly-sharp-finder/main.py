@@ -97,6 +97,7 @@ async def main(
         persist_types=trade_cfg.persist_signal_types,
     )
     executor = SignalExecutor(cfg, markets, trade_cfg, store_get_meta=get_meta)
+    markets_by_id = {m.condition_id: m for m in markets}
 
     async def _handle_trade(sig):
         try:
@@ -104,10 +105,21 @@ async def main(
         except Exception as exc:  # noqa: BLE001
             print(f"[executor] error on signal: {exc}")
 
+    async def _handle_tweet(sig):
+        try:
+            from whale_tweets import maybe_post_whale
+
+            market = markets_by_id.get(sig.condition_id)
+            await asyncio.to_thread(maybe_post_whale, sig, market)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[whale-tweet] error on signal: {exc}")
+
     def on_signal(sig):
         # WS/poller callbacks are sync; schedule trading on the running loop.
         logger.log(sig)
         asyncio.create_task(_handle_trade(sig))
+        if sig.signal_type == "whale_trade":
+            asyncio.create_task(_handle_tweet(sig))
 
     await executor.start()
 

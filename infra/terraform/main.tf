@@ -215,6 +215,11 @@ resource "aws_ssm_parameter" "placeholders" {
     "CONVEX_HTTP_URL",
     "CONVEX_PUBLISH_TOKEN",
     "POLYMAKER_LIVE",
+    "X_API_KEY",
+    "X_API_KEY_SECRET",
+    "X_ACCESS_TOKEN",
+    "X_ACCESS_TOKEN_SECRET",
+    "X_WHALE_POSTS",
   ])
 
   name        = "/polymaker/${each.key}"

@@ -28,6 +28,7 @@ dependencies = [
     "requests>=2.32",
     "pandas>=3.0.5",
     "playwright>=1.49",
+    "tweepy>=4.14",
 ]
 
 [project.scripts]
@@ -81,6 +82,7 @@ module = [
     "py_builder_signing_sdk.*",
     "ddgs.*",
     "bs4.*",
+    "tweepy.*",
 ]
 ignore_missing_imports = true
 

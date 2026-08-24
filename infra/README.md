@@ -14,9 +14,23 @@ aws ssm put-parameter --region $REGION --name /polymaker/POLY_FUNDER --type Secu
 aws ssm put-parameter --region $REGION --name /polymaker/CONVEX_HTTP_URL --type SecureString --value 'https://<deployment>.convex.site' --overwrite
 aws ssm put-parameter --region $REGION --name /polymaker/CONVEX_PUBLISH_TOKEN --type SecureString --value '<same as Convex PUBLISH_TOKEN>' --overwrite
 aws ssm put-parameter --region $REGION --name /polymaker/POLYMAKER_LIVE --type SecureString --value '1' --overwrite
+aws ssm put-parameter --region $REGION --name /polymaker/X_API_KEY --type SecureString --value '...' --overwrite
+aws ssm put-parameter --region $REGION --name /polymaker/X_API_KEY_SECRET --type SecureString --value '...' --overwrite
+aws ssm put-parameter --region $REGION --name /polymaker/X_ACCESS_TOKEN --type SecureString --value '...' --overwrite
+aws ssm put-parameter --region $REGION --name /polymaker/X_ACCESS_TOKEN_SECRET --type SecureString --value '...' --overwrite
+aws ssm put-parameter --region $REGION --name /polymaker/X_WHALE_POSTS --type SecureString --value '1' --overwrite
 ```
 
 `POLYMAKER_LIVE=1` sends real CLOB buys. Leave it unset (or `0`) for dry-run.
+
+`X_WHALE_POSTS=1` tweets whale detections from the monitor (same X app as MLB POTD). Omit it (or `0`) to keep the monitor silent on X. Keys in `trading-bot/.env` only reach local compose — production reads `/etc/polymaker.env` from these SSM parameters.
+
+On an **existing** instance (user-data does not re-run), after putting the parameters:
+
+```bash
+# append X_* into /etc/polymaker.env, rebuild/pull the image, then:
+systemctl restart polymaker-monitor
+```
 
 Convex: `npx convex env set PUBLISH_TOKEN <token>` in `dashboard/`, then deploy the `trades` table + HTTP routes.
 
