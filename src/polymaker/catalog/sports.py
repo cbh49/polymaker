@@ -11,22 +11,42 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+def default_sports_series_slugs(today: date | None = None) -> tuple[str, ...]:
+    year = (today or datetime.now(UTC).date()).year
+    return ("mlb", "wnba", "ufc", f"cfb-{year}")
+
+
 # Supported Polymarket sports series slugs (Gamma `series_slug` query param).
-SPORTS_SERIES_SLUGS: tuple[str, ...] = ("mlb", "wnba", "ufc")
+SPORTS_SERIES_SLUGS: tuple[str, ...] = default_sports_series_slugs()
 
 # Don't trade inside this window before tip-off — books are jumpy at kickoff.
 DEFAULT_PREGAME_BUFFER_MINUTES = 5
+CFB_LOOK_AHEAD_DAYS = 7
 
 # Moneyline: mlb-atl-cws-2026-08-20 / wnba-wsh-gsv-2026-07-20 / ufc-ant-gre3-2026-08-22
+# / cfb-hawaii-stan-2026-08-29
 _MONEYLINE_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc)-[a-z0-9]+-[a-z0-9]+-(?P<ymd>\d{4}-\d{2}-\d{2})$"
+    r"^(?P<league>mlb|wnba|ufc|cfb)-[a-z0-9]+-[a-z0-9]+-(?P<ymd>\d{4}-\d{2}-\d{2})$"
 )
 
 
 def is_sports_series(slug: str | None) -> bool:
     if not slug:
         return False
-    return slug.lower() in SPORTS_SERIES_SLUGS
+    s = slug.lower()
+    if s in {"mlb", "wnba", "ufc", "cfb"}:
+        return True
+    if s.startswith("cfb-") and s[4:].isdigit():
+        return True
+    return s in SPORTS_SERIES_SLUGS
+
+
+def look_ahead_days_for_series(series_slug: str, default: int) -> int:
+    """CFB weekend slates need a longer window than daily MLB/WNBA boards."""
+    s = (series_slug or "").lower()
+    if s == "cfb" or s.startswith("cfb-"):
+        return max(default, CFB_LOOK_AHEAD_DAYS)
+    return default
 
 
 def is_moneyline_slug(slug: str | None) -> bool:

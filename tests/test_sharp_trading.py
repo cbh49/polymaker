@@ -47,6 +47,13 @@ def test_wnba_team_aliases() -> None:
     assert sparks is not None and sparks.poly_code == "la"
 
 
+def test_ncaaf_team_aliases() -> None:
+    haw = resolve_team("NCAAF", "Hawaii")
+    assert haw is not None
+    assert haw.poly_code == "hawaii"
+    assert haw.betting_abbr == "HAW"
+
+
 def test_candidate_event_dates_et() -> None:
     # 17:35 UTC = 1:35 PM ET on Aug 16
     dates = candidate_event_dates("2026-08-16T17:35:00.000Z")

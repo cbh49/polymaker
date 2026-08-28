@@ -1,14 +1,15 @@
-"""Same-day source alignment for MLB/WNBA sharp-money trading.
+"""Same-day source alignment for MLB/WNBA/NCAAF sharp-money trading.
 
 A league is tradeable only when every *required* splits source is on the
-Pacific slate day and at least one game has overlapping fields from all of
-those sources. EVA / Covers are enrichment and never block trading.
+Pacific slate day (NCAAF: a weekend window) and at least one game has
+overlapping fields from all of those sources. EVA / Covers are enrichment
+and never block trading. Pinnacle is not used for NCAAF.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,8 @@ PAGE_TZ = ZoneInfo("America/Los_Angeles")
 
 MLB_REQUIRED: tuple[str, ...] = ("primary", "vsin", "sbd")
 WNBA_REQUIRED: tuple[str, ...] = ("primary", "vsin", "thespread")
+NCAAF_REQUIRED: tuple[str, ...] = ("primary", "vsin", "sbd")
+NCAAF_SLATE_WINDOW_DAYS = 6
 
 # Combined-file `sources` object keys for each logical source.
 MLB_SOURCE_KEYS: dict[str, str] = {
@@ -27,6 +30,11 @@ WNBA_SOURCE_KEYS: dict[str, str] = {
     "primary": "draftkings",
     "vsin": "vsin",
     "thespread": "thespread",
+}
+NCAAF_SOURCE_KEYS: dict[str, str] = {
+    "primary": "draftkings",
+    "vsin": "vsin",
+    "sbd": "sportsbettingdime",
 }
 
 # Fields that prove a source merged onto a game (checked on moneyline unless noted).
@@ -64,10 +72,16 @@ def game_slate_date(game: dict[str, Any], tz: ZoneInfo = PAGE_TZ) -> date | None
     return dt.astimezone(tz).date()
 
 
-def same_slate(src_game: dict[str, Any], dest_game: dict[str, Any], day: date) -> bool:
+def same_slate(src_game: dict[str, Any], dest_game: dict[str, Any], day: date, window_days: int = 0) -> bool:
     """True when src belongs on this slate (not yesterday's rematch)."""
     src_day = game_slate_date(src_game)
     dest_day = game_slate_date(dest_game)
+    if window_days > 0:
+        if src_day is None:
+            return dest_day is None or in_slate_window(dest_day, day, window_days)
+        if dest_day is not None:
+            return src_day == dest_day
+        return in_slate_window(src_day, day, window_days)
     if src_day is None:
         return dest_day == day or dest_day is None
     if dest_day is not None:
@@ -86,14 +100,42 @@ def native_dates(games: list[dict[str, Any]]) -> list[str]:
     return sorted(found)
 
 
+def normalize_league(league: str | None) -> str:
+    key = str(league or "MLB").strip().upper()
+    if key == "CFB":
+        return "NCAAF"
+    return key
+
+
+def slate_window_days(league: str | None) -> int:
+    return NCAAF_SLATE_WINDOW_DAYS if normalize_league(league) == "NCAAF" else 0
+
+
+def in_slate_window(game_day: date | None, slate_day: date, window_days: int) -> bool:
+    if game_day is None:
+        return True
+    if window_days <= 0:
+        return game_day == slate_day
+    return slate_day <= game_day <= slate_day + timedelta(days=window_days)
+
+
 def required_sources(league: str | None) -> tuple[str, ...]:
-    if str(league or "").upper() == "WNBA":
+    key = normalize_league(league)
+    if key == "WNBA":
         return WNBA_REQUIRED
+    if key == "NCAAF":
+        return NCAAF_REQUIRED
     return MLB_REQUIRED
 
 
 def source_block_key(league: str | None, logical: str) -> str:
-    mapping = WNBA_SOURCE_KEYS if str(league or "").upper() == "WNBA" else MLB_SOURCE_KEYS
+    key = normalize_league(league)
+    if key == "WNBA":
+        mapping = WNBA_SOURCE_KEYS
+    elif key == "NCAAF":
+        mapping = NCAAF_SOURCE_KEYS
+    else:
+        mapping = MLB_SOURCE_KEYS
     return mapping.get(logical, logical)
 
 
@@ -101,7 +143,7 @@ def _side_has_field(game: dict[str, Any], market: str, field: str) -> bool:
     block = game.get(market)
     if not isinstance(block, dict):
         return False
-    for side in ("away", "home"):
+    for side in ("away", "home", "over", "under"):
         row = block.get(side)
         if isinstance(row, dict) and row.get(field) is not None:
             return True
@@ -113,20 +155,31 @@ def game_has_source(game: dict[str, Any], logical: str) -> bool:
     if spec is None:
         return False
     market, field = spec
-    return _side_has_field(game, market, field)
+    if _side_has_field(game, market, field):
+        return True
+    if logical in {"primary", "vsin", "sbd"}:
+        for extra in ("spread", "total", "moneyline"):
+            if extra != market and _side_has_field(game, extra, field):
+                return True
+    if logical == "thespread":
+        for extra in ("moneyline", "total"):
+            if _side_has_field(game, extra, "open"):
+                return True
+    return False
 
 
 def overlap_games(
     games: list[dict[str, Any]],
     slate_day: date,
     sources: tuple[str, ...],
+    window_days: int = 0,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for game in games:
         if not isinstance(game, dict):
             continue
         gday = game_slate_date(game)
-        if gday is not None and gday != slate_day:
+        if gday is not None and not in_slate_window(gday, slate_day, window_days):
             continue
         if all(game_has_source(game, src) for src in sources):
             out.append(game)
@@ -175,6 +228,7 @@ def _source_native_dates(
     logical: str,
     block_key: str,
     slate_day: date,
+    window_days: int = 0,
 ) -> tuple[list[str], int]:
     sources = payload.get("sources") if isinstance(payload.get("sources"), dict) else {}
     block = sources.get(block_key) if isinstance(sources, dict) else None
@@ -197,7 +251,8 @@ def _source_native_dates(
         matching = [
             g
             for g in games
-            if (game_slate_date(g) in {None, slate_day}) and game_has_source(g, logical)
+            if in_slate_window(game_slate_date(g), slate_day, window_days)
+            and game_has_source(g, logical)
         ]
         dates = native_dates(matching) or (
             [slate_day.isoformat()] if matching else []
@@ -212,17 +267,22 @@ def evaluate_payload(
     *,
     slate_day: date | None = None,
 ) -> AlignmentResult:
-    league = str(payload.get("league") or "MLB").upper()
+    league = normalize_league(payload.get("league") or "MLB")
     day = slate_day or _payload_slate_day(payload)
     needed = required_sources(league)
+    window = slate_window_days(league)
     games = [g for g in (payload.get("games") or []) if isinstance(g, dict)]
     statuses: dict[str, SourceStatus] = {}
     missing: list[str] = []
 
     for logical in needed:
         key = source_block_key(league, logical)
-        dates, count = _source_native_dates(payload, logical, key, day)
-        on_slate = day.isoformat() in dates and count > 0
+        dates, count = _source_native_dates(payload, logical, key, day, window)
+        on_slate = count > 0 and any(
+            in_slate_window(date.fromisoformat(d), day, window) for d in dates if len(d) >= 10
+        )
+        if not on_slate and not dates and count > 0 and window > 0:
+            on_slate = True
         statuses[logical] = SourceStatus(
             logical=logical,
             key=key,
@@ -233,7 +293,7 @@ def evaluate_payload(
         if not on_slate:
             missing.append(f"{logical}({key})")
 
-    overlap = overlap_games(games, day, needed)
+    overlap = overlap_games(games, day, needed, window_days=window)
     if missing:
         reason = (
             f"{league} sources not on {day.isoformat()}: {', '.join(missing)}. "

@@ -2,22 +2,24 @@
 """
 Identify daily "sharp money" plays from combined betting splits.
 
-Input schema (per game.moneyline.away/home or game.spread.away/home) —
-confirmed against mlb_betting_splits.json / wnba_betting_splits.json /
-ufc_betting_splits.json:
+Input schema (per game.moneyline.away/home, game.spread.away/home, or
+game.total.over/under) — confirmed against mlb/wnba/ufc/ncaaf_betting_splits.json:
 
   primary  public_bet_pct / handle_bet_pct
-           (MLB: PlayerProps.ai; WNBA/UFC: DraftKings Network)
-  sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB only: SportsBettingDime)
+           (MLB: PlayerProps.ai; WNBA/UFC/NCAAF: DraftKings Network)
+  sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NCAAF)
   vsin     vsin_public_bet_pct / vsin_handle_bet_pct
-  prices   open / live  (ML: American odds; spread: the number)
-  juice    open_odds / live_odds  (spread vig, used when the number is flat)
+  prices   open / live  (ML: American odds; spread/total: the number)
+           eva_open / eva_line used when TheSpread open/live is missing
+  juice    open_odds / live_odds  (spread/total vig when the number is flat)
   vsin ML  vsin_line    (American odds, used for no-vig fair probability)
 
 Moneyline is the default market. Spread open/live are point-spread numbers,
 so RLM uses the number first and falls back to juice implied-prob movement.
-WNBA/UFC weight DraftKings (primary) + VSiN only. TheSpread supplies RLM
-(open → live): spread for WNBA, moneyline for UFC. SBD is not scraped for
+Totals use over/under: a rising total confirms Over, a falling total Under.
+WNBA/UFC weight DraftKings (primary) + VSiN only. NCAAF is three-source
+(DK + VSiN + SBD) like MLB; Pinnacle is skipped. TheSpread supplies RLM
+(open → live) when present, else EV Analytics. SBD is not scraped for
 WNBA/UFC. Covers is not scraped for UFC; Polymarket implied prob is used
 as the exchange fair in that case.
 
@@ -33,6 +35,9 @@ Usage:
       --market both
   python find_sharp_money.py --input output/ufc_betting_splits.json \\
       --out output/ufc_sharp_money.json --csv output/ufc_sharp_money.csv
+  python find_sharp_money.py --input output/ncaaf_betting_splits.json \\
+      --out output/ncaaf_sharp_money.json --csv output/ncaaf_sharp_money.csv \\
+      --market all
 """
 
 from __future__ import annotations
@@ -54,7 +59,7 @@ DEFAULT_JSON_OUT = SCRIPT_DIR / "output" / "mlb_sharp_money.json"
 DEFAULT_CSV_OUT = SCRIPT_DIR / "output" / "mlb_sharp_money.csv"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 
-Market = Literal["moneyline", "spread"]
+Market = Literal["moneyline", "spread", "total"]
 
 # --- Tunable constants (change these; do not hardcode in logic) ---------------
 
@@ -84,19 +89,28 @@ MLB_SOURCES = ("primary", "vsin", "sbd")
 TWO_SOURCE_LEAGUES = frozenset({"WNBA", "UFC"})
 WNBA_SOURCES = ("primary", "vsin")
 SIDES = ("away", "home")
-Side = Literal["away", "home"]
+TOTAL_SIDES = ("over", "under")
+ALL_SIDES = SIDES + TOTAL_SIDES
+Side = Literal["away", "home", "over", "under"]
 SourceName = Literal["primary", "vsin", "sbd"]
 Tier = Literal["A+", "A", "B"]
 
 
+def _league_key(league: str | None) -> str:
+    key = str(league or "").strip().upper()
+    if key == "CFB":
+        return "NCAAF"
+    return key
+
+
 def sources_for_league(league: str | None) -> tuple[str, ...]:
-    if str(league or "").upper() in TWO_SOURCE_LEAGUES:
+    if _league_key(league) in TWO_SOURCE_LEAGUES:
         return WNBA_SOURCES
     return MLB_SOURCES
 
 
 def primary_source_label(league: str | None) -> str:
-    if str(league or "").upper() in {"WNBA", "UFC"}:
+    if _league_key(league) in {"WNBA", "UFC", "NCAAF"}:
         return "draftkings"
     return "playerprops"
 
@@ -307,6 +321,9 @@ def check_rlm(
     Moneyline: American odds shortened (implied win probability up).
     Spread: the point-spread number first (more negative = toward that side);
     if the number is unchanged, juice (open_odds → live_odds) is used.
+    Total: a rising number confirms Over (left/away slot); falling confirms
+    Under. Juice is the fallback when the total is unchanged.
+    Missing open/live fall back to eva_open / eva_line.
     """
     away_pub = _as_float(away.get("public_bet_pct"))
     home_pub = _as_float(home.get("public_bet_pct"))
@@ -319,6 +336,10 @@ def check_rlm(
 
     if market == "spread":
         line_moved_toward = _spread_number_moved_toward(away, home)
+        if line_moved_toward is None:
+            line_moved_toward = _juice_moved_toward(away, home)
+    elif market == "total":
+        line_moved_toward = _total_number_moved_toward(away, home)
         if line_moved_toward is None:
             line_moved_toward = _juice_moved_toward(away, home)
     else:
@@ -338,13 +359,22 @@ def check_rlm(
     )
 
 
+def _open_live_number(side: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Current number pair; EVA fills in when TheSpread open/live is missing."""
+    opened = _as_float(side.get("open"))
+    live = _as_float(side.get("live"))
+    if opened is None:
+        opened = _as_float(side.get("eva_open"))
+    if live is None:
+        live = _as_float(side.get("eva_line"))
+    return opened, live
+
+
 def _spread_number_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> Side | None:
     """Side whose spread decreased (became more negative / less plus)."""
     votes: list[Side] = []
-    away_open = _as_float(away.get("open"))
-    away_live = _as_float(away.get("live"))
-    home_open = _as_float(home.get("open"))
-    home_live = _as_float(home.get("live"))
+    away_open, away_live = _open_live_number(away)
+    home_open, home_live = _open_live_number(home)
     if away_open is not None and away_live is not None and away_live != away_open:
         votes.append("home" if away_live > away_open else "away")
     if home_open is not None and home_live is not None and home_live != home_open:
@@ -354,6 +384,17 @@ def _spread_number_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> S
     if all(v == votes[0] for v in votes):
         return votes[0]
     return votes[0]
+
+
+def _total_number_moved_toward(over: dict[str, Any], under: dict[str, Any]) -> Side | None:
+    """Rising total → Over (away slot); falling total → Under (home slot)."""
+    over_open, over_live = _open_live_number(over)
+    if over_open is not None and over_live is not None and over_live != over_open:
+        return "away" if over_live > over_open else "home"
+    under_open, under_live = _open_live_number(under)
+    if under_open is not None and under_live is not None and under_live != under_open:
+        return "away" if under_live > under_open else "home"
+    return None
 
 
 def _juice_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> Side | None:
@@ -366,12 +407,9 @@ def _juice_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> Side | No
 
 
 def _american_odds_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> Side | None:
-    return _implied_move_toward(
-        away.get("open"),
-        away.get("live"),
-        home.get("open"),
-        home.get("live"),
-    )
+    away_open, away_live = _open_live_number(away)
+    home_open, home_live = _open_live_number(home)
+    return _implied_move_toward(away_open, away_live, home_open, home_live)
 
 
 def _implied_move_toward(
@@ -426,16 +464,31 @@ def assign_tier(
 # --- Step 6: output row -------------------------------------------------------
 
 
+def _label_side(side: str | None, market: Market) -> str | None:
+    if side is None:
+        return None
+    if market != "total":
+        return side
+    if side == "away":
+        return "over"
+    if side == "home":
+        return "under"
+    return side
+
+
 def _fair_prob_for_side(
     away: dict[str, Any], home: dict[str, Any], side: Side, market: Market = "moneyline"
 ) -> float | None:
-    """De-vig live American odds. Spread uses juice; ML prefers VSIN then live."""
-    if market == "spread":
+    """De-vig live American odds. Spread/total use juice; ML prefers VSIN then live."""
+    if market in {"spread", "total"}:
         odds_away = _as_float(away.get("live_odds"))
         odds_home = _as_float(home.get("live_odds"))
         if odds_away is None or odds_home is None:
             odds_away = _as_float(away.get("open_odds"))
             odds_home = _as_float(home.get("open_odds"))
+        if odds_away is None or odds_home is None:
+            odds_away = _as_float(away.get("eva_odds"))
+            odds_home = _as_float(home.get("eva_odds"))
         if odds_away is None or odds_home is None:
             return None
     else:
@@ -446,6 +499,10 @@ def _fair_prob_for_side(
         else:
             live_away = _as_float(away.get("live"))
             live_home = _as_float(home.get("live"))
+            if live_away is None:
+                live_away = _as_float(away.get("eva_line"))
+            if live_home is None:
+                live_home = _as_float(home.get("eva_line"))
             if live_away is None or live_home is None:
                 return None
             odds_away, odds_home = live_away, live_home
@@ -472,9 +529,12 @@ def build_output(
     sources: tuple[str, ...] = MLB_SOURCES,
 ) -> dict[str, Any]:
     """Assemble one qualifying play as a JSON-serializable dict."""
-    gaps = (away_gaps if side == "away" else home_gaps).as_dict()
-    abbr = side_data.get("selection") or game.get(f"{side}_abbr")
-    fair = _fair_prob_for_side(away, home, side, market)
+    logical: Side = "away" if side in {"away", "over"} else "home"
+    gaps = (away_gaps if logical == "away" else home_gaps).as_dict()
+    labeled = _label_side(logical, market) or side
+    abbr = side_data.get("selection") or game.get(f"{labeled}_abbr") or game.get(f"{side}_abbr")
+    fair = _fair_prob_for_side(away, home, logical, market)
+    open_px, live_px = _open_live_number(side_data)
     row: dict[str, Any] = {
         "matchup": game.get("matchup"),
         "game_time_utc": game.get("game_time_utc"),
@@ -482,7 +542,7 @@ def build_output(
         "event_id": game.get("event_id"),
         "market": market,
         "side": abbr,
-        "home_away": side,
+        "home_away": labeled,
         "tier": tier,
         "composite_gap": round(composite_gap, 4),
         "primary_gap": gaps["primary"],
@@ -495,10 +555,10 @@ def build_output(
             "n_sources_agreeing": agreement.n_agreeing,
             "agreeing_sources": list(agreement.agreeing_sources),
             "rlm_confirmed": rlm.rlm_confirmed,
-            "public_favors": rlm.public_favors,
-            "line_moved_toward": rlm.line_moved_toward,
-            "open": side_data.get("open"),
-            "live": side_data.get("live"),
+            "public_favors": _label_side(rlm.public_favors, market),
+            "line_moved_toward": _label_side(rlm.line_moved_toward, market),
+            "open": side_data.get("open") if side_data.get("open") is not None else open_px,
+            "live": side_data.get("live") if side_data.get("live") is not None else live_px,
             "open_odds": side_data.get("open_odds"),
             "live_odds": side_data.get("live_odds"),
             "implied_fair_prob": None if fair is None else round(fair, 6),
@@ -522,30 +582,39 @@ def _null_exchange_confirmation() -> dict[str, Any]:
     }
 
 
-def _covers_book_fair_prob(book: dict[str, Any], side: Side) -> float | None:
-    """De-vig one book's moneyline pair; return fair prob for `side`."""
-    ml = book.get("moneyline")
-    if not isinstance(ml, dict):
+def _covers_book_fair_prob(
+    book: dict[str, Any], side: Side, market: Market = "moneyline"
+) -> float | None:
+    """De-vig one book's two-way pair; return fair prob for `side`."""
+    block = book.get(market)
+    if not isinstance(block, dict):
         return None
-    away = ml.get("away") if isinstance(ml.get("away"), dict) else {}
-    home = ml.get("home") if isinstance(ml.get("home"), dict) else {}
-    odds_away = _as_float(away.get("line"))
-    odds_home = _as_float(home.get("line"))
-    if odds_away is None or odds_home is None:
+    left_key, right_key = ("over", "under") if market == "total" else ("away", "home")
+    left = block.get(left_key) if isinstance(block.get(left_key), dict) else {}
+    right = block.get(right_key) if isinstance(block.get(right_key), dict) else {}
+    if market in {"spread", "total"}:
+        odds_left = _as_float(left.get("odds"))
+        odds_right = _as_float(right.get("odds"))
+    else:
+        odds_left = _as_float(left.get("line"))
+        odds_right = _as_float(right.get("line"))
+    if odds_left is None or odds_right is None:
         return None
     try:
-        p_away, p_home = no_vig_fair_probs(odds_away, odds_home)
+        p_left, p_right = no_vig_fair_probs(odds_left, odds_right)
     except ValueError:
         return None
-    return p_away if side == "away" else p_home
+    return p_left if side in {"away", "over"} else p_right
 
 
-def _polymarket_block(game: dict[str, Any], home_away: Side) -> dict[str, Any] | None:
-    """Embedded polymarket object under moneyline[away|home], not covers_odds."""
-    ml = game.get("moneyline")
-    if not isinstance(ml, dict):
+def _polymarket_block(
+    game: dict[str, Any], home_away: Side, market: Market = "moneyline"
+) -> dict[str, Any] | None:
+    """Embedded polymarket object under the play's market/side, not covers_odds."""
+    block = game.get(market)
+    if not isinstance(block, dict):
         return None
-    side_data = ml.get(home_away)
+    side_data = block.get(home_away)
     if not isinstance(side_data, dict):
         return None
     poly = side_data.get("polymarket")
@@ -578,8 +647,9 @@ def enrich_with_exchange_data(play: dict[str, Any], game_data: dict[str, Any]) -
     covers = game_data.get("covers_odds")
     covers_ok = isinstance(covers, dict) and bool(covers)
     home_away = play.get("home_away")
-    side: Side | None = home_away if home_away in SIDES else None
-    poly = _polymarket_block(game_data, side) if side is not None else None
+    market: Market = play.get("market") if play.get("market") in {"moneyline", "spread", "total"} else "moneyline"
+    side: Side | None = home_away if home_away in ALL_SIDES else None
+    poly = _polymarket_block(game_data, side, market) if side is not None else None
 
     if not covers_ok and poly is None:
         play["exchange_confirmation"] = _null_exchange_confirmation()
@@ -594,7 +664,7 @@ def enrich_with_exchange_data(play: dict[str, Any], game_data: dict[str, Any]) -
             books_used.append(str(book.get("book") or slug))
             if side is None:
                 continue
-            fair = _covers_book_fair_prob(book, side)
+            fair = _covers_book_fair_prob(book, side, market)
             if fair is not None:
                 fairs.append(fair)
 
@@ -647,8 +717,12 @@ def process_game(
     block = game.get(market)
     if not isinstance(block, dict):
         return None
-    away = block.get("away")
-    home = block.get("home")
+    if market == "total":
+        away = block.get("over")
+        home = block.get("under")
+    else:
+        away = block.get("away")
+        home = block.get("home")
     if not isinstance(away, dict) or not isinstance(home, dict):
         return None
 
@@ -658,11 +732,11 @@ def process_game(
     if agreement.side is None:
         return None
 
-    side = agreement.side
-    side_data = away if side == "away" else home
-    side_gaps = away_gaps if side == "away" else home_gaps
+    side = _label_side(agreement.side, market) or agreement.side
+    side_data = away if agreement.side == "away" else home
+    side_gaps = away_gaps if agreement.side == "away" else home_gaps
     composite_gap = compute_composite(side_gaps, agreement.agreeing_sources)
-    rlm = check_rlm(away, home, side, market=market)
+    rlm = check_rlm(away, home, agreement.side, market=market)
     tier = assign_tier(
         agreement.n_agreeing,
         composite_gap,
@@ -799,9 +873,11 @@ def _frame_for_csv(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _markets_from_arg(value: str) -> tuple[Market, ...]:
+    if value == "all":
+        return ("moneyline", "spread", "total")
     if value == "both":
         return ("moneyline", "spread")
-    if value in {"moneyline", "spread"}:
+    if value in {"moneyline", "spread", "total"}:
         return (value,)  # type: ignore[return-value]
     raise ValueError(f"unsupported market: {value}")
 
@@ -814,8 +890,8 @@ def main() -> None:
     parser.add_argument(
         "--market",
         default="moneyline",
-        choices=["moneyline", "spread", "both"],
-        help="Market to evaluate (WNBA should use 'both' or 'spread')",
+        choices=["moneyline", "spread", "total", "both", "all"],
+        help="Market to evaluate (NCAAF should use 'all'; WNBA 'both' or 'spread')",
     )
     args = parser.parse_args()
 

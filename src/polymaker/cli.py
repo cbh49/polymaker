@@ -252,10 +252,11 @@ def match_sharp(
     mlb: str | None = typer.Option(None, "--mlb", help="override mlb_sharp_money.json path"),
     wnba: str | None = typer.Option(None, "--wnba", help="override wnba_sharp_money.json path"),
     ufc: str | None = typer.Option(None, "--ufc", help="override ufc_sharp_money.json path"),
+    ncaaf: str | None = typer.Option(None, "--ncaaf", help="override ncaaf_sharp_money.json path"),
     league: str = typer.Option(
         "both",
         "--league",
-        help="mlb | wnba | ufc | both (which sharp file(s) / plays to use)",
+        help="mlb | wnba | ufc | ncaaf | both (which sharp file(s) / plays to use)",
     ),
     refresh: bool = typer.Option(
         False,
@@ -264,13 +265,13 @@ def match_sharp(
     ),
     tier: str | None = typer.Option(None, "--tier", help="min tier: A or B (default from config)"),
 ) -> None:
-    """Match sharp-money plays to Polymarket MLB/WNBA/UFC moneylines (no orders)."""
+    """Match sharp-money plays to Polymarket MLB/WNBA/UFC/NCAAF moneylines (no orders)."""
     from polymaker.trading.execute import filter_plays, load_configured_plays
     from polymaker.trading.match import match_sharp_plays
 
     league_key = _normalize_league(league)
     cfg = Config.load(config_dir)
-    paths = _sharp_path_overrides(mlb, wnba, ufc, league_key)
+    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, league_key)
 
     try:
         plays = load_configured_plays(cfg, paths, league=league_key)
@@ -312,10 +313,11 @@ def trade_sharp(
     mlb: str | None = typer.Option(None, "--mlb", help="override mlb_sharp_money.json path"),
     wnba: str | None = typer.Option(None, "--wnba", help="override wnba_sharp_money.json path"),
     ufc: str | None = typer.Option(None, "--ufc", help="override ufc_sharp_money.json path"),
+    ncaaf: str | None = typer.Option(None, "--ncaaf", help="override ncaaf_sharp_money.json path"),
     league: str = typer.Option(
         "both",
         "--league",
-        help="mlb | wnba | ufc | both (which sharp file(s) / plays to use)",
+        help="mlb | wnba | ufc | ncaaf | both (which sharp file(s) / plays to use)",
     ),
     refresh: bool = typer.Option(
         True,
@@ -341,7 +343,7 @@ def trade_sharp(
 
     league_key = _normalize_league(league)
     cfg = Config.load(config_dir)
-    paths = _sharp_path_overrides(mlb, wnba, ufc, league_key)
+    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, league_key)
 
     try:
         plays = load_configured_plays(cfg, paths, league=league_key)
@@ -406,8 +408,10 @@ def trade_sharp(
 
 def _normalize_league(league: str) -> str:
     key = league.strip().lower()
-    if key not in {"mlb", "wnba", "ufc", "both"}:
-        console.print("[red]--league must be mlb, wnba, ufc, or both[/red]")
+    if key == "cfb":
+        key = "ncaaf"
+    if key not in {"mlb", "wnba", "ufc", "ncaaf", "both"}:
+        console.print("[red]--league must be mlb, wnba, ufc, ncaaf, or both[/red]")
         raise typer.Exit(1)
     return key
 
@@ -416,10 +420,11 @@ def _sharp_path_overrides(
     mlb: str | None,
     wnba: str | None,
     ufc: str | None,
+    ncaaf: str | None,
     league: str,
 ) -> list[str] | None:
-    """Explicit --mlb/--wnba/--ufc paths win; otherwise None → config defaults by league."""
-    if mlb is None and wnba is None and ufc is None:
+    """Explicit --mlb/--wnba/--ufc/--ncaaf paths win; otherwise None → config defaults by league."""
+    if mlb is None and wnba is None and ufc is None and ncaaf is None:
         return None
     paths: list[str] = []
     if league in {"mlb", "both"} and mlb:
@@ -428,6 +433,8 @@ def _sharp_path_overrides(
         paths.append(wnba)
     if league in {"ufc", "both"} and ufc:
         paths.append(ufc)
+    if league in {"ncaaf", "both"} and ncaaf:
+        paths.append(ncaaf)
     # If user passed only one override while league=both, still use it.
     if not paths:
         if mlb:
@@ -436,6 +443,8 @@ def _sharp_path_overrides(
             paths.append(wnba)
         if ufc:
             paths.append(ufc)
+        if ncaaf:
+            paths.append(ncaaf)
     return paths or None
 
 

@@ -236,7 +236,12 @@ def export_watch_list(
 
     sharp_by_cid: dict[str, dict[str, Any]] = {}
     if include_sharp:
-        paths = [Path(cfg.sharp.mlb_path), Path(cfg.sharp.wnba_path)]
+        paths = [
+            Path(cfg.sharp.mlb_path),
+            Path(cfg.sharp.wnba_path),
+            Path(cfg.sharp.ufc_path),
+            Path(cfg.sharp.ncaaf_path),
+        ]
         existing = [p for p in paths if p.is_file()]
         if existing:
             plays = load_sharp_plays(existing)

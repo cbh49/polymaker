@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Scrape public-betting line movement from TheSpread.com (WNBA or UFC).
+Scrape public-betting line movement from TheSpread.com (WNBA, UFC, or NCAAF).
 
 SportsBettingDime does not publish WNBA/UFC splits; this is the stand-in
 for scrape_sbd_splits.py, used for open → current line movement (RLM).
+NCAAF uses both: SBD for handle/public % and TheSpread for RLM.
 
 Sources:
-  WNBA: https://www.thespread.com/wnba-public-betting-chart/
-  UFC:  https://www.thespread.com/mma-odds/
+  WNBA:  https://www.thespread.com/wnba-public-betting-chart/
+  UFC:   https://www.thespread.com/mma-odds/
+  NCAAF: https://www.thespread.com/ncaa-college-football-public-betting-chart/
 
 WNBA: Cloudflare-protected public-betting chart. Market-average pie
 percentages are burned into a SportsInsights GIF; we keep open/current
@@ -28,7 +30,7 @@ import argparse
 import json
 import re
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -47,10 +49,12 @@ from wnba_team_map import (
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "thespread_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "thespread_ufc_betting_splits.json"
+DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "thespread_ncaaf_betting_splits.json"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 PAGE_URLS = {
     "WNBA": "https://www.thespread.com/wnba-public-betting-chart/",
     "UFC": "https://www.thespread.com/mma-odds/",
+    "NCAAF": "https://www.thespread.com/ncaa-college-football-public-betting-chart/",
 }
 PAGE_URL = PAGE_URLS["WNBA"]
 
@@ -96,7 +100,26 @@ def _md_for_day(day: date) -> str:
     return f"{day.month}/{day.day}"
 
 
-def parse_datarow(row: Any, day: date, matchups: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _day_from_md(md: str, year: int) -> date | None:
+    m = re.match(r"^(\d{1,2})/(\d{1,2})$", (md or "").strip())
+    if not m:
+        return None
+    try:
+        return date(year, int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
+
+
+def parse_datarow(
+    row: Any,
+    day: date,
+    matchups: list[dict[str, Any]],
+    *,
+    canonical_name_fn=canonical_name,
+    canonical_abbr_fn=canonical_abbr,
+    match_matchup_fn=match_matchup,
+    allowed_mds: set[str] | None = None,
+) -> dict[str, Any] | None:
     time_cell = row.select_one(".datacell.time")
     teams_cell = row.select_one(".datacell.teams")
     if not time_cell or not teams_cell:
@@ -106,7 +129,10 @@ def parse_datarow(row: Any, day: date, matchups: list[dict[str, Any]]) -> dict[s
     if not time_parts:
         return None
     row_md = time_parts[0].strip()
-    if row_md != _md_for_day(day):
+    if allowed_mds is not None:
+        if row_md not in allowed_mds:
+            return None
+    elif row_md != _md_for_day(day):
         return None
     tip = time_parts[1].strip() if len(time_parts) > 1 else None
 
@@ -117,12 +143,12 @@ def parse_datarow(row: Any, day: date, matchups: list[dict[str, Any]]) -> dict[s
     if not away_raw or not home_raw:
         return None
 
-    away_name = canonical_name(away_raw)
-    home_name = canonical_name(home_raw)
+    away_name = canonical_name_fn(away_raw)
+    home_name = canonical_name_fn(home_raw)
     if not away_name or not home_name:
         return None
-    away_abbr = canonical_abbr(away_name) or away_name
-    home_abbr = canonical_abbr(home_name) or home_name
+    away_abbr = canonical_abbr_fn(away_name) or away_name
+    home_abbr = canonical_abbr_fn(home_name) or home_name
 
     teams_text = teams_cell.get_text(" ", strip=True)
     rot_away = rot_home = None
@@ -161,7 +187,7 @@ def parse_datarow(row: Any, day: date, matchups: list[dict[str, Any]]) -> dict[s
     away_live = live_pairs[0] if len(live_pairs) > 0 else None
     home_live = live_pairs[1] if len(live_pairs) > 1 else None
 
-    matched = match_matchup(away_name, home_name, matchups)
+    matched = match_matchup_fn(away_name, home_name, matchups)
     game: dict[str, Any] = {
         "matchup": f"{away_abbr} @ {home_abbr}",
         "away_abbr": away_abbr,
@@ -169,7 +195,7 @@ def parse_datarow(row: Any, day: date, matchups: list[dict[str, Any]]) -> dict[s
         "away": away_name,
         "home": home_name,
         "game_time_local": tip,
-        "date": day.isoformat(),
+        "date": (_day_from_md(row_md, day.year) or day).isoformat(),
         "rotation_away": rot_away,
         "rotation_home": rot_home,
         "spread": {
@@ -177,6 +203,41 @@ def parse_datarow(row: Any, day: date, matchups: list[dict[str, Any]]) -> dict[s
             "home": _side(home_abbr, home_open, home_live),
         },
     }
+
+    ml_open_cell = row.select_one(".child-ml-open") or row.select_one(".datacell.ml .child-open")
+    ml_live_cell = row.select_one(".child-ml-current") or row.select_one(".datacell.ml .child-current")
+    tot_open_cell = row.select_one(".child-total-open") or row.select_one(".datacell.total .child-open")
+    tot_live_cell = row.select_one(".child-total-current") or row.select_one(".datacell.total .child-current")
+    ml_open_pairs = parse_line_odds_pair(ml_open_cell.get_text("\n", strip=True) if ml_open_cell else "")
+    ml_live_pairs = parse_line_odds_pair(ml_live_cell.get_text("\n", strip=True) if ml_live_cell else "")
+    tot_open_pairs = parse_line_odds_pair(tot_open_cell.get_text("\n", strip=True) if tot_open_cell else "")
+    tot_live_pairs = parse_line_odds_pair(tot_live_cell.get_text("\n", strip=True) if tot_live_cell else "")
+    if ml_open_pairs or ml_live_pairs:
+        game["moneyline"] = {
+            "away": _side(
+                away_abbr,
+                ml_open_pairs[0] if ml_open_pairs else None,
+                ml_live_pairs[0] if ml_live_pairs else None,
+            ),
+            "home": _side(
+                home_abbr,
+                ml_open_pairs[1] if len(ml_open_pairs) > 1 else None,
+                ml_live_pairs[1] if len(ml_live_pairs) > 1 else None,
+            ),
+        }
+    if tot_open_pairs or tot_live_pairs:
+        game["total"] = {
+            "over": _side(
+                "Over",
+                tot_open_pairs[0] if tot_open_pairs else None,
+                tot_live_pairs[0] if tot_live_pairs else None,
+            ),
+            "under": _side(
+                "Under",
+                tot_open_pairs[1] if len(tot_open_pairs) > 1 else None,
+                tot_live_pairs[1] if len(tot_live_pairs) > 1 else None,
+            ),
+        }
     if matched:
         game["espn_game_id"] = matched.get("espn_game_id")
         if matched.get("game_time"):
@@ -184,13 +245,30 @@ def parse_datarow(row: Any, day: date, matchups: list[dict[str, Any]]) -> dict[s
     return game
 
 
-def parse_games(html: str, day: date, matchups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def parse_games(
+    html: str,
+    day: date,
+    matchups: list[dict[str, Any]],
+    *,
+    canonical_name_fn=canonical_name,
+    canonical_abbr_fn=canonical_abbr,
+    match_matchup_fn=match_matchup,
+    allowed_mds: set[str] | None = None,
+) -> list[dict[str, Any]]:
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "html.parser")
     games: list[dict[str, Any]] = []
     for row in soup.select(".datarow"):
-        parsed = parse_datarow(row, day, matchups)
+        parsed = parse_datarow(
+            row,
+            day,
+            matchups,
+            canonical_name_fn=canonical_name_fn,
+            canonical_abbr_fn=canonical_abbr_fn,
+            match_matchup_fn=match_matchup_fn,
+            allowed_mds=allowed_mds,
+        )
         if parsed:
             games.append(parsed)
     return games
@@ -406,7 +484,7 @@ def _fetch_thespread_html(
 def merge_thespread_into_game(game: dict[str, Any], spread_game: dict[str, Any]) -> None:
     """Copy TheSpread open/live prices onto matching sides.
 
-    WNBA: spread open/live + juice.
+    WNBA / NCAAF: spread open/live + juice (ML / total when the chart has them).
     UFC: moneyline open/live (RLM), plus live spread/total when present.
     Existing dest values are overwritten so open and live stay from the
     same TheSpread snapshot (needed for reverse line movement).
@@ -444,12 +522,35 @@ def scrape(
     headed: bool = False,
     league: str = "WNBA",
 ) -> dict[str, Any]:
-    league = (league or "WNBA").upper()
+    league = (league or "WNBA").strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
     day = day or datetime.now(PAGE_TZ).date()
     page_url = url or PAGE_URLS.get(league, PAGE_URL)
     if league == "UFC":
         html = _fetch_thespread_html(page_url, ".tse-game", headed=headed)
         games = parse_mma_games(html, day) if html else []
+    elif league == "NCAAF":
+        from cfb_team_map import canonical_abbr as cfb_canonical_abbr
+        from cfb_team_map import canonical_name as cfb_canonical_name
+        from cfb_team_map import match_matchup as cfb_match_matchup
+
+        matchups = load_matchups(matchups_path) if matchups_path and matchups_path.exists() else []
+        html = _fetch_thespread_html(page_url, ".datarow", headed=headed)
+        allowed_mds = {_md_for_day(day + timedelta(days=offset)) for offset in range(0, 7)}
+        games = (
+            parse_games(
+                html,
+                day,
+                matchups,
+                canonical_name_fn=cfb_canonical_name,
+                canonical_abbr_fn=cfb_canonical_abbr,
+                match_matchup_fn=cfb_match_matchup,
+                allowed_mds=allowed_mds,
+            )
+            if html
+            else []
+        )
     else:
         matchups = load_matchups(matchups_path)
         html = _fetch_thespread_html(page_url, ".datarow", headed=headed)
@@ -467,7 +568,7 @@ def scrape(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape TheSpread public betting / MMA odds")
-    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC"])
+    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB"])
     parser.add_argument(
         "--date",
         default=None,
@@ -487,7 +588,13 @@ def main() -> None:
         headed=args.headed,
         league=args.league,
     )
-    out = args.out or (DEFAULT_UFC_OUT if args.league == "UFC" else DEFAULT_OUT)
+    league = (args.league or "WNBA").strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
+    out = args.out or {
+        "UFC": DEFAULT_UFC_OUT,
+        "NCAAF": DEFAULT_NCAAF_OUT,
+    }.get(league, DEFAULT_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {result['game_count']} {args.league} games ({day.isoformat()}) → {out}")

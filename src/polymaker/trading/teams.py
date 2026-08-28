@@ -8,7 +8,9 @@ use different abbreviations (AZ vs ari, LV vs las, GS vs gsv).
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 # Betting / ESPN-style abbr → Polymarket slug token (lowercase).
 MLB_BETTING_TO_POLY: dict[str, str] = {
@@ -142,6 +144,19 @@ class TeamRef:
     full_name: str
 
 
+def _cfb_team_map():
+    """Lazy-load data-aggregation/cfb_team_map.py (canonical school names)."""
+    try:
+        import cfb_team_map as module  # type: ignore
+        return module
+    except ImportError:
+        agg = Path(__file__).resolve().parents[3] / "data-aggregation"
+        if str(agg) not in sys.path:
+            sys.path.insert(0, str(agg))
+        import cfb_team_map as module  # type: ignore
+        return module
+
+
 def resolve_team(league: str, abbr_or_name: str) -> TeamRef | None:
     """Resolve a betting abbr (or full name) to Polymarket code + display name."""
     raw = abbr_or_name.strip()
@@ -177,6 +192,13 @@ def resolve_team(league: str, abbr_or_name: str) -> TeamRef | None:
         parts = raw.split()
         code = parts[-1].lower() if parts else raw.lower()
         return TeamRef(raw, code, raw)
+
+    if league_l in {"ncaaf", "cfb"}:
+        cfb = _cfb_team_map()
+        name = cfb.canonical_name(raw) or raw
+        abbr = cfb.canonical_abbr(raw) or upper
+        code = cfb.poly_code(raw) or str(abbr).lower()
+        return TeamRef(str(abbr), code, name)
 
     return None
 

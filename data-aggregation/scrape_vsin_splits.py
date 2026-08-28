@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Scrape betting splits from VSiN (MLB, WNBA, or UFC).
+Scrape betting splits from VSiN (MLB, WNBA, UFC, or NCAAF).
 
 Sources:
-  MLB:  https://data.vsin.com/betting-splits/?bookid=dk&view=mlb
-  WNBA: https://data.vsin.com/betting-splits/?source=DK&sport=WNBA
-  UFC:  https://data.vsin.com/betting-splits/?source=DK&sport=UFC
+  MLB:   https://data.vsin.com/betting-splits/?bookid=dk&view=mlb
+  WNBA:  https://data.vsin.com/betting-splits/?source=DK&sport=WNBA
+  UFC:   https://data.vsin.com/betting-splits/?source=DK&sport=UFC
+  NCAAF: https://data.vsin.com/betting-splits/?source=DK&sport=CFB
 
 Table columns per team/fighter row:
   Spread LINE | HANDLE | BETS | Total LINE | HANDLE | BETS | Money LINE | HANDLE | BETS
@@ -22,6 +23,7 @@ Usage:
   python scrape_vsin_splits.py
   python scrape_vsin_splits.py --league WNBA --out output/vsin_wnba_betting_splits.json
   python scrape_vsin_splits.py --league UFC --out output/vsin_ufc_betting_splits.json
+  python scrape_vsin_splits.py --league NCAAF --out output/vsin_ncaaf_betting_splits.json
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -46,17 +48,20 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "vsin_betting_splits.json"
 DEFAULT_WNBA_OUT = SCRIPT_DIR / "output" / "vsin_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "vsin_ufc_betting_splits.json"
+DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "vsin_ncaaf_betting_splits.json"
 
 PAGE_URLS = {
     "MLB": "https://data.vsin.com/betting-splits/?bookid=dk&view=mlb",
     "WNBA": "https://data.vsin.com/betting-splits/?source=DK&sport=WNBA",
     "UFC": "https://data.vsin.com/betting-splits/?source=DK&sport=UFC",
+    "NCAAF": "https://data.vsin.com/betting-splits/?source=DK&sport=CFB",
 }
 PAGE_URL = PAGE_URLS["MLB"]
 TEAM_HREF = {
     "MLB": r"/mlb/teams/",
     "WNBA": r"/wnba/teams/",
     "UFC": r"/ufc/teams/",
+    "NCAAF": r"/college-football/teams/",
 }
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -165,6 +170,7 @@ def parse_games(
     matchups: list[dict[str, Any]],
     team_href: str = TEAM_HREF["MLB"],
     day: date | None = None,
+    allowed_days: set[date] | None = None,
     normalize_name_fn=normalize_team_name,
     fighter_mode: bool = False,
 ) -> list[dict[str, Any]]:
@@ -203,7 +209,11 @@ def parse_games(
         if not away_name or not home_name or len(tds1) < 11 or len(tds2) < 11:
             i += 1
             continue
-        if day is not None and section_day is not None and section_day != day:
+        if allowed_days is not None:
+            if section_day is not None and section_day not in allowed_days:
+                i += 2
+                continue
+        elif day is not None and section_day is not None and section_day != day:
             i += 2
             continue
         if fighter_mode:
@@ -297,6 +307,12 @@ def _ufc_normalize(name: str) -> str:
     return canonical_name(name) or name.strip()
 
 
+def _cfb_normalize(name: str) -> str:
+    from cfb_team_map import canonical_name
+
+    return canonical_name(name) or name.strip()
+
+
 def scrape(
     matchups_path: Path | None = None,
     abbrevs_path: Path = DEFAULT_ABBREVS,
@@ -304,12 +320,15 @@ def scrape(
     league: str = "MLB",
     day: date | None = None,
 ) -> dict[str, Any]:
-    league = (league or "MLB").upper()
+    league = (league or "MLB").strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
     day = day or datetime.now(PAGE_TZ).date()
     page_url = url or PAGE_URLS.get(league, PAGE_URL)
     team_href = TEAM_HREF.get(league, TEAM_HREF["MLB"])
 
     fighter_mode = league == "UFC"
+    allowed_days: set[date] | None = None
     if league == "WNBA":
         from wnba_team_map import ABBR_TO_NAME, NAME_TO_ABBR
         from wnba_team_map import DEFAULT_MATCHUPS as WNBA_MATCHUPS
@@ -325,6 +344,15 @@ def scrape(
         matchups = []
         normalize_name_fn = _ufc_normalize
         filter_day = day
+    elif league == "NCAAF":
+        from cfb_team_map import ABBR_TO_NAME, NAME_TO_ABBR
+
+        abbr_to_name = dict(ABBR_TO_NAME)
+        name_to_abbr = dict(NAME_TO_ABBR)
+        matchups = load_matchups(matchups_path) if matchups_path else []
+        normalize_name_fn = _cfb_normalize
+        filter_day = None
+        allowed_days = {day + timedelta(days=offset) for offset in range(0, 7)}
     else:
         abbr_to_name, name_to_abbr = load_abbr_maps(abbrevs_path)
         matchups = load_matchups(matchups_path or DEFAULT_MATCHUPS)
@@ -339,6 +367,7 @@ def scrape(
         matchups,
         team_href=team_href,
         day=filter_day,
+        allowed_days=allowed_days,
         normalize_name_fn=normalize_name_fn,
         fighter_mode=fighter_mode,
     )
@@ -379,11 +408,11 @@ def merge_vsin_into_game(game: dict[str, Any], vsin_game: dict[str, Any]) -> Non
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape VSiN betting splits")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC", "NCAAF", "CFB"])
     parser.add_argument(
         "--date",
         default=None,
-        help="Slate date YYYY-MM-DD (WNBA filters to this day; default today Pacific)",
+        help="Slate date YYYY-MM-DD (NCAAF keeps this day through +6; default today Pacific)",
     )
     parser.add_argument("--matchups", type=Path, default=None)
     parser.add_argument("--abbrevs", type=Path, default=DEFAULT_ABBREVS)
@@ -392,20 +421,24 @@ def main() -> None:
     args = parser.parse_args()
 
     day = date.fromisoformat(args.date) if args.date else datetime.now(PAGE_TZ).date()
+    league = args.league.strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
     out = args.out or {
         "WNBA": DEFAULT_WNBA_OUT,
         "UFC": DEFAULT_UFC_OUT,
-    }.get(args.league, DEFAULT_OUT)
+        "NCAAF": DEFAULT_NCAAF_OUT,
+    }.get(league, DEFAULT_OUT)
     result = scrape(
         matchups_path=args.matchups,
         abbrevs_path=args.abbrevs,
         url=args.url,
-        league=args.league,
+        league=league,
         day=day,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {result['game_count']} {args.league} games → {out}")
+    print(f"Wrote {result['game_count']} {league} games → {out}")
 
 
 if __name__ == "__main__":

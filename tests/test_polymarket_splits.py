@@ -11,12 +11,20 @@ if str(_AGG) not in sys.path:
     sys.path.insert(0, str(_AGG))
 
 from scrape_polymarket_odds import (  # noqa: E402
+    _EVENT_SLUG_RE,
+    _SPREAD_SLUG_RE,
+    _TOTAL_SLUG_RE,
+    _cfb_side_match,
+    _classify_markets,
     build_poly_sides,
     history_from_clob_points,
     merge_polymarket_into_game,
+    normalize_league,
     parse_pt_number,
     pick_spread_market,
     pick_total_market,
+    poly_event_prefix,
+    poly_series_slugs,
     share_to_american,
 )
 
@@ -128,3 +136,68 @@ def test_build_poly_sides_omits_zero_liquidity() -> None:
     home = SimpleNamespace(full_name="Pittsburgh Pirates", poly_code="pit")
     sides = build_poly_sides(event, dest, away_ref=away, home_ref=home, ts="2026-08-19T10:00:00-04:00")
     assert sides["moneyline"] == {}
+
+
+def test_normalize_league_cfb_is_ncaaf() -> None:
+    assert normalize_league("CFB") == "NCAAF"
+    assert normalize_league("ncaaf") == "NCAAF"
+    assert poly_event_prefix("NCAAF") == "cfb"
+    assert poly_event_prefix("CFB") == "cfb"
+
+
+def test_poly_series_slugs_cfb_is_year_tagged() -> None:
+    from datetime import date
+
+    slugs = poly_series_slugs("NCAAF", date(2026, 8, 29))
+    assert slugs[0] == "cfb-2026"
+    assert "cfb" in slugs
+    assert poly_series_slugs("MLB") == ("mlb",)
+
+
+def test_cfb_slug_regexes() -> None:
+    m = _EVENT_SLUG_RE.match("cfb-hawaii-stan-2026-08-29")
+    assert m is not None
+    assert m.group("league") == "cfb"
+    assert m.group("away") == "hawaii"
+    assert m.group("home") == "stan"
+    spread = _SPREAD_SLUG_RE.match("cfb-hawaii-stan-2026-08-29-spread-home-5pt5")
+    assert spread is not None and parse_pt_number(spread.group("pts")) == 5.5
+    total = _TOTAL_SLUG_RE.match("cfb-hawaii-stan-2026-08-29-total-49pt5")
+    assert total is not None and parse_pt_number(total.group("pts")) == 49.5
+    assert _EVENT_SLUG_RE.match("cfb-hawaii-stan-2026-08-29-spread-home-5pt5") is None
+
+
+def test_classify_cfb_markets() -> None:
+    event = {
+        "slug": "cfb-hawaii-stan-2026-08-29",
+        "markets": [
+            {"slug": "cfb-hawaii-stan-2026-08-29", "closed": False, "liquidityNum": 10},
+            {
+                "slug": "cfb-hawaii-stan-2026-08-29-spread-home-5pt5",
+                "closed": False,
+                "liquidityNum": 8,
+            },
+            {
+                "slug": "cfb-hawaii-stan-2026-08-29-total-49pt5",
+                "closed": False,
+                "liquidityNum": 7,
+            },
+            {
+                "slug": "cfb-hawaii-stan-2026-08-29-1h-moneyline",
+                "closed": False,
+                "liquidityNum": 3,
+            },
+        ],
+    }
+    classified = _classify_markets(event)
+    assert classified["moneyline"]["slug"] == "cfb-hawaii-stan-2026-08-29"
+    assert classified["spreads"][0]["points"] == 5.5
+    assert classified["totals"][0]["points"] == 49.5
+
+
+def test_cfb_side_match_names_and_slug_codes() -> None:
+    labels = ["Hawaii", "Stanford"]
+    assert _cfb_side_match("Hawaii", labels, "hawaii")
+    assert _cfb_side_match("STAN", labels, "stan")
+    assert _cfb_side_match("Stanford", labels, "stan")
+    assert not _cfb_side_match("Alabama", ["Georgia", "Auburn"], "uga")

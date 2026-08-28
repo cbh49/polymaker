@@ -29,7 +29,7 @@ class CatalogConfig(BaseModel):
     """Market discovery defaults for `polymaker scan`."""
 
     include_politics: bool = True
-    series_slugs: list[str] = Field(default_factory=lambda: ["mlb", "wnba"])
+    series_slugs: list[str] = Field(default_factory=lambda: ["mlb", "wnba", "ufc", "cfb-2026"])
     look_ahead_days: int = 3
     skip_live_events: bool = True
     pregame_buffer_minutes: float = 5.0
@@ -56,6 +56,7 @@ class SharpConfig(BaseModel):
     mlb_path: str = "data-aggregation/output/mlb_sharp_money.json"
     wnba_path: str = "data-aggregation/output/wnba_sharp_money.json"
     ufc_path: str = "data-aggregation/output/ufc_sharp_money.json"
+    ncaaf_path: str = "data-aggregation/output/ncaaf_sharp_money.json"
     usd_tier_a: float = 25.0
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # "A" = Tier A only; "B" = A+B

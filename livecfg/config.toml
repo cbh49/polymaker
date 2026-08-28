@@ -9,8 +9,8 @@ polygon_rpc = "https://polygon-bor-rpc.publicnode.com"
 
 [catalog]
 include_politics = true
-series_slugs = ["mlb", "wnba", "ufc"]
-look_ahead_days = 3
+series_slugs = ["mlb", "wnba", "ufc", "cfb-2026"]
+look_ahead_days = 7
 skip_live_events = true
 pregame_buffer_minutes = 5
 min_liquidity = 1000.0
@@ -25,6 +25,7 @@ max_orders_per_batch = 15
 mlb_path = "data-aggregation/output/mlb_sharp_money.json"
 wnba_path = "data-aggregation/output/wnba_sharp_money.json"
 ufc_path = "data-aggregation/output/ufc_sharp_money.json"
+ncaaf_path = "data-aggregation/output/ncaaf_sharp_money.json"
 usd_tier_a = 25.0
 usd_tier_b = 10.0
 min_tier = "B"

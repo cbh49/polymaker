@@ -34,6 +34,8 @@ def load_sharp_file(path: str | Path) -> list[SharpPlay]:
     if not isinstance(data, dict):
         raise ValueError(f"expected object in {p}")
     league = str(data.get("league") or "").strip().upper() or _league_from_name(p.name)
+    if league == "CFB":
+        league = "NCAAF"
     plays_raw = data.get("plays") or []
     if not isinstance(plays_raw, list):
         raise ValueError(f"plays must be a list in {p}")
@@ -82,4 +84,6 @@ def _league_from_name(name: str) -> str:
         return "WNBA"
     if "ufc" in lower:
         return "UFC"
+    if "ncaaf" in lower or "cfb" in lower:
+        return "NCAAF"
     return "MLB"

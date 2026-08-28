@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production MLB/WNBA sharp-money loop.
+"""Production MLB/WNBA/NCAAF sharp-money loop.
 
 Scrapes splits, trades only when every required source is on today's Pacific
 slate, then refreshes the Polymarket watch list. Live CLOB buys require
@@ -8,7 +8,7 @@ POLYMAKER_LIVE=1.
 Usage (from trading-bot/):
   uv run python scripts/run_sharp_pipeline.py
   uv run python scripts/run_sharp_pipeline.py --dry-run
-  uv run python scripts/run_sharp_pipeline.py --league mlb --date 2026-08-22
+  uv run python scripts/run_sharp_pipeline.py --league ncaaf --date 2026-08-29
 """
 
 from __future__ import annotations
@@ -128,9 +128,14 @@ def _refresh_watch_list(config_dir: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="MLB/WNBA sharp-money scrape + trade")
+    parser = argparse.ArgumentParser(description="MLB/WNBA/NCAAF sharp-money scrape + trade")
     parser.add_argument("--date", default=None, help="Slate date YYYY-MM-DD (default: today Pacific)")
-    parser.add_argument("--league", default="both", choices=["mlb", "wnba", "both"])
+    parser.add_argument(
+        "--league",
+        default="all",
+        choices=["mlb", "wnba", "ncaaf", "cfb", "both", "all"],
+        help="both = mlb+wnba; all = mlb+wnba+ncaaf (cfb is an alias for ncaaf)",
+    )
     parser.add_argument("--config-dir", default="config")
     parser.add_argument(
         "--dry-run",
@@ -144,21 +149,23 @@ def main() -> int:
     mode = "LIVE" if live else "DRY-RUN"
     print(f"Sharp pipeline {mode} slate={day.isoformat()} league={args.league}")
 
+    league = "ncaaf" if args.league == "cfb" else args.league
     wanted = []
-    if args.league in {"mlb", "both"}:
+    if league in {"mlb", "both", "all"}:
         wanted.append("mlb")
-    if args.league in {"wnba", "both"}:
+    if league in {"wnba", "both", "all"}:
         wanted.append("wnba")
+    if league in {"ncaaf", "all"}:
+        wanted.append("ncaaf")
 
     date_args = ["--date", day.isoformat()]
-    scrape_ok = {
-        "mlb": True,
-        "wnba": True,
-    }
+    scrape_ok = {name: True for name in wanted}
     if "mlb" in wanted:
         scrape_ok["mlb"] = _run_scraper("scrape_mlb_betting_splits.py", date_args)
     if "wnba" in wanted:
         scrape_ok["wnba"] = _run_scraper("scrape_wnba_betting_splits.py", date_args)
+    if "ncaaf" in wanted:
+        scrape_ok["ncaaf"] = _run_scraper("scrape_ncaaf_betting_splits.py", date_args)
 
     cfg = Config.load(args.config_dir)
     trade_rows: list[dict[str, Any]] = []
@@ -176,6 +183,12 @@ def main() -> int:
             _AGG / "output" / "wnba_sharp_money.json",
             _AGG / "output" / "wnba_sharp_money.csv",
             "both",
+        ),
+        "ncaaf": (
+            _AGG / "output" / "ncaaf_betting_splits.json",
+            _AGG / "output" / "ncaaf_sharp_money.json",
+            _AGG / "output" / "ncaaf_sharp_money.csv",
+            "all",
         ),
     }
 

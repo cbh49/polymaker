@@ -79,9 +79,11 @@ def filter_plays(
     """Apply tier / market / RLM / optional league gates before matching."""
     allow_b = trade_cfg.min_tier.upper() != "A"
     league_l = league.strip().upper() if league else None
+    if league_l == "CFB":
+        league_l = "NCAAF"
     out: list[SharpPlay] = []
     for p in plays:
-        if league_l and league_l != "BOTH" and p.league.upper() != league_l:
+        if league_l and league_l not in {"BOTH", "ALL"} and p.league.upper() != league_l:
             continue
         if p.market not in trade_cfg.markets:
             continue
@@ -95,13 +97,17 @@ def filter_plays(
 def default_sharp_paths(cfg: Config, *, league: str | None = None) -> list[Path]:
     sharp = cfg.sharp
     league_l = (league or "both").strip().lower()
+    if league_l == "cfb":
+        league_l = "ncaaf"
     if league_l == "mlb":
         return [Path(sharp.mlb_path)]
     if league_l == "wnba":
         return [Path(sharp.wnba_path)]
     if league_l == "ufc":
         return [Path(sharp.ufc_path)]
-    return [Path(sharp.mlb_path), Path(sharp.wnba_path), Path(sharp.ufc_path)]
+    if league_l == "ncaaf":
+        return [Path(sharp.ncaaf_path)]
+    return [Path(sharp.mlb_path), Path(sharp.wnba_path), Path(sharp.ufc_path), Path(sharp.ncaaf_path)]
 
 
 def load_configured_plays(

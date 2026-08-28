@@ -11,6 +11,7 @@ If a market is missing or liquidity is 0/null, the polymarket object is omitted.
 Usage:
   python scrape_polymarket_odds.py
   python scrape_polymarket_odds.py --league WNBA --out output/polymarket_wnba_odds.json
+  python scrape_polymarket_odds.py --league NCAAF --out output/polymarket_ncaaf_odds.json
 """
 
 from __future__ import annotations
@@ -52,6 +53,16 @@ DEFAULT_OUT = {
     "MLB": SCRIPT_DIR / "output" / "polymarket_mlb_odds.json",
     "WNBA": SCRIPT_DIR / "output" / "polymarket_wnba_odds.json",
     "UFC": SCRIPT_DIR / "output" / "polymarket_ufc_odds.json",
+    "NCAAF": SCRIPT_DIR / "output" / "polymarket_ncaaf_odds.json",
+}
+
+# Polymarket ticker/series is CFB; NCAAF is the league name we expose.
+_POLY_EVENT_PREFIX = {
+    "MLB": "mlb",
+    "WNBA": "wnba",
+    "UFC": "ufc",
+    "NCAAF": "cfb",
+    "CFB": "cfb",
 }
 
 HEADERS = {
@@ -64,16 +75,43 @@ HEADERS = {
 }
 
 _EVENT_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
+    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
 )
 _SPREAD_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})"
+    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})"
     r"-spread-(?P<favored>home|away)-(?P<pts>\d+(?:pt\d+)?)$"
 )
 _TOTAL_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})"
+    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})"
     r"-(?:total|totals)-(?P<pts>\d+(?:pt\d+)?)$"
 )
+_CFB_GENERIC_NICKS = frozenset({"state", "univ", "university", "college", "tech", "a&m", "am"})
+
+
+def normalize_league(league: str) -> str:
+    key = (league or "MLB").strip().upper()
+    if key == "CFB":
+        return "NCAAF"
+    return key
+
+
+def poly_event_prefix(league: str) -> str:
+    key = normalize_league(league)
+    return _POLY_EVENT_PREFIX.get(key, key.lower())
+
+
+def poly_series_slugs(league: str, day: date | None = None) -> tuple[str, ...]:
+    """Gamma `series_slug` values. CFB is year-tagged (`cfb-2026`), not `cfb`."""
+    prefix = poly_event_prefix(league)
+    if prefix != "cfb":
+        return (prefix,)
+    year = (day or datetime.now(PAGE_TZ).date()).year
+    return (f"cfb-{year}", f"cfb-{year - 1}", f"cfb-{year + 1}", "cfb")
+
+
+def _event_date_max_delta(league: str) -> int:
+    # CFB slates cluster on weekends; ±1 day would drop Saturday from a Thursday run.
+    return 4 if normalize_league(league) == "NCAAF" else 1
 
 
 def _json_list(value: Any) -> list[Any]:
@@ -215,7 +253,7 @@ class _NameRef:
         self.poly_code = code or name
 
 
-def _ufc_moneyline_outcomes(event: dict[str, Any]) -> list[str]:
+def _moneyline_outcomes(event: dict[str, Any]) -> list[str]:
     event_slug = str(event.get("slug") or "")
     for raw in event.get("markets") or []:
         if not isinstance(raw, dict) or raw.get("closed"):
@@ -226,25 +264,74 @@ def _ufc_moneyline_outcomes(event: dict[str, Any]) -> list[str]:
     m = re.search(r":\s*(.+?)\s+vs\.?\s+(.+?)\s*\(", title, re.IGNORECASE)
     if m:
         return [m.group(1).strip(), m.group(2).strip()]
+    vs = re.search(r"^(.+?)\s+vs\.?\s+(.+)$", title, re.IGNORECASE)
+    if vs:
+        return [vs.group(1).strip(), vs.group(2).strip()]
     return []
 
 
-def _match_ufc_event(
+def _ufc_moneyline_outcomes(event: dict[str, Any]) -> list[str]:
+    return _moneyline_outcomes(event)
+
+
+def _norm_cfb_label(text: str) -> str:
+    return " ".join((text or "").strip().lower().replace(".", " ").split())
+
+
+def _cfb_side_match(query: str, labels: list[str], slug_code: str = "") -> bool:
+    q = _norm_cfb_label(query)
+    if not q:
+        return False
+    code = _norm_cfb_label(slug_code).replace(" ", "")
+    compact = q.replace(" ", "")
+    if code and compact == code:
+        return True
+    for label in labels:
+        lab = _norm_cfb_label(label)
+        if not lab:
+            continue
+        if q == lab or compact == lab.replace(" ", ""):
+            return True
+        if q in lab or lab in q:
+            return True
+        q_last, lab_last = q.split()[-1], lab.split()[-1]
+        if (
+            q_last == lab_last
+            and q_last not in _CFB_GENERIC_NICKS
+            and len(q_last) > 3
+        ):
+            return True
+        if code and (lab.replace(" ", "").startswith(code) or code.startswith(lab.replace(" ", ""))):
+            if len(code) >= 3 and len(lab.replace(" ", "")) >= 3:
+                return True
+    return False
+
+
+def _match_named_event(
     events: list[dict[str, Any]],
     away: str,
     home: str,
     dates: list[date],
+    *,
+    fighter_mode: bool = False,
 ) -> dict[str, Any] | None:
-    from ufc_fighter_map import names_match
+    from ufc_fighter_map import names_match as ufc_names_match
 
     date_set = {d.isoformat() for d in dates}
     fallback: dict[str, Any] | None = None
     for event in events:
-        names = _ufc_moneyline_outcomes(event)
+        names = _moneyline_outcomes(event)
         if len(names) < 2:
             continue
-        a_hit = any(names_match(away, n) for n in names)
-        h_hit = any(names_match(home, n) for n in names)
+        slug_m = _EVENT_SLUG_RE.match(str(event.get("slug") or ""))
+        away_code = slug_m.group("away") if slug_m else ""
+        home_code = slug_m.group("home") if slug_m else ""
+        if fighter_mode:
+            a_hit = any(ufc_names_match(away, n) for n in names)
+            h_hit = any(ufc_names_match(home, n) for n in names)
+        else:
+            a_hit = _cfb_side_match(away, names, away_code)
+            h_hit = _cfb_side_match(home, names, home_code)
         if not (a_hit and h_hit):
             continue
         event_day = str(event.get("eventDate") or "")[:10]
@@ -253,6 +340,24 @@ def _match_ufc_event(
         if fallback is None:
             fallback = event
     return fallback
+
+
+def _match_ufc_event(
+    events: list[dict[str, Any]],
+    away: str,
+    home: str,
+    dates: list[date],
+) -> dict[str, Any] | None:
+    return _match_named_event(events, away, home, dates, fighter_mode=True)
+
+
+def _match_cfb_event(
+    events: list[dict[str, Any]],
+    away: str,
+    home: str,
+    dates: list[date],
+) -> dict[str, Any] | None:
+    return _match_named_event(events, away, home, dates, fighter_mode=False)
 
 
 def _total_index(outcomes: list[Any], side: str) -> int | None:
@@ -564,37 +669,52 @@ def iter_series_events(
     session: requests.Session,
     league: str,
     *,
+    day: date | None = None,
     limit: int = 50,
     max_pages: int = 20,
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    offset = 0
-    for _ in range(max_pages):
-        try:
-            resp = session.get(
-                f"{GAMMA_HOST}/events",
-                params={
-                    "series_slug": league.lower(),
-                    "active": "true",
-                    "closed": "false",
-                    "limit": limit,
-                    "offset": offset,
-                },
-                headers=HEADERS,
-                timeout=30,
-            )
-            if resp.status_code in (400, 422):
+    seen: set[str] = set()
+    for series_slug in poly_series_slugs(league, day):
+        offset = 0
+        got_any = False
+        for _ in range(max_pages):
+            try:
+                resp = session.get(
+                    f"{GAMMA_HOST}/events",
+                    params={
+                        "series_slug": series_slug,
+                        "active": "true",
+                        "closed": "false",
+                        "limit": limit,
+                        "offset": offset,
+                    },
+                    headers=HEADERS,
+                    timeout=30,
+                )
+                if resp.status_code in (400, 422):
+                    break
+                resp.raise_for_status()
+                batch = resp.json()
+            except (requests.RequestException, ValueError):
                 break
-            resp.raise_for_status()
-            batch = resp.json()
-        except (requests.RequestException, ValueError):
+            if not isinstance(batch, list) or not batch:
+                break
+            got_any = True
+            for event in batch:
+                if not isinstance(event, dict):
+                    continue
+                key = str(event.get("id") or event.get("slug") or "")
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                events.append(event)
+            if len(batch) < limit:
+                break
+            offset += limit
+        if got_any:
             break
-        if not isinstance(batch, list) or not batch:
-            break
-        events.extend(e for e in batch if isinstance(e, dict))
-        if len(batch) < limit:
-            break
-        offset += limit
     return events
 
 
@@ -607,7 +727,7 @@ def _match_event_for_game(
     cache: dict[str, dict[str, Any] | None],
     series_index: dict[tuple[str, str, str], dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
-    prefix = league.lower()
+    prefix = poly_event_prefix(league)
     for d in dates:
         slug = f"{prefix}-{away_code}-{home_code}-{d.isoformat()}"
         if slug not in cache:
@@ -644,7 +764,8 @@ def scrape(
     games: list[dict[str, Any]] | None = None,
     day: date | None = None,
 ) -> dict[str, Any]:
-    league = (league or "MLB").upper()
+    league = normalize_league(league)
+    prefix = poly_event_prefix(league)
     ts = datetime.now(PAGE_TZ).isoformat(timespec="seconds")
     dest_games = list(games or [])
     built: list[dict[str, Any]] = []
@@ -656,26 +777,28 @@ def scrape(
         series_index: dict[tuple[str, str, str], dict[str, Any]] | None = None
 
         if not dest_games:
-            events = iter_series_events(session, league)
+            events = iter_series_events(session, league, day=day)
             series_index = _index_series_events(events)
             # Standalone: one row per event in the date window.
             window = day or datetime.now(PAGE_TZ).date()
+            max_delta = _event_date_max_delta(league)
             for event in events:
                 slug = str(event.get("slug") or "")
                 m = _EVENT_SLUG_RE.match(slug)
-                if not m or m.group("league") != league.lower():
+                if not m or m.group("league") != prefix:
                     continue
                 event_day = str(event.get("eventDate") or m.group("ymd"))[:10]
                 if event_day and abs(
                     (date.fromisoformat(event_day) - window).days
-                ) > 1:
+                ) > max_delta:
                     continue
-                if league == "UFC":
-                    names = _ufc_moneyline_outcomes(event)
+                if league in {"UFC", "NCAAF"}:
+                    names = _moneyline_outcomes(event)
                     if len(names) < 2:
                         continue
+                    joiner = " vs " if league == "UFC" else " @ "
                     dest = {
-                        "matchup": f"{names[0]} vs {names[1]}",
+                        "matchup": f"{names[0]}{joiner}{names[1]}",
                         "away_abbr": names[0],
                         "home_abbr": names[1],
                         "away": names[0],
@@ -686,8 +809,8 @@ def scrape(
                         build_poly_sides(
                             event,
                             dest,
-                            away_ref=_NameRef(names[0]),
-                            home_ref=_NameRef(names[1]),
+                            away_ref=_NameRef(names[0], m.group("away")),
+                            home_ref=_NameRef(names[1], m.group("home")),
                             ts=ts,
                             session=session,
                             history_cache=history_cache,
@@ -727,11 +850,11 @@ def scrape(
                 dest["polymarket_event_slug"] = slug
                 built.append(dest)
         else:
-            ufc_events: list[dict[str, Any]] | None = None
-            if league == "UFC":
-                ufc_events = iter_series_events(session, league)
+            named_events: list[dict[str, Any]] | None = None
+            if league in {"UFC", "NCAAF"}:
+                named_events = iter_series_events(session, league, day=day)
             for game in dest_games:
-                if league == "UFC":
+                if league in {"UFC", "NCAAF"}:
                     away_name = str(game.get("away") or game.get("away_abbr") or "")
                     home_name = str(game.get("home") or game.get("home_abbr") or "")
                     if not away_name or not home_name:
@@ -739,7 +862,8 @@ def scrape(
                     away_ref = _NameRef(away_name)
                     home_ref = _NameRef(home_name)
                     dates = candidate_event_dates(game, day)
-                    event = _match_ufc_event(ufc_events or [], away_name, home_name, dates)
+                    matcher = _match_ufc_event if league == "UFC" else _match_cfb_event
+                    event = matcher(named_events or [], away_name, home_name, dates)
                     if event is None:
                         continue
                     row = {
@@ -782,7 +906,9 @@ def scrape(
                 )
                 if event is None:
                     if series_index is None:
-                        series_index = _index_series_events(iter_series_events(session, league))
+                        series_index = _index_series_events(
+                            iter_series_events(session, league, day=day)
+                        )
                     event = _match_event_for_game(
                         session,
                         league,
@@ -873,16 +999,17 @@ def merge_polymarket_into_game(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape Polymarket moneyline/spread/total prices")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC", "NCAAF", "CFB"])
     parser.add_argument("--date", default=None, help="Slate date YYYY-MM-DD")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     day = date.fromisoformat(args.date) if args.date else None
-    result = scrape(league=args.league, day=day)
-    out = args.out or DEFAULT_OUT[args.league]
+    league = normalize_league(args.league)
+    result = scrape(league=league, day=day)
+    out = args.out or DEFAULT_OUT[league]
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {result['game_count']} {args.league} Polymarket games → {out}")
+    print(f"Wrote {result['game_count']} {league} Polymarket games → {out}")
 
 
 if __name__ == "__main__":

@@ -149,3 +149,67 @@ def test_wnba_needs_thespread_open() -> None:
     }
     result = evaluate_payload(payload, slate_day=date(2026, 8, 22))
     assert result.aligned is True
+
+
+def _ncaaf_side(*, public: int, handle: int, vsin: int, sbd: int, extra: dict | None = None) -> dict:
+    row = {
+        "public_bet_pct": public,
+        "handle_bet_pct": handle,
+        "vsin_public_bet_pct": public,
+        "vsin_handle_bet_pct": vsin,
+        "sbd_public_bet_pct": public,
+        "sbd_handle_bet_pct": sbd,
+    }
+    if extra:
+        row.update(extra)
+    return row
+
+
+def test_ncaaf_weekend_window_aligns() -> None:
+    """Thursday slate includes Saturday CFB games (window = 6 days)."""
+    game = {
+        "matchup": "HAW @ STAN",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _ncaaf_side(public=40, handle=55, vsin=60, sbd=50),
+            "home": _ncaaf_side(public=60, handle=45, vsin=40, sbd=50),
+        },
+    }
+    payload = {
+        "league": "NCAAF",
+        "date": "2026-08-27",
+        "games": [game],
+        "sources": {
+            "draftkings": {"native_dates": ["2026-08-29"], "game_count": 1},
+            "vsin": {"native_dates": ["2026-08-29"], "game_count": 1},
+            "sportsbettingdime": {"native_dates": ["2026-08-29"], "game_count": 1},
+        },
+    }
+    result = evaluate_payload(payload, slate_day=date(2026, 8, 27))
+    assert result.aligned is True
+    assert result.overlap_count == 1
+
+
+def test_ncaaf_spread_only_game_overlaps() -> None:
+    """SJSU @ USC often has no moneyline; spread fields still count."""
+    game = {
+        "matchup": "SJSU @ USC",
+        "date": "2026-08-29",
+        "spread": {
+            "away": _ncaaf_side(public=20, handle=33, vsin=30, sbd=25, extra={"open": 38.5}),
+            "home": _ncaaf_side(public=80, handle=67, vsin=70, sbd=75, extra={"open": -38.5}),
+        },
+    }
+    payload = {
+        "league": "CFB",
+        "date": "2026-08-27",
+        "games": [game],
+        "sources": {
+            "draftkings": {"native_dates": ["2026-08-29"], "game_count": 1},
+            "vsin": {"native_dates": ["2026-08-29"], "game_count": 1},
+            "sportsbettingdime": {"native_dates": ["2026-08-29"], "game_count": 1},
+        },
+    }
+    result = evaluate_payload(payload, slate_day=date(2026, 8, 27))
+    assert result.aligned is True
+    assert result.league == "NCAAF"

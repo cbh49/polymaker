@@ -3,7 +3,7 @@
 One Ubuntu 24.04 `t3.medium` in **eu-west-1** runs two processes:
 
 - **Monitor** (`polymaker-monitor.service`) — always-on `poly-sharp-finder` (whale + smart-wallet convergence).
-- **Sharp pipeline** (`polymaker-sharp.timer`) — every 30 minutes, scrape MLB + WNBA splits and trade only when every required source is on **today's Pacific slate**.
+- **Sharp pipeline** (`polymaker-sharp.timer`) — every 30 minutes, scrape MLB + WNBA + NCAAF splits and trade only when every required source is on **today's Pacific slate** (NCAAF uses a 6-day weekend window).
 
 ## 1. Put secrets in SSM
 
@@ -126,5 +126,6 @@ The pipeline scrapes every 30 minutes even when sources disagree. It **does not 
 
 - MLB: PlayerProps, VSiN, SportsBettingDime
 - WNBA: DraftKings, VSiN, TheSpread
+- NCAAF: DraftKings, VSiN, SportsBettingDime (Pinnacle is not published for CFB; TheSpread/EVA supply RLM)
 
 EVA / Covers are enrichment only and never block trading.

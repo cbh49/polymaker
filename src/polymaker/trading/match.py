@@ -24,7 +24,7 @@ _ET = ZoneInfo("America/New_York")
 _PT = ZoneInfo("America/Los_Angeles")
 
 _SLUG_TEAMS_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
+    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
 )
 
 
@@ -139,6 +139,9 @@ async def _match_one(
         except ValueError:
             pass
     league = play.league.lower()
+    if league == "cfb":
+        league = "ncaaf"
+    slug_league = "cfb" if league == "ncaaf" else league
 
     meta: MarketMeta | None = None
     slug: str | None = None
@@ -153,6 +156,31 @@ async def _match_one(
             gamma=gamma,
             reward_rates=reward_rates,
         )
+    elif league == "ncaaf":
+        for d in event_dates:
+            candidate = f"cfb-{away.poly_code}-{home.poly_code}-{d.isoformat()}"
+            meta = await _resolve_meta(candidate, store=store, gamma=gamma, reward_rates=reward_rates)
+            if meta is not None:
+                slug = meta.slug
+                break
+        if meta is None and store is not None:
+            meta, slug = _match_from_catalog(
+                store, slug_league, away.poly_code, home.poly_code, event_dates
+            )
+        if meta is None:
+            events = await _series_events_for_slugs(
+                gamma, _cfb_series_slugs(event_dates), series_cache
+            )
+            meta, slug = await _match_ncaaf_from_events(
+                events,
+                away_name=away.full_name,
+                home_name=home.full_name,
+                away_code=away.poly_code,
+                home_code=home.poly_code,
+                event_dates=event_dates,
+                gamma=gamma,
+                reward_rates=reward_rates,
+            )
     else:
         # 1) Try constructed slugs for each plausible calendar date.
         for d in event_dates:
@@ -192,7 +220,7 @@ async def _match_one(
             token=None,
             status="no_market",
             detail=f"no open moneyline for {away.full_name} vs {home.full_name} on {tried}"
-            if league == "ufc"
+            if league in {"ufc", "ncaaf"}
             else f"no open moneyline for {away.poly_code}@{home.poly_code} on {tried}",
         )
 
@@ -457,6 +485,103 @@ async def _match_ufc_from_events(
         if not any(_fighter_names_match(away_name, n) for n in names):
             continue
         if not any(_fighter_names_match(home_name, n) for n in names):
+            continue
+        if _known_not_pre_game(event):
+            continue
+        raw = pick_moneyline_market(event)
+        if raw is None:
+            continue
+        raw = _attach_parent_event(raw, event)
+        event_date = str(event.get("eventDate") or "")[:10]
+        if date_set and event_date in date_set:
+            meta = parse_market(raw, reward_rates)
+            if meta is not None:
+                return meta, meta.slug
+        if fallback_raw is None:
+            fallback_raw = raw
+    if fallback_raw is not None:
+        meta = parse_market(fallback_raw, reward_rates)
+        if meta is not None:
+            return meta, meta.slug
+    return None, None
+
+
+async def _series_events_for_slugs(
+    gamma: GammaClient,
+    slugs: tuple[str, ...],
+    cache: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for slug in slugs:
+        if slug not in cache:
+            page: list[dict[str, Any]] = []
+            async for event in gamma.iter_events(series_slug=slug, limit=50, max_pages=10):
+                page.append(event)
+            cache[slug] = page
+        for event in cache[slug]:
+            key = str(event.get("slug") or event.get("id") or id(event))
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append(event)
+    return events
+
+
+def _cfb_series_slugs(event_dates: list[date]) -> tuple[str, ...]:
+    years = {d.year for d in event_dates} or {datetime.now(UTC).year}
+    slugs: list[str] = []
+    for year in sorted(years):
+        slugs.extend([f"cfb-{year}", f"cfb-{year - 1}", f"cfb-{year + 1}"])
+    slugs.append("cfb")
+    return tuple(dict.fromkeys(slugs))
+
+
+def _cfb_names_match(a: str, b: str) -> bool:
+    try:
+        from cfb_team_map import names_match
+    except ImportError:
+        import sys
+        from pathlib import Path
+
+        agg = Path(__file__).resolve().parents[3] / "data-aggregation"
+        if str(agg) not in sys.path:
+            sys.path.insert(0, str(agg))
+        from cfb_team_map import names_match
+    return bool(names_match(a, b))
+
+
+async def _match_ncaaf_from_events(
+    events: list[dict[str, Any]],
+    *,
+    away_name: str,
+    home_name: str,
+    away_code: str,
+    home_code: str,
+    event_dates: list[date],
+    gamma: GammaClient,
+    reward_rates: dict[str, float] | None,
+) -> tuple[MarketMeta | None, str | None]:
+    """Match a CFB game by slug codes or school names in Gamma outcomes / title."""
+    _ = gamma
+    date_set = {d.isoformat() for d in event_dates}
+    fallback_raw: dict[str, Any] | None = None
+    for event in events:
+        slug = str(event.get("slug") or "")
+        m = _SLUG_TEAMS_RE.match(slug)
+        codes_ok = (
+            m is not None
+            and m.group("league") == "cfb"
+            and m.group("away") == away_code
+            and m.group("home") == home_code
+        )
+        names = _ufc_event_fighter_names(event)
+        names_ok = (
+            len(names) >= 2
+            and any(_cfb_names_match(away_name, n) for n in names)
+            and any(_cfb_names_match(home_name, n) for n in names)
+        )
+        if not codes_ok and not names_ok:
             continue
         if _known_not_pre_game(event):
             continue

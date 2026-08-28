@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-Scrape DraftKings Network betting splits for WNBA or UFC.
+Scrape DraftKings Network betting splits for WNBA, UFC, or NCAAF.
 
-PlayerProps.ai does not publish WNBA/UFC splits; this is the stand-in
+PlayerProps.ai does not publish WNBA/UFC/NCAAF splits; this is the stand-in
 for scrape_playerprops_splits.py.
 
 Sources:
-  WNBA: ...?tb_eg=WNBA&tb_edate=today&tb_emt=0&itm_content=WNBA
-  UFC:  ...?tb_eg=UFC&tb_edate=n30days&tb_emt=0&itm_content=UFC
+  WNBA:  ...?tb_eg=WNBA&tb_edate=today&tb_emt=0&itm_content=WNBA
+  UFC:   ...?tb_eg=UFC&tb_edate=n30days&tb_emt=0&itm_content=UFC
+  NCAAF: ...?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football
 
 The page is server-rendered (and 403s to plain requests), so HTML is
 loaded with Playwright. Per-game cards expose Moneyline / Spread / Total
-with % Handle and % Bets. UFC paginates via tb_page and uses "A vs B"
-titles; we scrape every page then keep the requested slate date.
+with % Handle and % Bets. UFC and NCAAF paginate via tb_page. UFC uses
+"A vs B" titles and is filtered to the requested slate date; NCAAF keeps
+the next-7-days board (weekend slates).
 
 Fields (unprefixed, same role as PlayerProps on MLB):
   public_bet_pct  <- % Bets
@@ -23,6 +25,7 @@ Fields (unprefixed, same role as PlayerProps on MLB):
 Usage:
   python scrape_dk_splits.py
   python scrape_dk_splits.py --league UFC --out output/dk_ufc_betting_splits.json
+  python scrape_dk_splits.py --league NCAAF --out output/dk_ncaaf_betting_splits.json
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from wnba_team_map import match_matchup as wnba_match_matchup
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "dk_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "dk_ufc_betting_splits.json"
+DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "dk_ncaaf_betting_splits.json"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 
 PAGE_URLS = {
@@ -56,6 +60,10 @@ PAGE_URLS = {
     "UFC": (
         "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
         "?tb_eg=UFC&tb_edate=n30days&tb_emt=0&itm_content=UFC"
+    ),
+    "NCAAF": (
+        "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
+        "?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football"
     ),
 }
 PAGE_URL = PAGE_URLS["WNBA"]
@@ -223,6 +231,7 @@ def parse_game(
     canonical_name_fn=wnba_canonical_name,
     canonical_abbr_fn=wnba_canonical_abbr,
     names_match_fn=None,
+    match_matchup_fn=wnba_match_matchup,
     day: date | None = None,
 ) -> dict[str, Any] | None:
     vs_matchup = league == "UFC"
@@ -330,7 +339,7 @@ def parse_game(
         else None,
     }
 
-    matched = None if vs_matchup else wnba_match_matchup(away_name, home_name, matchups)
+    matched = None if vs_matchup else match_matchup_fn(away_name, home_name, matchups)
     matchup = f"{away_name} vs {home_name}" if vs_matchup else f"{away_abbr} @ {home_abbr}"
     game: dict[str, Any] = {
         "matchup": matchup,
@@ -366,6 +375,7 @@ def parse_games(
     canonical_name_fn=wnba_canonical_name,
     canonical_abbr_fn=wnba_canonical_abbr,
     names_match_fn=None,
+    match_matchup_fn=wnba_match_matchup,
     day: date | None = None,
 ) -> list[dict[str, Any]]:
     from bs4 import BeautifulSoup
@@ -380,6 +390,7 @@ def parse_games(
             canonical_name_fn=canonical_name_fn,
             canonical_abbr_fn=canonical_abbr_fn,
             names_match_fn=names_match_fn,
+            match_matchup_fn=match_matchup_fn,
             day=day,
         )
         if parsed:
@@ -417,9 +428,12 @@ def scrape(
     retries: int = 3,
     league: str = "WNBA",
 ) -> dict[str, Any]:
-    league = (league or "WNBA").upper()
+    league = (league or "WNBA").strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
     day = day or datetime.now(PAGE_TZ).date()
     page_url = url or PAGE_URLS.get(league, PAGE_URL)
+    match_matchup_fn = wnba_match_matchup
     if league == "UFC":
         from ufc_fighter_map import canonical_name as ufc_canonical_name
         from ufc_fighter_map import names_match as ufc_names_match
@@ -428,6 +442,18 @@ def scrape(
         canonical_name_fn = ufc_canonical_name
         canonical_abbr_fn = _identity_abbr
         names_match_fn = ufc_names_match
+        max_pages = 8
+    elif league == "NCAAF":
+        from cfb_team_map import canonical_abbr as cfb_canonical_abbr
+        from cfb_team_map import canonical_name as cfb_canonical_name
+        from cfb_team_map import match_matchup as cfb_match_matchup
+        from cfb_team_map import names_match as cfb_names_match
+
+        matchups = []
+        canonical_name_fn = cfb_canonical_name
+        canonical_abbr_fn = cfb_canonical_abbr
+        names_match_fn = cfb_names_match
+        match_matchup_fn = cfb_match_matchup
         max_pages = 8
     else:
         matchups = load_matchups(matchups_path)
@@ -441,6 +467,7 @@ def scrape(
         "canonical_name_fn": canonical_name_fn,
         "canonical_abbr_fn": canonical_abbr_fn,
         "names_match_fn": names_match_fn,
+        "match_matchup_fn": match_matchup_fn,
         "day": day,
     }
 
@@ -497,7 +524,7 @@ def scrape(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape DraftKings betting splits")
-    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC"])
+    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB"])
     parser.add_argument("--matchups", type=Path, default=DEFAULT_MATCHUPS)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--url", default=None)
@@ -510,7 +537,13 @@ def main() -> None:
         headed=args.headed,
         league=args.league,
     )
-    out = args.out or (DEFAULT_UFC_OUT if args.league == "UFC" else DEFAULT_OUT)
+    league = (args.league or "WNBA").strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
+    out = args.out or {
+        "UFC": DEFAULT_UFC_OUT,
+        "NCAAF": DEFAULT_NCAAF_OUT,
+    }.get(league, DEFAULT_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {result['game_count']} {args.league} games → {out}")

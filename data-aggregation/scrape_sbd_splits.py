@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-Scrape MLB public betting % + handle % from SportsBettingDime.
+Scrape MLB or NCAAF public betting % + handle % from SportsBettingDime.
 
-Source page:
-  https://www.sportsbettingdime.com/mlb/public-betting-trends/
+Source pages:
+  MLB:   https://www.sportsbettingdime.com/mlb/public-betting-trends/
+  NCAAF: https://www.sportsbettingdime.com/college-football/public-betting-trends/
 
 Data comes from:
-  /wp-json/adpt/v1/mlb-odds?...  (each game includes bettingSplits)
+  /wp-json/adpt/v1/mlb-odds
+  /wp-json/adpt/v1/ncaafb-odds
+  (each game includes bettingSplits)
+
+The college-football HTML page may say splits are unavailable while the
+ncaafb-odds API still returns them.
 
 Fields are prefixed with sbd_ when merged into the combined splits file:
   sbd_public_bet_pct  <- betsPercentage
@@ -15,14 +21,14 @@ Fields are prefixed with sbd_ when merged into the combined splits file:
 
 Usage:
   python scrape_sbd_splits.py
-  python scrape_sbd_splits.py --out output/sbd_betting_splits.json
+  python scrape_sbd_splits.py --league NCAAF --out output/sbd_ncaaf_betting_splits.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -32,10 +38,21 @@ import requests
 from mlb_team_map import DEFAULT_ABBREVS, DEFAULT_MATCHUPS, load_abbr_to_name, load_matchups
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUT = SCRIPT_DIR / "output" / "sbd_betting_splits.json"
+DEFAULT_OUT = {
+    "MLB": SCRIPT_DIR / "output" / "sbd_betting_splits.json",
+    "NCAAF": SCRIPT_DIR / "output" / "sbd_ncaaf_betting_splits.json",
+}
 
-PAGE_URL = "https://www.sportsbettingdime.com/mlb/public-betting-trends/"
-API_URL = "https://www.sportsbettingdime.com/wp-json/adpt/v1/mlb-odds"
+PAGE_URLS = {
+    "MLB": "https://www.sportsbettingdime.com/mlb/public-betting-trends/",
+    "NCAAF": "https://www.sportsbettingdime.com/college-football/public-betting-trends/",
+}
+API_URLS = {
+    "MLB": "https://www.sportsbettingdime.com/wp-json/adpt/v1/mlb-odds",
+    "NCAAF": "https://www.sportsbettingdime.com/wp-json/adpt/v1/ncaafb-odds",
+}
+PAGE_URL = PAGE_URLS["MLB"]
+API_URL = API_URLS["MLB"]
 # Same book IDs the public-betting page requests.
 DEFAULT_BOOKS = (
     "sr:book:17324,"  # BetMGM
@@ -53,7 +70,7 @@ HEADERS = {
         "Chrome/128.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json",
-    "Referer": PAGE_URL,
+    "Referer": PAGE_URLS["MLB"],
 }
 
 ABBR_ALIASES: dict[str, str] = {
@@ -177,24 +194,34 @@ def has_usable_splits(splits: dict[str, Any] | None) -> bool:
         block = splits.get(market)
         if not isinstance(block, dict):
             continue
-        if block.get("updated"):
+        if block.get("updated") and any(
+            _round_pct((block.get(side) or {}).get("betsPercentage")) is not None
+            or _round_pct((block.get(side) or {}).get("stakePercentage")) is not None
+            for side in ("away", "home", "over", "under")
+            if isinstance(block.get(side), dict)
+        ):
             return True
         for side in ("away", "home", "over", "under"):
             side_data = block.get(side)
-            if isinstance(side_data, dict) and side_data.get("betsPercentage") is not None:
+            if not isinstance(side_data, dict):
+                continue
+            if _round_pct(side_data.get("betsPercentage")) is not None:
+                return True
+            if _round_pct(side_data.get("stakePercentage")) is not None:
                 return True
     return False
 
 
-def fetch_odds(books: str = DEFAULT_BOOKS) -> dict[str, Any]:
+def fetch_odds(books: str = DEFAULT_BOOKS, api_url: str = API_URL, referer: str = PAGE_URL) -> dict[str, Any]:
     params = {"books": books, "format": "us"}
+    headers = {**HEADERS, "Referer": referer}
     with requests.Session() as session:
         session.trust_env = False
-        resp = session.get(API_URL, params=params, headers=HEADERS, timeout=30)
+        resp = session.get(api_url, params=params, headers=headers, timeout=30)
     resp.raise_for_status()
     data = resp.json()
     if not isinstance(data, dict):
-        raise ValueError("Unexpected mlb-odds payload")
+        raise ValueError("Unexpected odds payload")
     return data
 
 
@@ -208,8 +235,12 @@ def parse_event(
         return None
     away_comp = comps.get("away") if isinstance(comps.get("away"), dict) else {}
     home_comp = comps.get("home") if isinstance(comps.get("home"), dict) else {}
-    away_abbr = (away_comp.get("abbr") or away_comp.get("abbreviation") or "").upper()
-    home_abbr = (home_comp.get("abbr") or home_comp.get("abbreviation") or "").upper()
+    away_abbr = (
+        away_comp.get("abbr") or away_comp.get("abbreviation") or away_comp.get("alias") or ""
+    ).upper()
+    home_abbr = (
+        home_comp.get("abbr") or home_comp.get("abbreviation") or home_comp.get("alias") or ""
+    ).upper()
     if not away_abbr or not home_abbr:
         return None
 
@@ -270,8 +301,16 @@ def parse_event(
     if total.get("under"):
         total["under"]["selection"] = "Under"
 
-    away_name = team_name_from_abbr(away_abbr, abbr_map)
-    home_name = team_name_from_abbr(home_abbr, abbr_map)
+    away_name = (
+        team_name_from_abbr(away_abbr, abbr_map)
+        or away_comp.get("market")
+        or away_comp.get("name")
+    )
+    home_name = (
+        team_name_from_abbr(home_abbr, abbr_map)
+        or home_comp.get("market")
+        or home_comp.get("name")
+    )
     matched = match_matchup(away_name, home_name, matchups)
 
     game: dict[str, Any] = {
@@ -292,6 +331,12 @@ def parse_event(
             "total": tot_splits.get("updated"),
         },
     }
+    if event.get("scheduled"):
+        try:
+            dt = datetime.fromisoformat(str(event["scheduled"]).replace("Z", "+00:00"))
+            game["date"] = dt.astimezone(PAGE_TZ).date().isoformat()
+        except ValueError:
+            pass
     if matched:
         game["espn_game_id"] = matched.get("espn_game_id")
         game["game_time_local"] = matched.get("game_time")
@@ -305,21 +350,60 @@ def scrape(
     matchups_path: Path = DEFAULT_MATCHUPS,
     abbrevs_path: Path = DEFAULT_ABBREVS,
     books: str = DEFAULT_BOOKS,
+    league: str = "MLB",
+    day_window: int | None = None,
 ) -> dict[str, Any]:
+    league = (league or "MLB").strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
+    if league not in API_URLS:
+        raise ValueError(f"Unsupported SBD league: {league}")
     day = day or datetime.now(PAGE_TZ).date()
-    abbr_map = load_abbr_to_team(abbrevs_path)
-    matchups = load_matchups(matchups_path)
-    payload = fetch_odds(books=books)
+    window = 6 if day_window is None and league == "NCAAF" else (day_window or 0)
+    allowed = {day + timedelta(days=offset) for offset in range(0, window + 1)}
+    page_url = PAGE_URLS[league]
+    api_url = API_URLS[league]
+    if league == "NCAAF":
+        from cfb_team_map import ABBR_ALIASES, ABBR_TO_NAME, canonical_abbr, canonical_name
+
+        abbr_map = dict(ABBR_TO_NAME)
+        for alias, canon in ABBR_ALIASES.items():
+            abbr_map[alias] = ABBR_TO_NAME[canon]
+        matchups: list[dict[str, Any]] = []
+    else:
+        abbr_map = load_abbr_to_team(abbrevs_path)
+        matchups = load_matchups(matchups_path)
+    payload = fetch_odds(books=books, api_url=api_url, referer=page_url)
 
     by_matchup: dict[str, dict[str, Any]] = {}
     for event in payload.get("data") or []:
         if not isinstance(event, dict):
             continue
-        if not event_on_day(event.get("scheduled"), day):
+        scheduled = event.get("scheduled")
+        if window:
+            if not scheduled:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(scheduled).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if dt.astimezone(PAGE_TZ).date() not in allowed:
+                continue
+        elif not event_on_day(scheduled, day):
             continue
         parsed = parse_event(event, abbr_map, matchups)
         if not parsed:
             continue
+        if league == "NCAAF":
+            away_name = canonical_name(str(parsed.get("away") or parsed.get("away_abbr") or ""))
+            home_name = canonical_name(str(parsed.get("home") or parsed.get("home_abbr") or ""))
+            away_abbr = canonical_abbr(str(parsed.get("away_abbr") or away_name or "")) or parsed.get("away_abbr")
+            home_abbr = canonical_abbr(str(parsed.get("home_abbr") or home_name or "")) or parsed.get("home_abbr")
+            parsed["away"] = away_name or parsed.get("away")
+            parsed["home"] = home_name or parsed.get("home")
+            parsed["away_abbr"] = away_abbr
+            parsed["home_abbr"] = home_abbr
+            parsed["matchup"] = f"{away_abbr} @ {home_abbr}"
         key = parsed["matchup"]
         # Prefer the copy that has fresher split timestamps if duplicates exist.
         prev = by_matchup.get(key)
@@ -334,10 +418,10 @@ def scrape(
     games = sorted(by_matchup.values(), key=lambda g: g.get("game_time_utc") or "")
     return {
         "source": "sportsbettingdime.com",
-        "source_page": PAGE_URL,
-        "api": API_URL,
+        "source_page": page_url,
+        "api": api_url,
         "date": day.isoformat(),
-        "league": "MLB",
+        "league": league,
         "scraped_at": datetime.now(timezone.utc).isoformat(),
         "game_count": len(games),
         "games": games,
@@ -373,6 +457,7 @@ def merge_sbd_into_game(game: dict[str, Any], sbd_game: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape SportsBettingDime public betting splits")
+    parser.add_argument("--league", default="MLB", choices=["MLB", "NCAAF", "CFB"])
     parser.add_argument(
         "--date",
         default=None,
@@ -380,14 +465,21 @@ def main() -> None:
     )
     parser.add_argument("--matchups", type=Path, default=DEFAULT_MATCHUPS)
     parser.add_argument("--abbrevs", type=Path, default=DEFAULT_ABBREVS)
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
     day = date.fromisoformat(args.date) if args.date else datetime.now(PAGE_TZ).date()
-    result = scrape(day=day, matchups_path=args.matchups, abbrevs_path=args.abbrevs)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {result['game_count']} MLB games → {args.out}")
+    result = scrape(
+        day=day,
+        matchups_path=args.matchups,
+        abbrevs_path=args.abbrevs,
+        league=args.league,
+    )
+    league = result.get("league") or "MLB"
+    out = args.out or DEFAULT_OUT.get(league, DEFAULT_OUT["MLB"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {result['game_count']} {league} games → {out}")
 
 
 if __name__ == "__main__":

@@ -3,11 +3,12 @@
 Scrape consensus odds + timestamped line-history charts from EV Analytics.
 
 Source pages:
-  MLB:  https://evanalytics.com/mlb/odds
-  WNBA: https://evanalytics.com/wnba/odds
+  MLB:   https://evanalytics.com/mlb/odds
+  WNBA:  https://evanalytics.com/wnba/odds
+  NCAAF: https://evanalytics.com/ncaaf/odds
 
 Line History charts are loaded from:
-  POST /modules/odds/data/chart.php?sport=mlb|wnba&gid=...&tid=...&cid=...&parent_cid=...
+  POST /modules/odds/data/chart.php?sport=mlb|wnba|ncaaf&gid=...&tid=...&cid=...&parent_cid=...
 
 Only the full-game board (category "Game Line") is kept so the series map
 onto moneyline / spread / total in the combined splits JSON.
@@ -45,15 +46,17 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = {
     "MLB": SCRIPT_DIR / "output" / "eva_betting_splits.json",
     "WNBA": SCRIPT_DIR / "output" / "eva_wnba_betting_splits.json",
+    "NCAAF": SCRIPT_DIR / "output" / "eva_ncaaf_betting_splits.json",
 }
 
 PAGE_URLS = {
     "MLB": "https://evanalytics.com/mlb/odds",
     "WNBA": "https://evanalytics.com/wnba/odds",
+    "NCAAF": "https://evanalytics.com/ncaaf/odds",
 }
 CHART_URL = "https://evanalytics.com/modules/odds/data/chart.php"
 CHART_TZ = ZoneInfo("America/New_York")
-SPORT_CODES = {"MLB": "mlb", "WNBA": "wnba"}
+SPORT_CODES = {"MLB": "mlb", "WNBA": "wnba", "NCAAF": "ncaaf"}
 
 HEADERS = {
     "User-Agent": (
@@ -322,12 +325,20 @@ def _canonical_abbr(abbr: str, league: str, abbr_map: dict[str, str]) -> str:
         from wnba_team_map import canonical_abbr
 
         return canonical_abbr(raw) or raw
+    if league == "NCAAF":
+        from cfb_team_map import canonical_abbr
+
+        return canonical_abbr(raw) or raw
     return raw
 
 
 def _canonical_name(name: str | None, abbr: str, league: str, abbr_map: dict[str, str]) -> str | None:
     if league == "WNBA":
         from wnba_team_map import canonical_name
+
+        return canonical_name(name or abbr) or name or team_name_from_abbr(abbr, abbr_map)
+    if league == "NCAAF":
+        from cfb_team_map import canonical_name
 
         return canonical_name(name or abbr) or name or team_name_from_abbr(abbr, abbr_map)
     return name or team_name_from_abbr(abbr, abbr_map)
@@ -403,7 +414,9 @@ def scrape(
     league: str = "MLB",
     abbrevs_path: Path = DEFAULT_ABBREVS,
 ) -> dict[str, Any]:
-    league = (league or "MLB").upper()
+    league = (league or "MLB").strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
     if league not in PAGE_URLS:
         raise ValueError(f"Unsupported EVA league: {league}")
     page_url = PAGE_URLS[league]
@@ -477,7 +490,7 @@ def merge_eva_into_game(game: dict[str, Any], eva_game: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape EV Analytics line movement")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "NCAAF", "CFB"])
     parser.add_argument(
         "--date",
         default=None,
@@ -489,7 +502,7 @@ def main() -> None:
 
     day = date.fromisoformat(args.date) if args.date else None
     result = scrape(day=day, league=args.league, abbrevs_path=args.abbrevs)
-    out = args.out or DEFAULT_OUT[args.league]
+    out = args.out or DEFAULT_OUT[result["league"]]
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {result['game_count']} {args.league} games → {out}")

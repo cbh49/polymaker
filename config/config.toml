@@ -20,8 +20,8 @@ polygon_rpc = "https://polygon-bor-rpc.publicnode.com"
 
 [catalog]
 include_politics = true
-series_slugs = ["mlb", "wnba", "ufc"]  # Gamma series_slug values for sports discovery
-look_ahead_days = 3             # keep games with eventDate today UTC through +N days
+series_slugs = ["mlb", "wnba", "ufc", "cfb-2026"]  # Gamma series_slug values for sports discovery
+look_ahead_days = 7             # keep games with eventDate today UTC through +N days (CFB weekends)
 skip_live_events = true         # exclude games that are not pre-game (startTime vs UTC)
 pregame_buffer_minutes = 5      # require startTime more than N minutes in the future
 min_liquidity = 1000.0
@@ -37,6 +37,7 @@ max_orders_per_batch = 15
 mlb_path = "data-aggregation/output/mlb_sharp_money.json"
 wnba_path = "data-aggregation/output/wnba_sharp_money.json"
 ufc_path = "data-aggregation/output/ufc_sharp_money.json"
+ncaaf_path = "data-aggregation/output/ncaaf_sharp_money.json"
 usd_tier_a = 25.0
 usd_tier_b = 10.0
 min_tier = "B"                  # "A" = Tier A only; "B" = A+B
