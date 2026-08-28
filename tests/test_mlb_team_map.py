@@ -17,6 +17,7 @@ from mlb_team_map import (  # noqa: E402
     load_abbr_to_name,
 )
 from scrape_playerprops_splits import load_abbr_to_team, parse_event  # noqa: E402
+import requests  # noqa: E402
 from scrape_thespread_splits import (  # noqa: E402
     _html_has_selector_token,
     parse_games,
@@ -91,6 +92,21 @@ def test_thespread_scrape_returns_empty_when_rows_missing() -> None:
     assert result["games"] == []
 
 
+def test_thespread_scrape_skips_browser_when_site_unreachable() -> None:
+    """Dead/hanging thespread.com should skip Playwright, not stall the slate."""
+    with (
+        patch(
+            "scrape_thespread_splits._fetch_static_html",
+            side_effect=requests.exceptions.ConnectTimeout("timed out"),
+        ),
+        patch("scrape_thespread_splits.fetch_rendered_html") as browser,
+    ):
+        result = scrape_thespread(day=date(2026, 8, 22))
+    browser.assert_not_called()
+    assert result["game_count"] == 0
+    assert result["games"] == []
+
+
 def test_thespread_scrape_swallows_playwright_timeout() -> None:
     with (
         patch("scrape_thespread_splits._fetch_static_html", return_value="<html></html>"),
@@ -102,6 +118,24 @@ def test_thespread_scrape_swallows_playwright_timeout() -> None:
         result = scrape_thespread(day=date(2026, 8, 22))
     assert result["game_count"] == 0
     assert result["games"] == []
+
+
+def test_thespread_deadline_kills_hung_http() -> None:
+    from scrape_thespread_splits import _call_with_deadline
+
+    def hang() -> str:
+        import time
+
+        time.sleep(5)
+        return "nope"
+
+    try:
+        _call_with_deadline(hang, 0.2)
+    except TimeoutError as exc:
+        assert "timed out" in str(exc)
+    else:
+        raise AssertionError("expected TimeoutError")
+    assert _call_with_deadline(lambda: "ok", 1.0) == "ok"
 
 
 def test_html_has_selector_token() -> None:

@@ -30,9 +30,10 @@ import argparse
 import json
 import re
 import sys
+import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 from zoneinfo import ZoneInfo
 
 import requests
@@ -57,6 +58,13 @@ PAGE_URLS = {
     "NCAAF": "https://www.thespread.com/ncaa-college-football-public-betting-chart/",
 }
 PAGE_URL = PAGE_URLS["WNBA"]
+# Keep these tight: a dead/Cloudflare-stuck thespread.com used to hang the
+# whole NCAAF/WNBA/UFC scrape (requests timeout misses DNS, then Playwright
+# waits another 60s). Prefer skipping TheSpread over blocking the pipeline.
+HTTP_TIMEOUT = (4.0, 8.0)  # connect, read
+HTTP_DEADLINE_S = 12.0
+PLAYWRIGHT_TIMEOUT_MS = 12_000
+_T = TypeVar("_T")
 
 MINUS_CHARS = str.maketrans({"−": "-", "–": "-", "—": "-"})
 LINE_ODDS_RE = re.compile(
@@ -426,22 +434,48 @@ def parse_mma_games(html: str, day: date) -> list[dict[str, Any]]:
     return games
 
 
+def _call_with_deadline(fn: Callable[[], _T], timeout_s: float) -> _T:
+    """Run `fn` on a daemon thread so a hung DNS/SSL connect cannot stall us."""
+    box: list[_T] = []
+    err: list[Exception] = []
+
+    def _run() -> None:
+        try:
+            box.append(fn())
+        except Exception as exc:  # noqa: BLE001
+            err.append(exc)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        raise TimeoutError(f"timed out after {timeout_s:.0f}s")
+    if err:
+        raise err[0]
+    if not box:
+        raise TimeoutError(f"timed out after {timeout_s:.0f}s")
+    return box[0]
+
+
 def _fetch_static_html(url: str) -> str:
-    with requests.Session() as session:
-        session.trust_env = False
-        resp = session.get(
-            url,
-            headers={
-                "User-Agent": DEFAULT_USER_AGENT,
-                "Accept": "text/html,application/xhtml+xml;q=0.9",
-            },
-            timeout=30,
-        )
-    resp.raise_for_status()
-    try:
-        return resp.content.decode("utf-8")
-    except UnicodeDecodeError:
-        return resp.content.decode("latin-1")
+    def _get() -> str:
+        with requests.Session() as session:
+            session.trust_env = False
+            resp = session.get(
+                url,
+                headers={
+                    "User-Agent": DEFAULT_USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml;q=0.9",
+                },
+                timeout=HTTP_TIMEOUT,
+            )
+        resp.raise_for_status()
+        try:
+            return resp.content.decode("utf-8")
+        except UnicodeDecodeError:
+            return resp.content.decode("latin-1")
+
+    return _call_with_deadline(_get, HTTP_DEADLINE_S)
 
 
 def _html_has_selector_token(html: str, wait_selector: str) -> bool:
@@ -461,19 +495,26 @@ def _fetch_thespread_html(
     html = ""
     try:
         html = _fetch_static_html(page_url)
-    except (requests.RequestException, UnicodeDecodeError) as exc:
-        print(f"Warning: TheSpread HTTP fetch failed: {exc}", file=sys.stderr)
+    except (requests.RequestException, OSError, TimeoutError, UnicodeDecodeError) as exc:
+        print(
+            f"Warning: TheSpread HTTP fetch failed ({exc}); skipping",
+            file=sys.stderr,
+        )
+        return ""
     if _html_has_selector_token(html, wait_selector):
         return html
+    # Page answered but had no rows (Cloudflare / empty). Browser might help.
     try:
         html = fetch_rendered_html(
             page_url,
             wait_selector=wait_selector,
             headed=headed,
             require_selector=False,
+            timeout_ms=PLAYWRIGHT_TIMEOUT_MS,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"Warning: TheSpread browser fetch failed: {exc}", file=sys.stderr)
+        return html or ""
     if not _html_has_selector_token(html, wait_selector):
         blocked = "just a moment" in html.lower() or "cf-browser-verification" in html
         why = "Cloudflare challenge" if blocked else "no betting rows"
