@@ -1,7 +1,8 @@
 """
 Config / thresholds for the Polymarket sharp-signal monitor.
 
-Tradable by default: whale_trade + smart-wallet convergence.
+Tradable by default: smart-wallet convergence.
+Whale trades are detected, logged, and tweeted — but not bought.
 Book imbalance + fast_move are logged for research but are NOT in the default
 tradable set. Volume spikes are not tracked.
 """
@@ -52,12 +53,11 @@ class TradeConfig:
     filled_log: str = "journal/poly_sharp_signals.jsonl"
     # Would-buys (dry-run) + successful live fills — sit next to signals/ for easy review.
     intents_log: str = "poly-sharp-finder/intents/poly_sharp_intents.jsonl"
-    # book_imbalance / fast_move stay log-only — too noisy on sports books.
+    # whale_trade is tweet-only; book_imbalance / fast_move stay log-only.
     signal_types: tuple[str, ...] = (
-        "whale_trade",
         "convergence",
     )
-    # What gets written to signals/*.jsonl (default = actionable types only).
+    # What gets written to signals/*.jsonl (whale tweets + tradable types).
     # Set to include book_imbalance/fast_move if you want research dumps.
     persist_signal_types: tuple[str, ...] = (
         "whale_trade",

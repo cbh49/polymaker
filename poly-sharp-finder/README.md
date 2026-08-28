@@ -2,7 +2,7 @@
 
 Websocket + polling monitor for MLB/WNBA Polymarket moneylines. Flags whale
 trades, smart-wallet convergence, order-book imbalance, and fast price
-moves — then optionally buys whale / convergence signals.
+moves — then optionally buys convergence signals. Whale trades are tweeted, not traded.
 
 **Default is dry-run** (logs `would BUY`, no orders). Pass `--live` to send
 real FAK market buys via the parent `polymaker` wallet (`.env` + `config/`).
@@ -63,7 +63,8 @@ uv run python poly-sharp-finder/main.py --watchlist poly-sharp-finder/watch_list
 - **Live fills also:** `journal/poly_sharp_signals.jsonl`
 - **Actionable signals file:** `poly-sharp-finder/signals/polymarket_signals_*.jsonl`
   (whale / convergence only — not book noise)
-- **Tradable signals:** `whale_trade`, `convergence`
+- **Tradable signals:** `convergence`
+- **Tweet-only (not traded):** `whale_trade`
 - **Not tracked:** volume spikes
 - **Not traded / not persisted by default:** `book_imbalance`, `fast_move`
 - Uses parent secrets: `POLY_PRIVATE_KEY`, `POLY_FUNDER` in `.env` and

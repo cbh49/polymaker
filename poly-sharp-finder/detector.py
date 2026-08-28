@@ -3,8 +3,8 @@ Signal detector: takes raw trade / order-book events and turns them into
 flagged "sharp signal" candidates, using the thresholds in config.py.
 
 This module classifies and logs signals. Auto-trading is gated in
-`executor.py` / `TradeConfig.signal_types` (book_imbalance and fast_move
-are log-only by default).
+`executor.py` / `TradeConfig.signal_types` (whale_trade is tweet-only;
+book_imbalance and fast_move are log-only by default).
 """
 
 import time

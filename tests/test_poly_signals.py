@@ -74,7 +74,11 @@ async def test_executor_skips_started_game() -> None:
 
     market = _market()
     market.start_time = "2020-01-01T00:00:00Z"
-    ex = SignalExecutor(Config(), [market], TradeConfig())
+    ex = SignalExecutor(
+        Config(),
+        [market],
+        TradeConfig(signal_types=("whale_trade",)),
+    )
     sig = Signal(
         ts=1.0,
         condition_id=market.condition_id,
@@ -125,6 +129,7 @@ async def test_executor_skips_price_above_max_ask(tmp_path: Path) -> None:
     market = _future_market()
     trade = replace(
         TradeConfig(),
+        signal_types=("whale_trade",),
         intents_log=str(tmp_path / "intents.jsonl"),
         filled_log=str(tmp_path / "filled.jsonl"),
         max_ask=0.55,
@@ -148,6 +153,7 @@ async def test_executor_dry_run_when_price_below_max_ask(tmp_path: Path) -> None
     market = _future_market()
     trade = replace(
         TradeConfig(),
+        signal_types=("whale_trade",),
         intents_log=str(tmp_path / "intents.jsonl"),
         filled_log=str(tmp_path / "filled.jsonl"),
         max_ask=0.55,
@@ -172,6 +178,7 @@ async def test_executor_skips_when_no_price(tmp_path: Path) -> None:
     market = _future_market()
     trade = replace(
         TradeConfig(),
+        signal_types=("whale_trade",),
         intents_log=str(tmp_path / "intents.jsonl"),
         filled_log=str(tmp_path / "filled.jsonl"),
         max_ask=0.55,
@@ -181,3 +188,17 @@ async def test_executor_skips_when_no_price(tmp_path: Path) -> None:
     assert result is not None
     assert result["action"] == "skipped"
     assert "no ask" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_executor_does_not_trade_whale_by_default() -> None:
+    from config import TradeConfig
+    from executor import SignalExecutor
+
+    from polymaker.config import Config
+
+    market = _future_market()
+    ex = SignalExecutor(Config(), [market], TradeConfig())
+    result = await ex.on_signal(_whale_sig(market, price=0.45))  # type: ignore[arg-type]
+    assert result is None
+    assert not ex.should_trade(_whale_sig(market, price=0.45))  # type: ignore[arg-type]
