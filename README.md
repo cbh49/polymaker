@@ -88,7 +88,7 @@ Use `--league mlb|wnba|both` to scope which sharp file(s) are loaded. Today's
 `wnba_sharp_money.json` can have `play_count: 0` when no gaps clear the
 thresholds — re-run `find_sharp_money.py` on a fresh splits scrape.
 
-Defaults in [`config/config.toml`](config/config.toml) `[sharp]`: Tier A/B USDC sizes, `max_ask`, optional `min_edge` vs `implied_fair_prob`, and a dedupe log at `journal/sharp_trades.jsonl`. **`trade-sharp` is dry-run unless you pass `--live`.**
+Defaults in [`config/config.toml`](config/config.toml) `[sharp]`: Tier A/B USDC sizes, `max_ask`, optional `min_edge` vs `implied_fair_prob`, and a dedupe log at `journal/sharp_trades.jsonl`. Moneyline underdogs flagged `low_volume_dog_flag` (American odds ≥ +200) are sized to *win* the tier amount (e.g. $10 at +250 to profit $25), not to stake it. **`trade-sharp` is dry-run unless you pass `--live`.**
 
 Suggested daily loop once tomorrow's slate is live:
 

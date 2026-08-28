@@ -57,7 +57,7 @@ class SharpConfig(BaseModel):
     wnba_path: str = "data-aggregation/output/wnba_sharp_money.json"
     ufc_path: str = "data-aggregation/output/ufc_sharp_money.json"
     ncaaf_path: str = "data-aggregation/output/ncaaf_sharp_money.json"
-    usd_tier_a: float = 25.0
+    usd_tier_a: float = 25.0  # stake for A/A+; to-win target for +200 ML dogs
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # "A" = Tier A only; "B" = A+B
     markets: list[str] = Field(default_factory=lambda: ["moneyline"])

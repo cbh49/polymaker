@@ -138,27 +138,31 @@ async def _trade_one(
     if key in already:
         return SharpTradeResult(matched=m, action="skipped", detail="already traded (dedupe log)")
 
-    usd = _usd_for_tier(m.play.tier, trade_cfg)
-    if usd <= 0:
-        return SharpTradeResult(matched=m, action="skipped", detail="usd size is 0")
-
     if not _is_pre_game_play(m, trade_cfg.pregame_buffer_minutes):
         return SharpTradeResult(
-            matched=m, action="skipped", detail="not pre-game (startTime)", usd=usd
+            matched=m, action="skipped", detail="not pre-game (startTime)"
         )
 
     book = await gw.get_book(m.token.token_id)
     ask = _best_ask(book, m.meta.best_ask)
+    usd = _usd_for_play(m.play, trade_cfg, ask)
+    if usd <= 0:
+        return SharpTradeResult(matched=m, action="skipped", detail="usd size is 0")
+
     skip_reason = _price_gate(ask, m.play.implied_fair_prob, trade_cfg)
     if skip_reason:
         return SharpTradeResult(matched=m, action="skipped", detail=skip_reason, usd=usd)
 
     if trade_cfg.dry_run:
+        sizing = ""
+        if m.play.low_volume_dog_flag:
+            base = _usd_for_tier(m.play.tier, trade_cfg)
+            sizing = f" (to-win ${base:.0f} on low-volume dog)"
         return SharpTradeResult(
             matched=m,
             action="dry_run",
             usd=usd,
-            detail=f"would BUY ${usd:.2f} {m.token.outcome} @ ask={ask}",
+            detail=f"would BUY ${usd:.2f} {m.token.outcome} @ ask={ask}{sizing}",
             response={"book": book, "slug": m.slug},
         )
 
@@ -181,7 +185,7 @@ async def _trade_one(
         prediction_date=pred_date,
         slug=m.slug,
         condition_id=m.meta.condition_id,
-        payload={"tier": m.play.tier, "ask": ask},
+        payload={"tier": m.play.tier, "ask": ask, "low_volume_dog_flag": m.play.low_volume_dog_flag},
     )
     if not claim.claimed:
         return SharpTradeResult(matched=m, action="skipped", usd=usd, detail=claim.detail)
@@ -209,6 +213,7 @@ async def _trade_one(
             "tier": m.play.tier,
             "usd": usd,
             "ask": ask,
+            "low_volume_dog_flag": m.play.low_volume_dog_flag,
             "resp": resp,
         },
         token_id=m.token.token_id,
@@ -256,6 +261,54 @@ def _usd_for_tier(tier: str, cfg: SharpTradeConfig) -> float:
     if tier.upper() in {"A+", "A"}:
         return float(cfg.usd_tier_a)
     return float(cfg.usd_tier_b)
+
+
+def _american_to_prob(odds: float) -> float | None:
+    if odds >= 0:
+        p = 100.0 / (odds + 100.0)
+    else:
+        p = abs(odds) / (abs(odds) + 100.0)
+    if p <= 0 or p >= 1:
+        return None
+    return p
+
+
+def _dog_price(ask: float | None, play: SharpPlay) -> float | None:
+    """Polymarket share price in (0, 1) for to-win sizing."""
+    if ask is not None and 0 < ask < 1:
+        return float(ask)
+    if play.implied_fair_prob is not None and 0 < play.implied_fair_prob < 1:
+        return float(play.implied_fair_prob)
+    live = play.raw.get("live") if play.raw else None
+    try:
+        odds = float(live)
+    except (TypeError, ValueError):
+        return None
+    return _american_to_prob(odds)
+
+
+def stake_to_win(target_profit: float, price: float) -> float:
+    """USDC stake so a winning buy at `price` profits `target_profit`.
+
+    Polymarket shares pay $1. At price p, profit = stake × (1 − p) / p,
+    so stake = target × p / (1 − p). American +250 is p ≈ 0.286 → $10
+    to win $25.
+    """
+    if target_profit <= 0 or price <= 0 or price >= 1:
+        return target_profit
+    return target_profit * price / (1.0 - price)
+
+
+def _usd_for_play(play: SharpPlay, cfg: SharpTradeConfig, ask: float | None) -> float:
+    """Tier stake, or to-win that amount when `low_volume_dog_flag` is set."""
+    base = _usd_for_tier(play.tier, cfg)
+    if not play.low_volume_dog_flag:
+        return base
+    price = _dog_price(ask, play)
+    if price is None:
+        return base
+    # Never size *up* if the market is shorter than a true dog.
+    return round(min(base, stake_to_win(base, price)), 2)
 
 
 def _best_ask(book: dict[str, Any] | None, fallback: float) -> float | None:

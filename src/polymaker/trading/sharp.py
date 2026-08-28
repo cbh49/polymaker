@@ -23,6 +23,7 @@ class SharpPlay:
     composite_gap: float | None
     source_path: str
     raw: dict[str, Any]
+    low_volume_dog_flag: bool = False
 
 
 def load_sharp_file(path: str | Path) -> list[SharpPlay]:
@@ -66,6 +67,7 @@ def load_sharp_file(path: str | Path) -> list[SharpPlay]:
                 composite_gap=float(gap) if gap is not None else None,
                 source_path=str(p),
                 raw=row,
+                low_volume_dog_flag=bool(row.get("low_volume_dog_flag")),
             )
         )
     return out

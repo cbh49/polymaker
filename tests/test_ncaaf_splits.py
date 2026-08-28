@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 
 _AGG = Path(__file__).resolve().parents[1] / "data-aggregation"
@@ -12,11 +13,13 @@ if str(_AGG) not in sys.path:
 from cfb_team_map import (  # noqa: E402
     canonical_abbr,
     canonical_name,
+    match_matchup,
     names_match,
     poly_code,
 )
 from find_sharp_money import (  # noqa: E402
     _markets_from_arg,
+    config_snapshot,
     primary_source_label,
     process_game,
     sources_for_league,
@@ -24,6 +27,7 @@ from find_sharp_money import (  # noqa: E402
 from polymaker.catalog.sports import is_moneyline_slug, look_ahead_days_for_series
 from polymaker.trading.teams import resolve_team
 from scrape_dk_splits import PAGE_URLS as DK_URLS
+from scrape_dk_splits import _parse_when_date, parse_games
 from scrape_sbd_splits import has_usable_splits, parse_event
 from scrape_thespread_splits import PAGE_URLS as SPREAD_URLS
 
@@ -68,6 +72,10 @@ def test_ncaaf_sharp_sources() -> None:
     assert primary_source_label("NCAAF") == "draftkings"
     assert primary_source_label("CFB") == "draftkings"
     assert _markets_from_arg("all") == ("moneyline", "spread", "total")
+    cfg = config_snapshot(("moneyline", "spread", "total"), sources_for_league("NCAAF"), "NCAAF")
+    assert cfg["strong_source_gap_threshold"] == 15.0
+    assert cfg["low_prob_dog_odds_threshold"] == 200.0
+    assert cfg["rlm_source_priority"] == ["thespread", "polymarket", "eva"]
 
 
 def _side(*, public: int, handle: int, vsin_pub: int, vsin_h: int, sbd_pub: int, sbd_h: int, **extra):
@@ -120,6 +128,8 @@ def test_ncaaf_process_game_moneyline() -> None:
     assert play["home_away"] == "away"
     assert play["rlm_confirmed"] is True
     assert play["tier"] in {"A", "A+"}
+    assert play["rlm_source_used"] == "thespread"
+    assert play["sbd_override"] is False
 
 
 def test_ncaaf_process_game_total() -> None:
@@ -202,6 +212,7 @@ def test_ncaaf_total_rlm_falls_back_to_eva() -> None:
     assert play["rlm_confirmed"] is True
     assert play["open"] == 48.5
     assert play["live"] == 49.5
+    assert play["rlm_source_used"] == "eva"
 
 
 def test_sbd_ncaaf_abbreviation_and_market() -> None:
@@ -251,6 +262,61 @@ def test_dk_and_thespread_ncaaf_urls() -> None:
     assert "NCAA+Football" in DK_URLS["NCAAF"]
     assert DK_URLS["NCAAF"].endswith("itm_content=NCAA+Football") or "tb_eg=NCAA+Football" in DK_URLS["NCAAF"]
     assert "ncaa-college-football-public-betting-chart" in SPREAD_URLS["NCAAF"]
+
+
+def _dk_card(matchup: str, when: str, event_id: str = "1") -> str:
+    return (
+        '<div class="tb-se">'
+        '<div class="tb-se-title">'
+        f'<a href="/event/{event_id}">{matchup}</a>'
+        f"<span>{when}</span>"
+        "</div></div>"
+    )
+
+
+def test_dk_parse_when_date_finds_md_inside_prefix() -> None:
+    assert _parse_when_date("Sat 8/30 7:00 PM", 2026) == date(2026, 8, 30)
+    assert _parse_when_date("8/30 12:30 PM", 2026) == date(2026, 8, 30)
+    assert _parse_when_date("8/29/2026 5:00 PM", 2026) == date(2026, 8, 29)
+    assert _parse_when_date("7:00 PM", 2026) is None
+
+
+def test_dk_ncaaf_keeps_card_date_not_request_day() -> None:
+    html = _dk_card("Hawaii @ Stanford", "Sat 8/29 5:00 PM", "10") + _dk_card(
+        "Alabama @ Florida State", "7:00 PM", "11"
+    )
+    games = parse_games(
+        html,
+        [],
+        league="NCAAF",
+        canonical_name_fn=canonical_name,
+        canonical_abbr_fn=canonical_abbr,
+        names_match_fn=names_match,
+        match_matchup_fn=match_matchup,
+        day=date(2026, 8, 27),
+    )
+    assert len(games) == 2
+    haw = next(g for g in games if g["away_abbr"] == "HAW")
+    assert haw["date"] == "2026-08-29"
+    bama = next(g for g in games if g["away_abbr"] == "ALA")
+    assert bama["date"] == "2026-08-27"
+
+
+def test_dk_ncaaf_uses_cfb_match_matchup() -> None:
+    html = _dk_card("Hawaii @ Stanford", "8/29 5:00 PM")
+    matchups = [{"away": "Hawaii", "home": "Stanford", "espn_game_id": "401628001"}]
+    games = parse_games(
+        html,
+        matchups,
+        league="NCAAF",
+        canonical_name_fn=canonical_name,
+        canonical_abbr_fn=canonical_abbr,
+        names_match_fn=names_match,
+        match_matchup_fn=match_matchup,
+        day=date(2026, 8, 27),
+    )
+    assert len(games) == 1
+    assert games[0]["espn_game_id"] == "401628001"
 
 
 def test_cfb_moneyline_slug() -> None:
@@ -308,3 +374,309 @@ def test_ncaaf_process_game_spread() -> None:
     assert play["line_moved_toward"] == "away"
     assert play["rlm_confirmed"] is True
     assert play["market"] == "spread"
+    assert play["rlm_source_used"] == "thespread"
+
+
+def _poly(*, line_open: int, line_live: int, p_open: float, p_live: float, liquidity: float) -> dict:
+    return {
+        "line": line_live,
+        "implied_prob_pct": p_live,
+        "liquidity": liquidity,
+        "volume_24hr": 50_000.0,
+        "history": [
+            {"ts": "2026-08-26T23:55:16-04:00", "line": line_open, "implied_prob_pct": p_open},
+            {"ts": "2026-08-27T19:30:21-04:00", "line": line_live, "implied_prob_pct": p_live},
+        ],
+    }
+
+
+def test_sbd_override_yields_tier_b_not_a() -> None:
+    """VSiN+DK both ≥ 15 and agree; SBD votes the other way → keep as Tier B."""
+    game = {
+        "matchup": "UNC @ TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _side(
+                public=20,
+                handle=45,
+                vsin_pub=18,
+                vsin_h=40,
+                sbd_pub=80,
+                sbd_h=30,
+                selection="UNC",
+                open=280,
+                live=250,
+            ),
+            "home": _side(
+                public=80,
+                handle=55,
+                vsin_pub=82,
+                vsin_h=60,
+                sbd_pub=20,
+                sbd_h=70,
+                selection="TCU",
+                open=-355,
+                live=-320,
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["side"] == "UNC"
+    assert play["tier"] == "B"
+    assert play["sbd_override"] is True
+    assert play["sbd_dissent_gap"] == 50  # home SBD 70 − 20
+    assert play["agreeing_sources"] == ["primary", "vsin"]
+    assert play["n_sources_agreeing"] == 2
+    # SBD dropped from the sum: 1.0×25 + 1.5×22 = 58, not counted against the play
+    assert play["composite_gap"] == 58.0
+    assert "sbd" not in play["agreeing_sources"]
+
+
+def test_sbd_dissent_without_strong_gaps_still_discards() -> None:
+    """SBD veto still discards when VSiN's per-source gap is below the strong threshold."""
+    game = {
+        "matchup": "UNC @ TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _side(
+                public=17,
+                handle=38,
+                vsin_pub=14,
+                vsin_h=22,
+                sbd_pub=80,
+                sbd_h=30,
+                selection="UNC",
+                open=280,
+                live=250,
+            ),
+            "home": _side(
+                public=83,
+                handle=62,
+                vsin_pub=86,
+                vsin_h=78,
+                sbd_pub=20,
+                sbd_h=70,
+                selection="TCU",
+                open=-355,
+                live=-320,
+            ),
+        },
+    }
+    # DK gap +21, VSiN gap +8 (< 15), SBD votes home
+    assert process_game(game, market="moneyline", sources=sources_for_league("NCAAF")) is None
+
+
+def test_sbd_missing_is_not_override() -> None:
+    game = {
+        "matchup": "UNC @ TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": {
+                "selection": "UNC",
+                "public_bet_pct": 20,
+                "handle_bet_pct": 45,
+                "vsin_public_bet_pct": 18,
+                "vsin_handle_bet_pct": 40,
+                "open": 280,
+                "live": 250,
+            },
+            "home": {
+                "selection": "TCU",
+                "public_bet_pct": 80,
+                "handle_bet_pct": 55,
+                "vsin_public_bet_pct": 82,
+                "vsin_handle_bet_pct": 60,
+                "open": -355,
+                "live": -320,
+            },
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["tier"] == "B"
+    assert play["sbd_override"] is False
+    assert play["n_sources_agreeing"] == 2
+
+
+def test_ml_low_volume_dog_flag_and_spread_divergence() -> None:
+    """+270 ML dog with a strong ML gap but a flat spread composite on the same side."""
+    game = {
+        "matchup": "UNC @ TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _side(
+                public=17,
+                handle=38,
+                vsin_pub=14,
+                vsin_h=22,
+                sbd_pub=6,
+                sbd_h=23,
+                selection="UNC",
+                live=270,
+                open=280,
+            ),
+            "home": _side(
+                public=83,
+                handle=62,
+                vsin_pub=86,
+                vsin_h=78,
+                sbd_pub=94,
+                sbd_h=77,
+                selection="TCU",
+                live=-340,
+                open=-355,
+            ),
+        },
+        "spread": {
+            "away": _side(
+                public=48,
+                handle=50,
+                vsin_pub=49,
+                vsin_h=51,
+                sbd_pub=50,
+                sbd_h=51,
+                selection="UNC",
+                open=7.5,
+                live=7.5,
+            ),
+            "home": _side(
+                public=52,
+                handle=50,
+                vsin_pub=51,
+                vsin_h=49,
+                sbd_pub=50,
+                sbd_h=49,
+                selection="TCU",
+                open=-7.5,
+                live=-7.5,
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["side"] == "UNC"
+    assert play["low_volume_dog_flag"] is True
+    assert play["ml_spread_divergence"] is True
+    assert play["spread_composite_gap"] == 5.75  # 1.0×2 + 1.5×2 + 0.75×1
+    assert play["confidence_note"] is not None
+    assert "+200" in play["confidence_note"]
+    assert "45.75" in play["confidence_note"]
+    assert "5.75" in play["confidence_note"]
+
+
+def test_rlm_prefers_polymarket_over_eva_when_thespread_missing() -> None:
+    """TheSpread absent: Polymarket history (high liq) beats EVA, even if they disagree."""
+    game = {
+        "matchup": "UNC @ TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _side(
+                public=17,
+                handle=38,
+                vsin_pub=14,
+                vsin_h=22,
+                sbd_pub=6,
+                sbd_h=23,
+                selection="UNC",
+                live=270,
+                eva_open=400,
+                eva_line=500,
+                polymarket=_poly(
+                    line_open=344,
+                    line_live=250,
+                    p_open=22.5,
+                    p_live=28.5,
+                    liquidity=15_000.0,
+                ),
+            ),
+            "home": _side(
+                public=83,
+                handle=62,
+                vsin_pub=86,
+                vsin_h=78,
+                sbd_pub=94,
+                sbd_h=77,
+                selection="TCU",
+                live=-340,
+                eva_open=-500,
+                eva_line=-700,
+                polymarket=_poly(
+                    line_open=-344,
+                    line_live=-203,
+                    p_open=77.5,
+                    p_live=67.0,
+                    liquidity=15_000.0,
+                ),
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["rlm_source_used"] == "polymarket"
+    assert play["line_moved_toward"] == "away"
+    assert play["rlm_confirmed"] is True
+    assert play["rlm_source_conflict"] is True
+    assert play["eva_line_moved_toward"] == "home"
+    assert play["polymarket_line_moved_toward"] == "away"
+    assert play["polymarket_low_liquidity"] is False
+    # Pair comes from Poly history, not eva_open 400 vs DK live 270
+    assert play["open"] == 344
+    assert play["live"] == 250
+
+
+def test_rlm_low_liquidity_polymarket_falls_to_eva() -> None:
+    game = {
+        "matchup": "UNC @ TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _side(
+                public=17,
+                handle=38,
+                vsin_pub=14,
+                vsin_h=22,
+                sbd_pub=6,
+                sbd_h=23,
+                selection="UNC",
+                live=270,
+                eva_open=280,
+                eva_line=250,
+                polymarket=_poly(
+                    line_open=344,
+                    line_live=400,
+                    p_open=28.5,
+                    p_live=20.0,
+                    liquidity=7.06,
+                ),
+            ),
+            "home": _side(
+                public=83,
+                handle=62,
+                vsin_pub=86,
+                vsin_h=78,
+                sbd_pub=94,
+                sbd_h=77,
+                selection="TCU",
+                live=-340,
+                eva_open=-335,
+                eva_line=-310,
+                polymarket=_poly(
+                    line_open=-344,
+                    line_live=-500,
+                    p_open=71.5,
+                    p_live=80.0,
+                    liquidity=7.06,
+                ),
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["rlm_source_used"] == "eva"
+    assert play["line_moved_toward"] == "away"
+    assert play["rlm_source_conflict"] is True
+    assert play["polymarket_low_liquidity"] is True
+    assert play["polymarket_line_moved_toward"] == "home"
+    assert play["open"] == 280
+    assert play["live"] == 250
+    assert play["live"] != 270  # DK live is not spliced into the EVA pair

@@ -418,3 +418,99 @@ def test_price_gate_max_ask() -> None:
     assert reason is not None and "max_ask" in reason
     missing = _price_gate(None, None, cfg)
     assert missing is not None and "no ask" in missing
+
+
+def test_stake_to_win_plus_250() -> None:
+    from polymaker.trading.execute import stake_to_win
+
+    # +250 American = 100/350 ≈ 0.2857 → $10 to profit $25
+    p = 100.0 / 350.0
+    assert round(stake_to_win(25.0, p), 2) == 10.0
+
+
+def test_usd_for_play_low_volume_dog() -> None:
+    from polymaker.trading.execute import SharpTradeConfig, _usd_for_play
+
+    cfg = SharpTradeConfig(usd_tier_a=25.0, usd_tier_b=10.0)
+    dog = SharpPlay(
+        league="NCAAF",
+        matchup="UNC @ TCU",
+        side="UNC",
+        market="moneyline",
+        tier="A",
+        home_away="away",
+        game_time_utc=None,
+        implied_fair_prob=None,
+        rlm_confirmed=True,
+        composite_gap=45.75,
+        source_path="x",
+        raw={"live": 250},
+        low_volume_dog_flag=True,
+    )
+    # Prefer Polymarket ask when present (+250 ≈ 28.6¢)
+    assert _usd_for_play(dog, cfg, ask=100.0 / 350.0) == 10.0
+    # Fall back to sportsbook American odds on the play
+    assert _usd_for_play(dog, cfg, ask=None) == 10.0
+    # Never size above the flat tier stake (short price)
+    assert _usd_for_play(dog, cfg, ask=0.60) == 25.0
+
+    favorite = SharpPlay(
+        league="MLB",
+        matchup="AZ @ ATL",
+        side="AZ",
+        market="moneyline",
+        tier="A",
+        home_away="away",
+        game_time_utc=None,
+        implied_fair_prob=0.55,
+        rlm_confirmed=True,
+        composite_gap=20.0,
+        source_path="x",
+        raw={},
+        low_volume_dog_flag=False,
+    )
+    assert _usd_for_play(favorite, cfg, ask=0.48) == 25.0
+
+    tier_b_dog = SharpPlay(
+        league="NCAAF",
+        matchup="UNC @ TCU",
+        side="UNC",
+        market="moneyline",
+        tier="B",
+        home_away="away",
+        game_time_utc=None,
+        implied_fair_prob=None,
+        rlm_confirmed=True,
+        composite_gap=20.0,
+        source_path="x",
+        raw={"live": 250},
+        low_volume_dog_flag=True,
+    )
+    # Tier B to-win $10 at +250 → $4 stake
+    assert _usd_for_play(tier_b_dog, cfg, ask=None) == 4.0
+
+
+def test_load_sharp_file_dog_flag(tmp_path: Path) -> None:
+    path = tmp_path / "ncaaf_sharp_money.json"
+    path.write_text(
+        json.dumps(
+            {
+                "league": "NCAAF",
+                "plays": [
+                    {
+                        "matchup": "UNC @ TCU",
+                        "side": "UNC",
+                        "market": "moneyline",
+                        "tier": "A",
+                        "rlm_confirmed": True,
+                        "low_volume_dog_flag": True,
+                        "live": 250,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    plays = load_sharp_file(path)
+    assert plays[0].low_volume_dog_flag is True
+    assert plays[0].raw["live"] == 250

@@ -10,7 +10,8 @@ game.total.over/under) — confirmed against mlb/wnba/ufc/ncaaf_betting_splits.j
   sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NCAAF)
   vsin     vsin_public_bet_pct / vsin_handle_bet_pct
   prices   open / live  (ML: American odds; spread/total: the number)
-           eva_open / eva_line used when TheSpread open/live is missing
+           Polymarket history, then eva_open / eva_line, when TheSpread
+           open/live is missing (never splice EVA open against DK live)
   juice    open_odds / live_odds  (spread/total vig when the number is flat)
   vsin ML  vsin_line    (American odds, used for no-vig fair probability)
 
@@ -18,10 +19,10 @@ Moneyline is the default market. Spread open/live are point-spread numbers,
 so RLM uses the number first and falls back to juice implied-prob movement.
 Totals use over/under: a rising total confirms Over, a falling total Under.
 WNBA/UFC weight DraftKings (primary) + VSiN only. NCAAF is three-source
-(DK + VSiN + SBD) like MLB; Pinnacle is skipped. TheSpread supplies RLM
-(open → live) when present, else EV Analytics. SBD is not scraped for
-WNBA/UFC. Covers is not scraped for UFC; Polymarket implied prob is used
-as the exchange fair in that case.
+(DK + VSiN + SBD) like MLB; Pinnacle is skipped. RLM source order:
+TheSpread (same book), then Polymarket history, then EV Analytics.
+SBD is not scraped for WNBA/UFC. Covers is not scraped for UFC;
+Polymarket implied prob is used as the exchange fair in that case.
 
 Qualified plays are then enriched (never filtered) with an exchange_confirmation
 block: median de-vig fair from covers_odds books, edge vs sportsbook fair,
@@ -78,7 +79,18 @@ TIER_A_PLUS_EDGE_PCT = 1.5
 # If any source with a reading votes the opposite side, discard the game.
 # Neutral/missing sources are not dissent, so Tier B still fires when exactly
 # two sources agree and the third is missing or has a zero gap.
+# Softened for SBD-only dissent: see STRONG_SOURCE_GAP_THRESHOLD.
 REQUIRE_UNANIMOUS_DIRECTION = True
+
+# Per-source handle−public gap (not composite). When VSiN and DK both clear
+# this and agree, SBD voting the other way does not discard the game.
+STRONG_SOURCE_GAP_THRESHOLD = 15.0
+
+# Moneyline underdog American odds at/beyond this are flagged as lower-volume.
+LOW_PROB_DOG_ODDS_THRESHOLD = 200.0
+
+# Primary RLM line-movement source order (first complete source wins).
+RLM_SOURCE_PRIORITY: tuple[str, ...] = ("thespread", "polymarket", "eva")
 
 SOURCE_WEIGHTS: dict[str, float] = {
     "vsin": W_VSIN,
@@ -213,6 +225,8 @@ class Agreement:
     side: Side | None
     agreeing_sources: tuple[str, ...]
     conflict: bool
+    sbd_override: bool = False
+    sbd_dissent_gap: float | None = None
 
     @property
     def n_agreeing(self) -> int:
@@ -236,6 +250,43 @@ def _source_favors(away_gaps: SourceGaps, home_gaps: SourceGaps, source: str) ->
     return None
 
 
+def _try_sbd_override(
+    away_gaps: SourceGaps,
+    home_gaps: SourceGaps,
+    sources: tuple[str, ...],
+) -> Agreement | None:
+    """Keep the game when VSiN+DK agree strongly and only SBD votes the other way.
+
+    SBD missing/neutral is not handled here (existing two-source Tier B).
+    VSiN vs DK disagreement still discards. Composite later drops SBD.
+    """
+    if not {"primary", "vsin", "sbd"}.issubset(sources):
+        return None
+    primary_vote = _source_favors(away_gaps, home_gaps, "primary")
+    vsin_vote = _source_favors(away_gaps, home_gaps, "vsin")
+    sbd_vote = _source_favors(away_gaps, home_gaps, "sbd")
+    if primary_vote is None or vsin_vote is None or sbd_vote is None:
+        return None
+    if primary_vote != vsin_vote or sbd_vote == primary_vote:
+        return None
+    side_gaps = away_gaps if primary_vote == "away" else home_gaps
+    gaps = side_gaps.as_dict()
+    primary_gap = gaps.get("primary")
+    vsin_gap = gaps.get("vsin")
+    if primary_gap is None or vsin_gap is None:
+        return None
+    if primary_gap < STRONG_SOURCE_GAP_THRESHOLD or vsin_gap < STRONG_SOURCE_GAP_THRESHOLD:
+        return None
+    dissent_gaps = home_gaps if sbd_vote == "home" else away_gaps
+    return Agreement(
+        side=primary_vote,
+        agreeing_sources=("primary", "vsin"),
+        conflict=True,
+        sbd_override=True,
+        sbd_dissent_gap=dissent_gaps.sbd,
+    )
+
+
 def check_agreement(
     away_gaps: SourceGaps,
     home_gaps: SourceGaps,
@@ -245,7 +296,9 @@ def check_agreement(
 
     Discards the game (side=None) when:
       - no side has at least 2 of the active sources, or
-      - sources vote opposite directions (if REQUIRE_UNANIMOUS_DIRECTION).
+      - sources vote opposite directions (if REQUIRE_UNANIMOUS_DIRECTION),
+        unless the SBD-override path applies (VSiN+DK strong, SBD alone
+        dissenting).
     """
     votes: dict[Side, list[str]] = {"away": [], "home": []}
     for source in sources:
@@ -258,6 +311,9 @@ def check_agreement(
     conflict = away_n > 0 and home_n > 0
 
     if conflict and REQUIRE_UNANIMOUS_DIRECTION:
+        override = _try_sbd_override(away_gaps, home_gaps, sources)
+        if override is not None:
+            return override
         return Agreement(side=None, agreeing_sources=(), conflict=True)
 
     if away_n >= 2 and away_n >= home_n:
@@ -294,6 +350,14 @@ class RLMResult:
     line_moved_toward: Side | None
     rlm: bool
     rlm_confirmed: bool
+    rlm_source_used: str | None = None
+    rlm_source_conflict: bool = False
+    eva_line_moved_toward: Side | None = None
+    polymarket_line_moved_toward: Side | None = None
+    polymarket_low_liquidity: bool | None = None
+    polymarket_liquidity: float | None = None
+    open_px: float | None = None
+    live_px: float | None = None
 
 
 def _implied_prob_delta(open_odds: Any, live_odds: Any) -> float | None:
@@ -318,12 +382,12 @@ def check_rlm(
     rlm                = line moved against the public side
     rlm_confirmed      = rlm and the move is toward the sharp-money side
 
-    Moneyline: American odds shortened (implied win probability up).
-    Spread: the point-spread number first (more negative = toward that side);
-    if the number is unchanged, juice (open_odds → live_odds) is used.
-    Total: a rising number confirms Over (left/away slot); falling confirms
-    Under. Juice is the fallback when the total is unchanged.
-    Missing open/live fall back to eva_open / eva_line.
+    Source order (RLM_SOURCE_PRIORITY): TheSpread open→live (same book),
+    then Polymarket history first→last (same market; skipped when
+    liquidity is below LOW_LIQUIDITY_THRESHOLD), then EVA open→live.
+    TheSpread is never mixed with EVA. When TheSpread is missing and
+    Polymarket and EVA disagree, Polymarket wins and rlm_source_conflict
+    is set — the play is not discarded.
     """
     away_pub = _as_float(away.get("public_bet_pct"))
     home_pub = _as_float(home.get("public_bet_pct"))
@@ -334,16 +398,40 @@ def check_rlm(
         elif home_pub > away_pub:
             public_favors = "home"
 
-    if market == "spread":
-        line_moved_toward = _spread_number_moved_toward(away, home)
-        if line_moved_toward is None:
-            line_moved_toward = _juice_moved_toward(away, home)
-    elif market == "total":
-        line_moved_toward = _total_number_moved_toward(away, home)
-        if line_moved_toward is None:
-            line_moved_toward = _juice_moved_toward(away, home)
-    else:
-        line_moved_toward = _american_odds_moved_toward(away, home)
+    ts_complete = _thespread_pair_complete(away, home, market)
+    ts_move, ts_open, ts_live = _thespread_move(away, home, market, sharp_side)
+    poly_move, poly_open, poly_live, poly_liq, poly_low, poly_ready = _polymarket_move(
+        away, home, sharp_side
+    )
+    eva_move, eva_open, eva_live = _eva_move(away, home, market, sharp_side)
+    eva_available = eva_open is not None or eva_live is not None or eva_move is not None
+
+    line_moved_toward: Side | None = None
+    source_used: str | None = None
+    open_px: float | None = None
+    live_px: float | None = None
+    conflict = False
+    poly_usable = poly_ready and poly_low is False
+
+    if ts_complete:
+        source_used = "thespread"
+        line_moved_toward = ts_move
+        open_px, live_px = ts_open, ts_live
+    elif poly_usable:
+        source_used = "polymarket"
+        line_moved_toward = poly_move
+        open_px, live_px = poly_open, poly_live
+        conflict = eva_move is not None and poly_move is not None and eva_move != poly_move
+    elif eva_available:
+        source_used = "eva"
+        line_moved_toward = eva_move
+        open_px, live_px = eva_open, eva_live
+        conflict = poly_move is not None and eva_move is not None and eva_move != poly_move
+    elif poly_ready:
+        # History exists but liquidity is too low and EVA is missing; still surface it.
+        source_used = "polymarket"
+        line_moved_toward = poly_move
+        open_px, live_px = poly_open, poly_live
 
     rlm = (
         public_favors is not None
@@ -356,25 +444,165 @@ def check_rlm(
         line_moved_toward=line_moved_toward,
         rlm=rlm,
         rlm_confirmed=rlm_confirmed,
+        rlm_source_used=source_used,
+        rlm_source_conflict=conflict,
+        eva_line_moved_toward=eva_move,
+        polymarket_line_moved_toward=poly_move,
+        polymarket_low_liquidity=poly_low,
+        polymarket_liquidity=poly_liq,
+        open_px=open_px,
+        live_px=live_px,
     )
 
 
+def _thespread_open_live(side: dict[str, Any]) -> tuple[float | None, float | None]:
+    return _as_float(side.get("open")), _as_float(side.get("live"))
+
+
+def _eva_open_live(side: dict[str, Any]) -> tuple[float | None, float | None]:
+    return _as_float(side.get("eva_open")), _as_float(side.get("eva_line"))
+
+
+def _thespread_pair_complete(away: dict[str, Any], home: dict[str, Any], market: Market) -> bool:
+    """True when TheSpread itself supplied an open→live (or juice) pair."""
+    for side in (away, home):
+        opened, live = _thespread_open_live(side)
+        if opened is not None and live is not None:
+            return True
+        if market != "moneyline":
+            if _as_float(side.get("open_odds")) is not None and _as_float(side.get("live_odds")) is not None:
+                return True
+    return False
+
+
+def _thespread_move(
+    away: dict[str, Any],
+    home: dict[str, Any],
+    market: Market,
+    sharp_side: Side,
+) -> tuple[Side | None, float | None, float | None]:
+    if market == "spread":
+        moved = _spread_number_moved_toward(away, home, _thespread_open_live)
+        if moved is None:
+            moved = _juice_moved_toward(away, home)
+    elif market == "total":
+        moved = _total_number_moved_toward(away, home, _thespread_open_live)
+        if moved is None:
+            moved = _juice_moved_toward(away, home)
+    else:
+        moved = _american_odds_moved_toward(away, home, _thespread_open_live)
+    sharp = away if sharp_side == "away" else home
+    opened, live = _thespread_open_live(sharp)
+    if opened is None and live is None and market != "moneyline":
+        opened = _as_float(sharp.get("open_odds"))
+        live = _as_float(sharp.get("live_odds"))
+    return moved, opened, live
+
+
+def _eva_move(
+    away: dict[str, Any],
+    home: dict[str, Any],
+    market: Market,
+    sharp_side: Side,
+) -> tuple[Side | None, float | None, float | None]:
+    if market == "spread":
+        moved = _spread_number_moved_toward(away, home, _eva_open_live)
+    elif market == "total":
+        moved = _total_number_moved_toward(away, home, _eva_open_live)
+    else:
+        moved = _american_odds_moved_toward(away, home, _eva_open_live)
+    sharp = away if sharp_side == "away" else home
+    opened, live = _eva_open_live(sharp)
+    return moved, opened, live
+
+
+def _poly_history_pair(poly: dict[str, Any] | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not isinstance(poly, dict):
+        return None, None
+    history = poly.get("history")
+    if not isinstance(history, list) or len(history) < 2:
+        return None, None
+    first = history[0] if isinstance(history[0], dict) else None
+    last = history[-1] if isinstance(history[-1], dict) else None
+    return first, last
+
+
+def _poly_prob_delta(poly: dict[str, Any] | None) -> float | None:
+    first, last = _poly_history_pair(poly)
+    if first is None or last is None:
+        return None
+    opened = _as_float(first.get("implied_prob_pct"))
+    latest = _as_float(last.get("implied_prob_pct"))
+    if opened is None or latest is None:
+        return None
+    return latest - opened
+
+
+def _polymarket_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> Side | None:
+    """Implied-prob first→last on each side's polymarket.history (all markets)."""
+    away_poly = away.get("polymarket") if isinstance(away.get("polymarket"), dict) else None
+    home_poly = home.get("polymarket") if isinstance(home.get("polymarket"), dict) else None
+    away_delta = _poly_prob_delta(away_poly)
+    home_delta = _poly_prob_delta(home_poly)
+    if away_delta is not None and home_delta is not None:
+        if away_delta > home_delta:
+            return "away"
+        if home_delta > away_delta:
+            return "home"
+        return None
+    if away_delta is not None and away_delta != 0:
+        return "away" if away_delta > 0 else "home"
+    if home_delta is not None and home_delta != 0:
+        return "home" if home_delta > 0 else "away"
+    return None
+
+
+def _polymarket_move(
+    away: dict[str, Any],
+    home: dict[str, Any],
+    sharp_side: Side,
+) -> tuple[Side | None, float | None, float | None, float | None, bool | None, bool]:
+    away_poly = away.get("polymarket") if isinstance(away.get("polymarket"), dict) else None
+    home_poly = home.get("polymarket") if isinstance(home.get("polymarket"), dict) else None
+    moved = _polymarket_moved_toward(away, home)
+    liqs = [
+        v
+        for v in (
+            _as_float((away_poly or {}).get("liquidity")),
+            _as_float((home_poly or {}).get("liquidity")),
+        )
+        if v is not None
+    ]
+    liq = max(liqs) if liqs else None
+    low: bool | None = None if liq is None else liq < LOW_LIQUIDITY_THRESHOLD
+    sharp_poly = away_poly if sharp_side == "away" else home_poly
+    first, last = _poly_history_pair(sharp_poly)
+    if first is None or last is None:
+        alt = away_poly if sharp_side == "home" else home_poly
+        first, last = _poly_history_pair(alt)
+    opened = _as_float(first.get("line")) if first else None
+    live = _as_float(last.get("line")) if last else None
+    ready = first is not None and last is not None
+    return moved, opened, live, liq, low, ready
+
+
 def _open_live_number(side: dict[str, Any]) -> tuple[float | None, float | None]:
-    """Current number pair; EVA fills in when TheSpread open/live is missing."""
-    opened = _as_float(side.get("open"))
-    live = _as_float(side.get("live"))
-    if opened is None:
-        opened = _as_float(side.get("eva_open"))
-    if live is None:
-        live = _as_float(side.get("eva_line"))
-    return opened, live
+    """Display helper: TheSpread pair, else EVA. Does not splice across books."""
+    opened, live = _thespread_open_live(side)
+    if opened is not None and live is not None:
+        return opened, live
+    return _eva_open_live(side)
 
 
-def _spread_number_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> Side | None:
+def _spread_number_moved_toward(
+    away: dict[str, Any],
+    home: dict[str, Any],
+    pair_fn=_thespread_open_live,
+) -> Side | None:
     """Side whose spread decreased (became more negative / less plus)."""
     votes: list[Side] = []
-    away_open, away_live = _open_live_number(away)
-    home_open, home_live = _open_live_number(home)
+    away_open, away_live = pair_fn(away)
+    home_open, home_live = pair_fn(home)
     if away_open is not None and away_live is not None and away_live != away_open:
         votes.append("home" if away_live > away_open else "away")
     if home_open is not None and home_live is not None and home_live != home_open:
@@ -386,12 +614,16 @@ def _spread_number_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> S
     return votes[0]
 
 
-def _total_number_moved_toward(over: dict[str, Any], under: dict[str, Any]) -> Side | None:
+def _total_number_moved_toward(
+    over: dict[str, Any],
+    under: dict[str, Any],
+    pair_fn=_thespread_open_live,
+) -> Side | None:
     """Rising total → Over (away slot); falling total → Under (home slot)."""
-    over_open, over_live = _open_live_number(over)
+    over_open, over_live = pair_fn(over)
     if over_open is not None and over_live is not None and over_live != over_open:
         return "away" if over_live > over_open else "home"
-    under_open, under_live = _open_live_number(under)
+    under_open, under_live = pair_fn(under)
     if under_open is not None and under_live is not None and under_live != under_open:
         return "away" if under_live > under_open else "home"
     return None
@@ -406,9 +638,13 @@ def _juice_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> Side | No
     )
 
 
-def _american_odds_moved_toward(away: dict[str, Any], home: dict[str, Any]) -> Side | None:
-    away_open, away_live = _open_live_number(away)
-    home_open, home_live = _open_live_number(home)
+def _american_odds_moved_toward(
+    away: dict[str, Any],
+    home: dict[str, Any],
+    pair_fn=_thespread_open_live,
+) -> Side | None:
+    away_open, away_live = pair_fn(away)
+    home_open, home_live = pair_fn(home)
     return _implied_move_toward(away_open, away_live, home_open, home_live)
 
 
@@ -441,14 +677,21 @@ def assign_tier(
     composite_gap: float,
     rlm_confirmed: bool,
     n_sources: int = 3,
+    sbd_override: bool = False,
 ) -> Tier | None:
     """Return 'A' or 'B', or None if the play should not be output.
 
     Tier A = every active source agrees. Tier B = all-but-one, and at
     least 2 sources. WNBA has two handle/public sources (DK + VSiN), so
     both agreeing is Tier A; a single source never qualifies.
+    The SBD-override path (VSiN+DK strong, SBD dissenting) is capped at B
+    even if the two-source composite would clear the Tier A threshold.
     """
     if not rlm_confirmed:
+        return None
+    if sbd_override:
+        if n_agreeing >= 2 and composite_gap >= TIER_B_THRESHOLD:
+            return "B"
         return None
     if n_agreeing == n_sources and n_sources >= 2 and composite_gap >= TIER_A_THRESHOLD:
         return "A"
@@ -513,6 +756,68 @@ def _fair_prob_for_side(
     return p_away if side == "away" else p_home
 
 
+def _ml_american_odds(side_data: dict[str, Any]) -> float | None:
+    for key in ("live", "vsin_line", "eva_line", "sbd_line"):
+        odds = _as_float(side_data.get(key))
+        if odds is not None:
+            return odds
+    return None
+
+
+def _spread_composite_on_side(
+    game: dict[str, Any],
+    logical_side: Side,
+    sources: tuple[str, ...],
+) -> float | None:
+    """Weighted spread-market gap on the same team side, ignoring tiering/RLM."""
+    block = game.get("spread")
+    if not isinstance(block, dict):
+        return None
+    away = block.get("away")
+    home = block.get("home")
+    if not isinstance(away, dict) or not isinstance(home, dict):
+        return None
+    gaps = compute_gaps(away if logical_side == "away" else home)
+    present = tuple(s for s in sources if gaps.as_dict().get(s) is not None)
+    if not present:
+        return None
+    return compute_composite(gaps, present)
+
+
+def _ml_confidence_fields(
+    game: dict[str, Any],
+    side_data: dict[str, Any],
+    logical: Side,
+    composite_gap: float,
+    sources: tuple[str, ...],
+) -> dict[str, Any]:
+    """Flags for noisy moneyline underdogs. Never filters the play."""
+    odds = _ml_american_odds(side_data)
+    low_vol = bool(odds is not None and odds >= LOW_PROB_DOG_ODDS_THRESHOLD)
+    spread_composite = _spread_composite_on_side(game, logical, sources)
+    spread_rounded = None if spread_composite is None else round(spread_composite, 4)
+    diverges = False
+    if low_vol:
+        if spread_composite is None or spread_composite <= 0:
+            diverges = True
+        elif spread_composite < TIER_B_THRESHOLD:
+            diverges = True
+    notes: list[str] = []
+    if low_vol:
+        notes.append(f"ML dog beyond +{int(LOW_PROB_DOG_ODDS_THRESHOLD)} odds")
+    if diverges:
+        spread_txt = "missing" if spread_rounded is None else str(spread_rounded)
+        notes.append(
+            f"spread composite on same side is only {spread_txt} vs ML composite of {round(composite_gap, 2)}"
+        )
+    return {
+        "low_volume_dog_flag": low_vol,
+        "ml_spread_divergence": diverges,
+        "spread_composite_gap": spread_rounded,
+        "confidence_note": "; ".join(notes) if notes else None,
+    }
+
+
 def build_output(
     game: dict[str, Any],
     side: Side,
@@ -534,7 +839,10 @@ def build_output(
     labeled = _label_side(logical, market) or side
     abbr = side_data.get("selection") or game.get(f"{labeled}_abbr") or game.get(f"{side}_abbr")
     fair = _fair_prob_for_side(away, home, logical, market)
-    open_px, live_px = _open_live_number(side_data)
+    if rlm.open_px is not None or rlm.live_px is not None:
+        open_px, live_px = rlm.open_px, rlm.live_px
+    else:
+        open_px, live_px = _open_live_number(side_data)
     row: dict[str, Any] = {
         "matchup": game.get("matchup"),
         "game_time_utc": game.get("game_time_utc"),
@@ -550,20 +858,35 @@ def build_output(
     }
     if "sbd" in sources:
         row["sbd_gap"] = gaps["sbd"]
+        row["sbd_override"] = agreement.sbd_override
+        row["sbd_dissent_gap"] = agreement.sbd_dissent_gap
     row.update(
         {
             "n_sources_agreeing": agreement.n_agreeing,
             "agreeing_sources": list(agreement.agreeing_sources),
             "rlm_confirmed": rlm.rlm_confirmed,
+            "rlm_source_used": rlm.rlm_source_used,
+            "rlm_source_conflict": rlm.rlm_source_conflict,
             "public_favors": _label_side(rlm.public_favors, market),
             "line_moved_toward": _label_side(rlm.line_moved_toward, market),
-            "open": side_data.get("open") if side_data.get("open") is not None else open_px,
-            "live": side_data.get("live") if side_data.get("live") is not None else live_px,
+            "eva_line_moved_toward": _label_side(rlm.eva_line_moved_toward, market),
+            "polymarket_line_moved_toward": _label_side(rlm.polymarket_line_moved_toward, market),
+            "polymarket_rlm_liquidity": rlm.polymarket_liquidity,
+            "polymarket_low_liquidity": rlm.polymarket_low_liquidity,
+            "open": open_px,
+            "live": live_px,
             "open_odds": side_data.get("open_odds"),
             "live_odds": side_data.get("live_odds"),
             "implied_fair_prob": None if fair is None else round(fair, 6),
         }
     )
+    if market == "moneyline":
+        row.update(_ml_confidence_fields(game, side_data, logical, composite_gap, sources))
+    else:
+        row["low_volume_dog_flag"] = None
+        row["ml_spread_divergence"] = None
+        row["spread_composite_gap"] = None
+        row["confidence_note"] = None
     return row
 
 
@@ -742,6 +1065,7 @@ def process_game(
         composite_gap,
         rlm.rlm_confirmed,
         n_sources=len(sources),
+        sbd_override=agreement.sbd_override,
     )
     if tier is None:
         return None
@@ -805,6 +1129,9 @@ def config_snapshot(
     cfg["tier_a_threshold"] = TIER_A_THRESHOLD
     cfg["tier_b_threshold"] = TIER_B_THRESHOLD
     cfg["require_unanimous_direction"] = REQUIRE_UNANIMOUS_DIRECTION
+    cfg["strong_source_gap_threshold"] = STRONG_SOURCE_GAP_THRESHOLD
+    cfg["low_prob_dog_odds_threshold"] = LOW_PROB_DOG_ODDS_THRESHOLD
+    cfg["rlm_source_priority"] = list(RLM_SOURCE_PRIORITY)
     cfg["exchange_rlm_min_pp"] = EXCHANGE_RLM_MIN_PP
     cfg["low_liquidity_threshold"] = LOW_LIQUIDITY_THRESHOLD
     cfg["tier_a_plus_edge_pct"] = TIER_A_PLUS_EDGE_PCT
@@ -844,6 +1171,7 @@ def print_summary(frame: pd.DataFrame) -> None:
         "vsin_gap",
         "sbd_gap",
         "rlm_confirmed",
+        "rlm_source_used",
         "open",
         "live",
         "implied_fair_prob",
@@ -859,15 +1187,23 @@ def print_summary(frame: pd.DataFrame) -> None:
 
 def _frame_for_csv(frame: pd.DataFrame) -> pd.DataFrame:
     """Expand exchange_confirmation into columns so CSV has the same fields as JSON."""
-    if frame.empty or "exchange_confirmation" not in frame.columns:
+    if frame.empty:
         return frame
-    conf = pd.json_normalize(frame["exchange_confirmation"].tolist())
+    out = frame
+    if "agreeing_sources" in out.columns:
+        out = out.copy()
+        out["agreeing_sources"] = out["agreeing_sources"].apply(
+            lambda v: ",".join(v) if isinstance(v, list) else v
+        )
+    if "exchange_confirmation" not in out.columns:
+        return out
+    conf = pd.json_normalize(out["exchange_confirmation"].tolist())
     if "books_used" in conf.columns:
         conf["books_used"] = conf["books_used"].apply(
             lambda v: ",".join(v) if isinstance(v, list) else v
         )
     return pd.concat(
-        [frame.drop(columns=["exchange_confirmation"]).reset_index(drop=True), conf],
+        [out.drop(columns=["exchange_confirmation"]).reset_index(drop=True), conf],
         axis=1,
     )
 

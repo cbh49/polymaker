@@ -21,6 +21,7 @@ Fields (unprefixed, same role as PlayerProps on MLB):
   handle_bet_pct  <- % Handle
   live            <- current American odds (ML) or spread/total number
   live_odds       <- juice on spread/total
+  (page exposes percentages only; no raw ticket count or dollar handle)
 
 Usage:
   python scrape_dk_splits.py
@@ -68,7 +69,7 @@ PAGE_URLS = {
 }
 PAGE_URL = PAGE_URLS["WNBA"]
 VS_SPLIT = re.compile(r"\s+vs\.?\s+", re.IGNORECASE)
-WHEN_MD = re.compile(r"^(\d{1,2})/(\d{1,2})")
+WHEN_MD = re.compile(r"(?<!\d)(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?")
 MINUS_CHARS = str.maketrans({"−": "-", "–": "-", "—": "-"})
 LINE_IN_LABEL = re.compile(
     r"^(?P<name>.+?)\s+(?P<line>[+-]?\d+(?:\.\d+)?)\s*$"
@@ -134,11 +135,15 @@ def _row_side(row: Any) -> dict[str, Any] | None:
 def _parse_when_date(when: str | None, year: int) -> date | None:
     if not when:
         return None
-    m = WHEN_MD.match(when.strip())
+    m = WHEN_MD.search(when.strip())
     if not m:
         return None
+    parsed_year = year
+    if m.group(3):
+        y = int(m.group(3))
+        parsed_year = y if y >= 100 else 2000 + y
     try:
-        return date(year, int(m.group(1)), int(m.group(2)))
+        return date(parsed_year, int(m.group(1)), int(m.group(2)))
     except ValueError:
         return None
 
@@ -240,10 +245,9 @@ def parse_game(
     )
     if not away_name or not home_name:
         return None
-    if vs_matchup and day is not None:
-        card_day = _parse_when_date(when, day.year)
-        if card_day is not None and card_day != day:
-            return None
+    card_day = _parse_when_date(when, (day or datetime.now(PAGE_TZ)).year)
+    if vs_matchup and day is not None and (card_day is None or card_day != day):
+        return None
     away_abbr = canonical_abbr_fn(away_name) or away_name
     home_abbr = canonical_abbr_fn(home_name) or home_name
 
@@ -353,16 +357,13 @@ def parse_game(
         "spread": spread,
         "total": total,
     }
-    if vs_matchup and day is not None:
-        game["date"] = day.isoformat()
     if matched:
         game["espn_game_id"] = matched.get("espn_game_id")
         if matched.get("game_time"):
             game["game_time_local"] = matched.get("game_time")
-    card_day = _parse_when_date(when, (day or datetime.now(PAGE_TZ)).year) if when else None
     if card_day is not None:
         game["date"] = card_day.isoformat()
-    elif day is not None:
+    elif day is not None and not vs_matchup:
         game["date"] = day.isoformat()
     return game
 
@@ -525,13 +526,20 @@ def scrape(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape DraftKings betting splits")
     parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB"])
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="Slate date YYYY-MM-DD (default: today Pacific).",
+    )
     parser.add_argument("--matchups", type=Path, default=DEFAULT_MATCHUPS)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--url", default=None)
     parser.add_argument("--headed", action="store_true")
     args = parser.parse_args()
 
+    day = date.fromisoformat(args.date) if args.date else datetime.now(PAGE_TZ).date()
     result = scrape(
+        day=day,
         matchups_path=args.matchups,
         url=args.url,
         headed=args.headed,
@@ -546,7 +554,7 @@ def main() -> None:
     }.get(league, DEFAULT_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {result['game_count']} {args.league} games → {out}")
+    print(f"Wrote {result['game_count']} {args.league} games ({day.isoformat()}) → {out}")
 
 
 if __name__ == "__main__":

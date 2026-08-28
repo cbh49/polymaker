@@ -11,8 +11,8 @@ Sources:
 Table columns per team/fighter row:
   Spread LINE | HANDLE | BETS | Total LINE | HANDLE | BETS | Money LINE | HANDLE | BETS
 
-HANDLE -> vsin_handle_bet_pct
-BETS   -> vsin_public_bet_pct
+HANDLE -> vsin_handle_bet_pct   (percentage; no raw dollar handle)
+BETS   -> vsin_public_bet_pct   (percentage; no ticket counts)
 LINE   -> vsin_line
 
 UFC is moneyline-first (spread/total are usually blank) and has no team

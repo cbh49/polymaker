@@ -169,6 +169,8 @@ def _split_side(
 ) -> dict[str, Any] | None:
     if not isinstance(split_side, dict):
         return None
+    # ncaafb-odds / mlb-odds split sides only publish betsPercentage and
+    # stakePercentage — no raw ticket counts or dollar handle to preserve.
     row: dict[str, Any] = {
         "sbd_public_bet_pct": _round_pct(split_side.get("betsPercentage")),
         "sbd_handle_bet_pct": _round_pct(split_side.get("stakePercentage")),
