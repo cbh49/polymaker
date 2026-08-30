@@ -138,7 +138,7 @@ def main() -> None:
             merge_vsin_into_game(game, vsin_game)
             vsin_merged += 1
         eva_game = _find_game(game, eva_by_matchup, eva_by_teams)
-        if eva_game and _same_slate(eva_game, game, day):
+        if eva_game:
             merge_eva_into_game(game, eva_game)
             eva_merged_ids.add(str(eva_game.get("eva_game_id") or eva_game.get("matchup")))
         covers_game = _find_game(game, covers_by_matchup, covers_by_teams)
@@ -175,7 +175,7 @@ def main() -> None:
             extras_by_matchup[key] = dict(vsin_game)
     for extra in extras_by_matchup.values():
         eva_game = _find_game(extra, eva_by_matchup, eva_by_teams)
-        if eva_game and _same_slate(eva_game, extra, day):
+        if eva_game:
             merge_eva_into_game(extra, eva_game)
             eva_merged_ids.add(str(eva_game.get("eva_game_id") or eva_game.get("matchup")))
         covers_game = _find_game(extra, covers_by_matchup, covers_by_teams)
@@ -186,13 +186,9 @@ def main() -> None:
         key = eva_game.get("matchup")
         if not key or _already_present(eva_game):
             continue
-        if _game_slate_date(eva_game) != day:
-            continue
         if key in extras_by_matchup:
             merge_eva_into_game(extras_by_matchup[key], eva_game)
-        else:
-            extras_by_matchup[key] = dict(eva_game)
-        eva_merged_ids.add(str(eva_game.get("eva_game_id") or key))
+            eva_merged_ids.add(str(eva_game.get("eva_game_id") or key))
     for covers_game in covers.get("games") or []:
         key = covers_game.get("matchup")
         if not key or _already_present(covers_game):
@@ -228,8 +224,8 @@ def main() -> None:
             "scraped_at": eva.get("scraped_at"),
             "game_count": len(eva_unmerged),
             "note": (
-                "EV Analytics board did not match this slate date; "
-                "timestamped histories are kept here instead of merging onto games."
+                "EV Analytics games that did not match a board game by team; "
+                "timestamped histories are kept here instead of merging."
             ),
             "games": eva_unmerged,
         }

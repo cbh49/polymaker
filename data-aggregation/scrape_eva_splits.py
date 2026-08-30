@@ -32,9 +32,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from datetime import date, datetime, timedelta, timezone
+import sys
+import threading
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 from zoneinfo import ZoneInfo
 
 import requests
@@ -57,6 +59,13 @@ PAGE_URLS = {
 CHART_URL = "https://evanalytics.com/modules/odds/data/chart.php"
 CHART_TZ = ZoneInfo("America/New_York")
 SPORT_CODES = {"MLB": "mlb", "WNBA": "wnba", "NCAAF": "ncaaf"}
+# SYN to evanalytics.com can sit in SYN_SENT past requests' timeout and stall
+# the whole NCAAF/WNBA/MLB aggregator with no log output. Cap each call and
+# skip remaining charts after a couple of consecutive hangs.
+HTTP_TIMEOUT = (5.0, 10.0)
+HTTP_DEADLINE_S = 12.0
+CHART_FAIL_FAST_AFTER = 2
+_T = TypeVar("_T")
 
 HEADERS = {
     "User-Agent": (
@@ -127,7 +136,7 @@ def _parse_date_header(text: str) -> date | None:
         return None
 
 
-def _parse_chart_ts(text: str, year: int, game_day: date | None) -> str | None:
+def _parse_chart_ts(text: str, year: int) -> str | None:
     """Convert '08/18 07:19 PM' to an America/New_York ISO timestamp."""
     cleaned = (text or "").strip()
     if not cleaned:
@@ -136,11 +145,6 @@ def _parse_chart_ts(text: str, year: int, game_day: date | None) -> str | None:
         dt = datetime.strptime(f"{year}/{cleaned}", "%Y/%m/%d %I:%M %p")
     except ValueError:
         return None
-    if game_day is not None and dt.date() > game_day + timedelta(days=1):
-        try:
-            dt = dt.replace(year=year - 1)
-        except ValueError:
-            pass
     return dt.replace(tzinfo=CHART_TZ).isoformat()
 
 
@@ -148,7 +152,6 @@ def _history_points(
     rows: list[dict[str, Any]] | None,
     value_key: str,
     year: int,
-    game_day: date | None,
     *,
     negate: bool = False,
 ) -> list[dict[str, Any]]:
@@ -163,7 +166,7 @@ def _history_points(
             continue
         if negate:
             line = -line if line != 0 else 0
-        ts = _parse_chart_ts(str(row.get("update_date") or ""), year, game_day)
+        ts = _parse_chart_ts(str(row.get("update_date") or ""), year)
         point: dict[str, Any] = {"ts": ts, "line": line}
         if not ts:
             point["ts_raw"] = row.get("update_date")
@@ -190,13 +193,39 @@ def _side(
     return row
 
 
+def _call_with_deadline(fn: Callable[[], _T], timeout_s: float) -> _T:
+    """Run `fn` on a daemon thread so a hung DNS/SSL connect cannot stall us."""
+    box: list[_T] = []
+    err: list[Exception] = []
+
+    def _run() -> None:
+        try:
+            box.append(fn())
+        except Exception as exc:  # noqa: BLE001
+            err.append(exc)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        raise TimeoutError(f"timed out after {timeout_s:.0f}s")
+    if err:
+        raise err[0]
+    if not box:
+        raise TimeoutError(f"timed out after {timeout_s:.0f}s")
+    return box[0]
+
+
 def fetch_html(page_url: str) -> str:
-    headers = {**HEADERS, "Referer": page_url}
-    with requests.Session() as session:
-        session.trust_env = False
-        resp = session.get(page_url, headers=headers, timeout=30)
-    resp.raise_for_status()
-    return resp.text
+    def _get() -> str:
+        headers = {**HEADERS, "Referer": page_url}
+        with requests.Session() as session:
+            session.trust_env = False
+            resp = session.get(page_url, headers=headers, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        return resp.text
+
+    return _call_with_deadline(_get, HTTP_DEADLINE_S)
 
 
 def fetch_chart(
@@ -216,10 +245,14 @@ def fetch_chart(
         "parent_cid": parent_cid,
     }
     headers = {**HEADERS, "Referer": page_url, "Accept": "application/json"}
-    resp = session.post(CHART_URL, params=params, headers=headers, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    return data if isinstance(data, dict) else {}
+
+    def _post() -> dict[str, Any]:
+        resp = session.post(CHART_URL, params=params, headers=headers, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    return _call_with_deadline(_post, HTTP_DEADLINE_S)
 
 
 def _parse_data_chart(raw: str) -> dict[str, str] | None:
@@ -351,19 +384,17 @@ def build_game(
     league: str = "MLB",
 ) -> dict[str, Any]:
     slate_date: date | None = row.get("slate_date")
-    year = (slate_date or datetime.now(CHART_TZ).date()).year
+    year = datetime.now(CHART_TZ).date().year
     away_abbr = _canonical_abbr(row["away_abbr"], league, abbr_map)
     home_abbr = _canonical_abbr(row["home_abbr"], league, abbr_map)
     away_name = _canonical_name(row.get("away"), away_abbr, league, abbr_map)
     home_name = _canonical_name(row.get("home"), home_abbr, league, abbr_map)
 
-    ml_away_hist = _history_points(chart.get("moneyline2"), "price", year, slate_date)
-    ml_home_hist = _history_points(chart.get("moneyline1"), "price", year, slate_date)
-    sp_home_hist = _history_points(chart.get("spread"), "spread", year, slate_date)
-    sp_away_hist = _history_points(
-        chart.get("spread"), "spread", year, slate_date, negate=True
-    )
-    tot_hist = _history_points(chart.get("total"), "total", year, slate_date)
+    ml_away_hist = _history_points(chart.get("moneyline2"), "price", year)
+    ml_home_hist = _history_points(chart.get("moneyline1"), "price", year)
+    sp_home_hist = _history_points(chart.get("spread"), "spread", year)
+    sp_away_hist = _history_points(chart.get("spread"), "spread", year, negate=True)
+    tot_hist = _history_points(chart.get("total"), "total", year)
 
     away_sp, away_sp_odds = row["spread_live"]["away"]
     home_sp, home_sp_odds = row["spread_live"]["home"]
@@ -423,28 +454,47 @@ def scrape(
     sport = SPORT_CODES[league]
     abbr_map = load_abbr_to_team(abbrevs_path) if league == "MLB" else {}
     html = fetch_html(page_url)
-    board_rows = parse_game_line_rows(html)
-
+    rows = parse_game_line_rows(html)
+    print(f"EV Analytics: {len(rows)} games (fetching line-history charts)…", flush=True)
     games: list[dict[str, Any]] = []
+    consecutive_timeouts = 0
+    skip_charts = False
     with requests.Session() as session:
         session.trust_env = False
-        for row in board_rows:
-            if day is not None and row.get("slate_date") is not None and row["slate_date"] != day:
-                continue
+        for i, row in enumerate(rows, 1):
             meta = row["chart"]
-            try:
-                chart = fetch_chart(
-                    session,
-                    meta.get("sport") or sport,
-                    meta["gid"],
-                    meta["tid"],
-                    meta["cid"] or "",
-                    meta["parent_cid"] or meta["cid"] or "",
-                    page_url,
-                )
-            except (requests.RequestException, ValueError, json.JSONDecodeError):
-                chart = {}
+            chart: dict[str, Any] = {}
+            if not skip_charts:
+                try:
+                    chart = fetch_chart(
+                        session,
+                        meta.get("sport") or sport,
+                        meta["gid"],
+                        meta["tid"],
+                        meta["cid"] or "",
+                        meta["parent_cid"] or meta["cid"] or "",
+                        page_url,
+                    )
+                    consecutive_timeouts = 0
+                except (
+                    requests.RequestException,
+                    ValueError,
+                    json.JSONDecodeError,
+                    TimeoutError,
+                    OSError,
+                ) as exc:
+                    consecutive_timeouts += 1
+                    if consecutive_timeouts >= CHART_FAIL_FAST_AFTER:
+                        skip_charts = True
+                        print(
+                            f"Warning: EV Analytics charts stalled ({exc}); "
+                            f"skipping remaining {len(rows) - i + 1} charts",
+                            file=sys.stderr,
+                            flush=True,
+                        )
             games.append(build_game(row, chart, abbr_map, league=league))
+            if i == 1 or i == len(rows) or i % 10 == 0:
+                print(f"  chart {i}/{len(rows)}", flush=True)
 
     slate_dates = sorted({g.get("date") for g in games if g.get("date")})
     return {

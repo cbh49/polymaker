@@ -112,12 +112,15 @@ def _same(src: dict[str, Any], dest: dict[str, Any], day: date) -> bool:
 
 
 def _scrape_or_empty(name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    print(f"Scraping {name}…", flush=True)
     try:
         result = fn()
         if isinstance(result, dict):
+            n = len(result.get("games") or [])
+            print(f"  {name}: {n} games", flush=True)
             return result
     except Exception as exc:  # noqa: BLE001
-        print(f"Warning: {name} scrape failed: {exc}", file=sys.stderr)
+        print(f"Warning: {name} scrape failed: {exc}", file=sys.stderr, flush=True)
     return {"games": [], "game_count": 0, "source": name}
 
 
@@ -180,7 +183,7 @@ def main() -> None:
             merge_vsin_into_game(game, vsin_game)
             vsin_merged += 1
         eva_game = _find_game(game, eva_by_matchup, eva_by_teams)
-        if eva_game and _same(eva_game, game, day):
+        if eva_game:
             merge_eva_into_game(game, eva_game)
             eva_merged_ids.add(str(eva_game.get("eva_game_id") or eva_game.get("matchup")))
         covers_game = _find_game(game, covers_by_matchup, covers_by_teams)
@@ -222,7 +225,7 @@ def main() -> None:
             extras_by_matchup[key] = dict(vsin_game)
     for extra in extras_by_matchup.values():
         eva_game = _find_game(extra, eva_by_matchup, eva_by_teams)
-        if eva_game and _same(eva_game, extra, day):
+        if eva_game:
             merge_eva_into_game(extra, eva_game)
             eva_merged_ids.add(str(eva_game.get("eva_game_id") or eva_game.get("matchup")))
         covers_game = _find_game(extra, covers_by_matchup, covers_by_teams)
@@ -233,14 +236,10 @@ def main() -> None:
         key = eva_game.get("matchup")
         if not key or _already_present(eva_game):
             continue
-        if not _on_slate(eva_game, day):
-            continue
         found = _find_game(eva_game, extras_by_matchup, {})
         if found:
             merge_eva_into_game(found, eva_game)
-        else:
-            extras_by_matchup[key] = dict(eva_game)
-        eva_merged_ids.add(str(eva_game.get("eva_game_id") or key))
+            eva_merged_ids.add(str(eva_game.get("eva_game_id") or key))
     for covers_game in covers.get("games") or []:
         key = covers_game.get("matchup")
         if not key or _already_present(covers_game):
@@ -277,8 +276,8 @@ def main() -> None:
             "scraped_at": eva.get("scraped_at"),
             "game_count": len(eva_unmerged),
             "note": (
-                "EV Analytics board did not match this slate window; "
-                "timestamped histories are kept here instead of merging onto games."
+                "EV Analytics games that did not match a DK/SBD/TheSpread/VSiN game "
+                "by team; timestamped histories are kept here instead of merging."
             ),
             "games": eva_unmerged,
         }

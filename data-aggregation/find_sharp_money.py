@@ -9,9 +9,9 @@ game.total.over/under) — confirmed against mlb/wnba/ufc/ncaaf_betting_splits.j
            (MLB: PlayerProps.ai; WNBA/UFC/NCAAF: DraftKings Network)
   sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NCAAF)
   vsin     vsin_public_bet_pct / vsin_handle_bet_pct
-  prices   open / live  (ML: American odds; spread/total: the number)
-           Polymarket history, then eva_open / eva_line, when TheSpread
-           open/live is missing (never splice EVA open against DK live)
+  prices   eva_open / eva_line first when EVA detected a move, else
+           TheSpread open / live, else Polymarket history
+           (never splice EVA open against DK live)
   juice    open_odds / live_odds  (spread/total vig when the number is flat)
   vsin ML  vsin_line    (American odds, used for no-vig fair probability)
 
@@ -20,7 +20,7 @@ so RLM uses the number first and falls back to juice implied-prob movement.
 Totals use over/under: a rising total confirms Over, a falling total Under.
 WNBA/UFC weight DraftKings (primary) + VSiN only. NCAAF is three-source
 (DK + VSiN + SBD) like MLB; Pinnacle is skipped. RLM source order:
-TheSpread (same book), then Polymarket history, then EV Analytics.
+EV Analytics (chart history), then TheSpread open→live, then Polymarket.
 SBD is not scraped for WNBA/UFC. Covers is not scraped for UFC;
 Polymarket implied prob is used as the exchange fair in that case.
 
@@ -90,7 +90,7 @@ STRONG_SOURCE_GAP_THRESHOLD = 15.0
 LOW_PROB_DOG_ODDS_THRESHOLD = 200.0
 
 # Primary RLM line-movement source order (first complete source wins).
-RLM_SOURCE_PRIORITY: tuple[str, ...] = ("thespread", "polymarket", "eva")
+RLM_SOURCE_PRIORITY: tuple[str, ...] = ("eva", "thespread", "polymarket")
 
 SOURCE_WEIGHTS: dict[str, float] = {
     "vsin": W_VSIN,
@@ -382,12 +382,10 @@ def check_rlm(
     rlm                = line moved against the public side
     rlm_confirmed      = rlm and the move is toward the sharp-money side
 
-    Source order (RLM_SOURCE_PRIORITY): TheSpread open→live (same book),
-    then Polymarket history first→last (same market; skipped when
-    liquidity is below LOW_LIQUIDITY_THRESHOLD), then EVA open→live.
-    TheSpread is never mixed with EVA. When TheSpread is missing and
-    Polymarket and EVA disagree, Polymarket wins and rlm_source_conflict
-    is set — the play is not discarded.
+    Source order (RLM_SOURCE_PRIORITY): EVA open→live when the chart
+    actually moved, then TheSpread open→live (or juice), then Polymarket
+    history first→last (skipped as primary when liquidity is below
+    LOW_LIQUIDITY_THRESHOLD). Sources are never mixed into one pair.
     """
     away_pub = _as_float(away.get("public_bet_pct"))
     home_pub = _as_float(home.get("public_bet_pct"))
@@ -413,22 +411,27 @@ def check_rlm(
     conflict = False
     poly_usable = poly_ready and poly_low is False
 
-    if ts_complete:
+    if eva_move is not None:
+        source_used = "eva"
+        line_moved_toward = eva_move
+        open_px, live_px = eva_open, eva_live
+        conflict = (ts_move is not None and ts_move != eva_move) or (
+            poly_move is not None and poly_move != eva_move
+        )
+    elif ts_complete:
         source_used = "thespread"
         line_moved_toward = ts_move
         open_px, live_px = ts_open, ts_live
+        conflict = poly_move is not None and ts_move is not None and poly_move != ts_move
     elif poly_usable:
         source_used = "polymarket"
         line_moved_toward = poly_move
         open_px, live_px = poly_open, poly_live
-        conflict = eva_move is not None and poly_move is not None and eva_move != poly_move
     elif eva_available:
         source_used = "eva"
         line_moved_toward = eva_move
         open_px, live_px = eva_open, eva_live
-        conflict = poly_move is not None and eva_move is not None and eva_move != poly_move
     elif poly_ready:
-        # History exists but liquidity is too low and EVA is missing; still surface it.
         source_used = "polymarket"
         line_moved_toward = poly_move
         open_px, live_px = poly_open, poly_live
@@ -1218,6 +1221,19 @@ def _markets_from_arg(value: str) -> tuple[Market, ...]:
     raise ValueError(f"unsupported market: {value}")
 
 
+def _resolve_cli_path(path: Path) -> Path:
+    """Keep `output/...` relative to this script, not the caller's cwd.
+
+    scrape_* writes under data-aggregation/output/. Running from trading-bot
+    with `--input output/ncaaf_betting_splits.json` used to miss that file.
+    """
+    if path.is_absolute():
+        return path
+    if path.parts and path.parts[0] == "output":
+        return SCRIPT_DIR / path
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Find sharp-money plays from combined betting splits")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
@@ -1230,6 +1246,9 @@ def main() -> None:
         help="Market to evaluate (NCAAF should use 'all'; WNBA 'both' or 'spread')",
     )
     args = parser.parse_args()
+    args.input = _resolve_cli_path(args.input)
+    args.out = _resolve_cli_path(args.out)
+    args.csv = _resolve_cli_path(args.csv)
 
     payload = json.loads(args.input.read_text(encoding="utf-8"))
     markets = _markets_from_arg(args.market)

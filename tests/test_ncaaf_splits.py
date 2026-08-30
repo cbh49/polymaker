@@ -75,7 +75,7 @@ def test_ncaaf_sharp_sources() -> None:
     cfg = config_snapshot(("moneyline", "spread", "total"), sources_for_league("NCAAF"), "NCAAF")
     assert cfg["strong_source_gap_threshold"] == 15.0
     assert cfg["low_prob_dog_odds_threshold"] == 200.0
-    assert cfg["rlm_source_priority"] == ["thespread", "polymarket", "eva"]
+    assert cfg["rlm_source_priority"] == ["eva", "thespread", "polymarket"]
 
 
 def _side(*, public: int, handle: int, vsin_pub: int, vsin_h: int, sbd_pub: int, sbd_h: int, **extra):
@@ -565,8 +565,90 @@ def test_ml_low_volume_dog_flag_and_spread_divergence() -> None:
     assert "5.75" in play["confidence_note"]
 
 
-def test_rlm_prefers_polymarket_over_eva_when_thespread_missing() -> None:
-    """TheSpread absent: Polymarket history (high liq) beats EVA, even if they disagree."""
+def test_rlm_prefers_eva_over_thespread_when_eva_moved() -> None:
+    """EVA chart moved: use it even if TheSpread also has an open→live pair."""
+    game = {
+        "matchup": "HAW @ STAN",
+        "date": "2026-08-29",
+        "spread": {
+            "away": _side(
+                public=39,
+                handle=77,
+                vsin_pub=40,
+                vsin_h=75,
+                sbd_pub=38,
+                sbd_h=70,
+                selection="HAW",
+                open=6.0,
+                live=6.0,
+                eva_open=6.0,
+                eva_line=3.5,
+            ),
+            "home": _side(
+                public=61,
+                handle=23,
+                vsin_pub=60,
+                vsin_h=25,
+                sbd_pub=62,
+                sbd_h=30,
+                selection="STAN",
+                open=-6.0,
+                live=-6.0,
+                eva_open=-6.0,
+                eva_line=-3.5,
+            ),
+        },
+    }
+    play = process_game(game, market="spread", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["rlm_source_used"] == "eva"
+    assert play["line_moved_toward"] == "away"
+    assert play["open"] == 6.0
+    assert play["live"] == 3.5
+
+
+def test_rlm_falls_to_thespread_when_eva_is_flat() -> None:
+    """EVA open==live: TheSpread open→live is the fallback."""
+    game = {
+        "matchup": "HAW @ STAN",
+        "date": "2026-08-29",
+        "spread": {
+            "away": _side(
+                public=39,
+                handle=77,
+                vsin_pub=40,
+                vsin_h=75,
+                sbd_pub=38,
+                sbd_h=70,
+                selection="HAW",
+                open=6.0,
+                live=3.5,
+                eva_open=4.0,
+                eva_line=4.0,
+            ),
+            "home": _side(
+                public=61,
+                handle=23,
+                vsin_pub=60,
+                vsin_h=25,
+                sbd_pub=62,
+                sbd_h=30,
+                selection="STAN",
+                open=-6.0,
+                live=-3.5,
+                eva_open=-4.0,
+                eva_line=-4.0,
+            ),
+        },
+    }
+    play = process_game(game, market="spread", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["rlm_source_used"] == "thespread"
+    assert play["line_moved_toward"] == "away"
+
+
+def test_rlm_prefers_polymarket_when_eva_flat_and_thespread_missing() -> None:
+    """EVA flat and no TheSpread: Polymarket history (high liq) is used."""
     game = {
         "matchup": "UNC @ TCU",
         "date": "2026-08-29",
@@ -580,8 +662,8 @@ def test_rlm_prefers_polymarket_over_eva_when_thespread_missing() -> None:
                 sbd_h=23,
                 selection="UNC",
                 live=270,
-                eva_open=400,
-                eva_line=500,
+                eva_open=280,
+                eva_line=280,
                 polymarket=_poly(
                     line_open=344,
                     line_live=250,
@@ -599,8 +681,8 @@ def test_rlm_prefers_polymarket_over_eva_when_thespread_missing() -> None:
                 sbd_h=77,
                 selection="TCU",
                 live=-340,
-                eva_open=-500,
-                eva_line=-700,
+                eva_open=-355,
+                eva_line=-355,
                 polymarket=_poly(
                     line_open=-344,
                     line_live=-203,
@@ -616,8 +698,8 @@ def test_rlm_prefers_polymarket_over_eva_when_thespread_missing() -> None:
     assert play["rlm_source_used"] == "polymarket"
     assert play["line_moved_toward"] == "away"
     assert play["rlm_confirmed"] is True
-    assert play["rlm_source_conflict"] is True
-    assert play["eva_line_moved_toward"] == "home"
+    assert play["rlm_source_conflict"] is False
+    assert play["eva_line_moved_toward"] is None
     assert play["polymarket_line_moved_toward"] == "away"
     assert play["polymarket_low_liquidity"] is False
     # Pair comes from Poly history, not eva_open 400 vs DK live 270
