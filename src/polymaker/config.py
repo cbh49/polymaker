@@ -51,7 +51,7 @@ class PathsConfig(BaseModel):
 
 
 class SharpConfig(BaseModel):
-    """Auto-trade knobs for sharp-money → Polymarket moneylines."""
+    """Auto-trade knobs for sharp-money → Polymarket moneyline/spread/total."""
 
     mlb_path: str = "data-aggregation/output/mlb_sharp_money.json"
     wnba_path: str = "data-aggregation/output/wnba_sharp_money.json"
@@ -60,7 +60,7 @@ class SharpConfig(BaseModel):
     usd_tier_a: float = 25.0  # stake for A/A+; to-win target for +200 ML dogs
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # "A" = Tier A only; "B" = A+B
-    markets: list[str] = Field(default_factory=lambda: ["moneyline"])
+    markets: list[str] = Field(default_factory=lambda: ["moneyline", "spread", "total"])
     require_rlm: bool = False
     max_ask: float = 0.55  # skip if best ask / last price is above this
     # If set, require best ask <= implied_fair_prob - min_edge

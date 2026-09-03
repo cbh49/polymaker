@@ -1,8 +1,9 @@
 """Sports event discovery helpers for Polymarket Gamma series.
 
-MLB / WNBA (and future leagues) are discovered via `GET /events?series_slug=…`.
-Moneyline markets use the game slug `{league}-{away}-{home}-YYYY-MM-DD`. Gamma's
-`startDate` is listing time — game day is `eventDate`; tip-off is `startTime`.
+MLB / WNBA / UFC / CFB are discovered via `GET /events?series_slug=…`.
+A Gamma sports event slug is the moneyline (`{league}-{away}-{home}-YYYY-MM-DD`);
+spreads and totals are nested markets under that event. Gamma's `startDate` is
+listing time — game day is `eventDate`; tip-off is `startTime`.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+
 
 def default_sports_series_slugs(today: date | None = None) -> tuple[str, ...]:
     year = (today or datetime.now(UTC).date()).year
@@ -22,12 +24,30 @@ SPORTS_SERIES_SLUGS: tuple[str, ...] = default_sports_series_slugs()
 # Don't trade inside this window before tip-off — books are jumpy at kickoff.
 DEFAULT_PREGAME_BUFFER_MINUTES = 5
 CFB_LOOK_AHEAD_DAYS = 7
+UFC_LOOK_AHEAD_DAYS = 14
 
-# Moneyline: mlb-atl-cws-2026-08-20 / wnba-wsh-gsv-2026-07-20 / ufc-ant-gre3-2026-08-22
-# / cfb-hawaii-stan-2026-08-29
+# Skip a spread/total rather than buy a line more than this many points away.
+LINE_MATCH_TOLERANCE = 1.0
+
+# Moneyline / event: mlb-atl-cws-2026-08-20 / wnba-wsh-gsv-2026-07-20
+# / ufc-ant-gre3-2026-08-22 / cfb-hawaii-stan-2026-08-29
 _MONEYLINE_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-[a-z0-9]+-[a-z0-9]+-(?P<ymd>\d{4}-\d{2}-\d{2})$"
+    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    r"-(?P<ymd>\d{4}-\d{2}-\d{2})$"
 )
+_SPREAD_SLUG_RE = re.compile(
+    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    r"-(?P<ymd>\d{4}-\d{2}-\d{2})-spread-(?P<favored>home|away)-(?P<pts>\d+(?:pt\d+)?)$"
+)
+_TOTAL_SLUG_RE = re.compile(
+    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    r"-(?P<ymd>\d{4}-\d{2}-\d{2})-(?:total|totals)-(?P<pts>\d+(?:pt\d+)?)$"
+)
+
+# Public aliases — scrape_polymarket_odds and tests import these names.
+EVENT_SLUG_RE = _MONEYLINE_RE
+SPREAD_SLUG_RE = _SPREAD_SLUG_RE
+TOTAL_SLUG_RE = _TOTAL_SLUG_RE
 
 
 def is_sports_series(slug: str | None) -> bool:
@@ -42,10 +62,12 @@ def is_sports_series(slug: str | None) -> bool:
 
 
 def look_ahead_days_for_series(series_slug: str, default: int) -> int:
-    """CFB weekend slates need a longer window than daily MLB/WNBA boards."""
+    """CFB/UFC weekend slates need a longer window than daily MLB/WNBA boards."""
     s = (series_slug or "").lower()
     if s == "cfb" or s.startswith("cfb-"):
         return max(default, CFB_LOOK_AHEAD_DAYS)
+    if s == "ufc":
+        return max(default, UFC_LOOK_AHEAD_DAYS)
     return default
 
 
@@ -54,6 +76,40 @@ def is_moneyline_slug(slug: str | None) -> bool:
     if not slug:
         return False
     return _MONEYLINE_RE.match(slug) is not None
+
+
+def is_spread_slug(slug: str | None) -> bool:
+    if not slug:
+        return False
+    return _SPREAD_SLUG_RE.match(slug) is not None
+
+
+def is_total_slug(slug: str | None) -> bool:
+    if not slug:
+        return False
+    return _TOTAL_SLUG_RE.match(slug) is not None
+
+
+def is_sports_market_slug(slug: str | None) -> bool:
+    """Moneyline, spread, or total — not 1H / player props / first-five."""
+    return is_moneyline_slug(slug) or is_spread_slug(slug) or is_total_slug(slug)
+
+
+def parse_pt_number(raw: str) -> float | None:
+    """Parse Polymarket `pt` decimals: `5pt5` → 5.5, `21` → 21.0."""
+    text = (raw or "").strip().lower()
+    if not text:
+        return None
+    if "pt" in text:
+        left, _, right = text.partition("pt")
+        try:
+            return float(f"{left}.{right}")
+        except ValueError:
+            return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def parse_event_date(value: str | None) -> date | None:
@@ -150,17 +206,231 @@ def should_skip_live_event(
     return not is_pre_game(event, buffer_minutes, now=now)
 
 
+def market_liquidity(raw: dict[str, Any]) -> float:
+    """Gamma `liquidityNum` / `liquidity`; 0 when missing or non-positive."""
+    for key in ("liquidityNum", "liquidity"):
+        val = raw.get(key)
+        if val is None or val == "":
+            continue
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            continue
+        if num > 0:
+            return round(num, 2)
+    return 0.0
+
+
 def pick_moneyline_market(event: dict[str, Any]) -> dict[str, Any] | None:
     """Return the open moneyline market nested under a sports event, if any."""
     event_slug = event.get("slug") or ""
     if not is_moneyline_slug(event_slug):
         return None
     for raw in event.get("markets") or []:
-        if raw.get("closed"):
+        if not isinstance(raw, dict) or raw.get("closed"):
             continue
         if raw.get("slug") == event_slug:
-            return raw if isinstance(raw, dict) else None
+            return raw
     return None
+
+
+def classify_event_markets(event: dict[str, Any]) -> dict[str, Any]:
+    """Split nested Gamma markets into moneyline / spreads / totals (ignore 1H/props)."""
+    event_slug = str(event.get("slug") or "")
+    moneyline = None
+    spreads: list[dict[str, Any]] = []
+    totals: list[dict[str, Any]] = []
+    for raw in event.get("markets") or []:
+        if not isinstance(raw, dict) or raw.get("closed"):
+            continue
+        slug = str(raw.get("slug") or "")
+        if slug == event_slug and _MONEYLINE_RE.match(slug):
+            moneyline = raw
+            continue
+        spread_m = _SPREAD_SLUG_RE.match(slug)
+        if spread_m:
+            pts = parse_pt_number(spread_m.group("pts"))
+            if pts is None:
+                continue
+            spreads.append(
+                {
+                    "raw": raw,
+                    "favored": spread_m.group("favored"),
+                    "points": pts,
+                    "liquidity": market_liquidity(raw),
+                }
+            )
+            continue
+        total_m = _TOTAL_SLUG_RE.match(slug)
+        if total_m:
+            pts = parse_pt_number(total_m.group("pts"))
+            if pts is None:
+                continue
+            totals.append(
+                {
+                    "raw": raw,
+                    "points": pts,
+                    "liquidity": market_liquidity(raw),
+                }
+            )
+    return {"moneyline": moneyline, "spreads": spreads, "totals": totals}
+
+
+def implied_home_spread(favored: str, pts: float) -> float:
+    """Polymarket `favored=home, pts=X` → home line -X; `away` → home line +X."""
+    return -pts if favored == "home" else pts
+
+
+def _side_line_number(side: dict[str, Any] | None) -> float | None:
+    if not isinstance(side, dict):
+        return None
+    for key in ("live", "eva_line", "sbd_line", "open"):
+        val = side.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+    return None
+
+
+def pick_spread_market(
+    spreads: list[dict[str, Any]],
+    dest_spread: dict[str, Any] | None = None,
+    *,
+    target_home_line: float | None = None,
+    max_line_delta: float | None = None,
+) -> dict[str, Any] | None:
+    """Closest liquid spread to the sportsbook home line (exact within 0.01 first)."""
+    usable = [s for s in spreads if (s.get("liquidity") or 0) > 0]
+    if not usable:
+        return None
+    target = target_home_line
+    if target is None:
+        home_line = _side_line_number((dest_spread or {}).get("home"))
+        away_line = _side_line_number((dest_spread or {}).get("away"))
+        target = home_line if home_line is not None else (
+            -away_line if away_line is not None else None
+        )
+    if target is None:
+        return max(usable, key=lambda r: float(r.get("liquidity") or 0))
+    for row in usable:
+        implied = implied_home_spread(str(row["favored"]), float(row["points"]))
+        if abs(implied - target) < 0.01:
+            return row
+    best = min(
+        usable,
+        key=lambda r: abs(implied_home_spread(str(r["favored"]), float(r["points"])) - target),
+    )
+    implied = implied_home_spread(str(best["favored"]), float(best["points"]))
+    if max_line_delta is not None and abs(implied - target) > max_line_delta:
+        return None
+    return best
+
+
+def pick_total_market(
+    totals: list[dict[str, Any]],
+    dest_total: dict[str, Any] | None = None,
+    *,
+    target_line: float | None = None,
+    max_line_delta: float | None = None,
+) -> dict[str, Any] | None:
+    """Closest liquid total to the sportsbook number (exact within 0.01 first)."""
+    usable = [t for t in totals if (t.get("liquidity") or 0) > 0]
+    if not usable:
+        return None
+    target = target_line
+    if target is None:
+        target = _side_line_number((dest_total or {}).get("over"))
+        if target is None:
+            target = _side_line_number((dest_total or {}).get("under"))
+    if target is None:
+        return max(usable, key=lambda r: float(r.get("liquidity") or 0))
+    for row in usable:
+        if abs(float(row["points"]) - target) < 0.01:
+            return row
+    best = min(usable, key=lambda r: abs(float(r["points"]) - target))
+    if max_line_delta is not None and abs(float(best["points"]) - target) > max_line_delta:
+        return None
+    return best
+
+
+def pick_market_for_kind(
+    event: dict[str, Any],
+    kind: str,
+    target_line: float | None = None,
+    *,
+    max_line_delta: float = LINE_MATCH_TOLERANCE,
+    play_line: float | None = None,
+    home_away: str | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Pick the nested Gamma market for `moneyline` / `spread` / `total`.
+
+    Returns `(raw_market, detail)`. `detail` is empty on success; otherwise a
+    skip reason (`no open spread`, `spread line mismatch play=21.5 poly=14.5`).
+    """
+    kind_l = (kind or "moneyline").strip().lower()
+    classified = classify_event_markets(event)
+    if kind_l == "moneyline":
+        raw = classified["moneyline"] or pick_moneyline_market(event)
+        if raw is None:
+            return None, "no open moneyline"
+        return raw, ""
+    if kind_l == "spread":
+        picked = pick_spread_market(
+            classified["spreads"],
+            target_home_line=target_line,
+            max_line_delta=max_line_delta,
+        )
+        if picked is not None:
+            return picked["raw"] if isinstance(picked.get("raw"), dict) else None, ""
+        usable = [s for s in classified["spreads"] if (s.get("liquidity") or 0) > 0]
+        if not usable:
+            return None, "no open spread"
+        if target_line is None:
+            return None, "no open spread"
+        best = min(
+            usable,
+            key=lambda r: abs(
+                implied_home_spread(str(r["favored"]), float(r["points"])) - target_line
+            ),
+        )
+        implied = implied_home_spread(str(best["favored"]), float(best["points"]))
+        ha = (home_away or "").lower()
+        poly_for_play = -implied if ha == "away" else implied
+        shown_play = play_line if play_line is not None else target_line
+        shown_poly = poly_for_play if play_line is not None else implied
+        return None, f"spread line mismatch play={shown_play:g} poly={shown_poly:g}"
+    if kind_l == "total":
+        picked = pick_total_market(
+            classified["totals"],
+            target_line=target_line,
+            max_line_delta=max_line_delta,
+        )
+        if picked is not None:
+            return picked["raw"] if isinstance(picked.get("raw"), dict) else None, ""
+        usable = [t for t in classified["totals"] if (t.get("liquidity") or 0) > 0]
+        if not usable:
+            return None, "no open total"
+        if target_line is None:
+            return None, "no open total"
+        best = min(usable, key=lambda r: abs(float(r["points"]) - target_line))
+        shown_play = play_line if play_line is not None else target_line
+        return None, f"total line mismatch play={shown_play:g} poly={float(best['points']):g}"
+    return None, f"unsupported market kind {kind!r}"
+
+
+def iter_open_sports_markets(event: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Moneyline + liquid spreads + liquid totals nested under a sports event."""
+    classified = classify_event_markets(event)
+    out: list[tuple[str, dict[str, Any]]] = []
+    ml = classified["moneyline"]
+    if isinstance(ml, dict):
+        out.append(("moneyline", ml))
+    for row in classified["spreads"]:
+        if (row.get("liquidity") or 0) > 0 and isinstance(row.get("raw"), dict):
+            out.append(("spread", row["raw"]))
+    for row in classified["totals"]:
+        if (row.get("liquidity") or 0) > 0 and isinstance(row.get("raw"), dict):
+            out.append(("total", row["raw"]))
+    return out
 
 
 def nested_event(raw_market: dict[str, Any]) -> dict[str, Any] | None:

@@ -2,8 +2,8 @@
 
 Replaces the v1 data_updater (hour-long crawl of every order book, written to
 Google Sheets). A politics-filtered sweep here is seconds; sports series
-(MLB/WNBA) are fetched via `/events?series_slug=` and filtered to moneylines
-in a short look-ahead window.
+(MLB/WNBA/UFC/CFB) are fetched via `/events?series_slug=` and filtered to
+moneylines, spreads, and totals in a short look-ahead window.
 """
 
 from __future__ import annotations
@@ -21,7 +21,11 @@ from polymaker.catalog.sports import (
     DEFAULT_PREGAME_BUFFER_MINUTES,
     SPORTS_SERIES_SLUGS,
     event_date_in_window,
-    pick_moneyline_market,
+    is_moneyline_slug,
+    is_spread_slug,
+    is_total_slug,
+    iter_open_sports_markets,
+    look_ahead_days_for_series,
     should_skip_live_event,
 )
 from polymaker.catalog.store import CatalogStore
@@ -43,7 +47,7 @@ class ScanConfig:
     min_liquidity: float = 1000.0
     min_volume_24hr: float = 0.0
     rewards_only: bool = True  # politics path: keep only liquidity-rewards markets
-    # Sports moneylines are discovered for trading eligibility even without a
+    # Sports markets are discovered for trading eligibility even without a
     # daily reward pool; set True to apply the same rewards gate as politics.
     sports_rewards_only: bool = False
     gamma_host: str = "https://gamma-api.polymarket.com"
@@ -111,9 +115,15 @@ async def _scan_sports_series(
     seen = 0
     skipped_live = 0
     skipped_window = 0
+    kept_moneyline = 0
+    kept_spread = 0
+    kept_total = 0
     async for event in gamma.iter_events(series_slug=series_slug):
         seen += 1
-        if not event_date_in_window(event.get("eventDate"), look_ahead_days=cfg.look_ahead_days):
+        if not event_date_in_window(
+            event.get("eventDate"),
+            look_ahead_days=look_ahead_days_for_series(series_slug, cfg.look_ahead_days),
+        ):
             skipped_window += 1
             continue
         if should_skip_live_event(
@@ -123,28 +133,36 @@ async def _scan_sports_series(
         ):
             skipped_live += 1
             continue
-        raw = pick_moneyline_market(event)
-        if raw is None:
-            continue
-        # Attach the parent event so parse_market can set event_id, and so any
-        # downstream live checks see series/live fields on nested events.
-        if not raw.get("events"):
-            raw = {**raw, "events": [event]}
-        meta = parse_market(raw, reward_rates)
-        if meta is None:
-            continue
-        if cfg.min_liquidity > 0 and meta.liquidity_num < cfg.min_liquidity:
-            continue
-        if cfg.min_volume_24hr > 0 and meta.volume_24hr < cfg.min_volume_24hr:
-            continue
-        if cfg.sports_rewards_only and meta.rewards_daily_rate <= 0:
-            continue
-        kept.append(meta)
+        for kind, raw in iter_open_sports_markets(event):
+            # Attach the parent event so parse_market can set event_id, and so any
+            # downstream live checks see series/live fields on nested events.
+            if not raw.get("events"):
+                raw = {**raw, "events": [event]}
+            meta = parse_market(raw, reward_rates)
+            if meta is None:
+                continue
+            if cfg.min_liquidity > 0 and meta.liquidity_num < cfg.min_liquidity:
+                continue
+            if cfg.min_volume_24hr > 0 and meta.volume_24hr < cfg.min_volume_24hr:
+                continue
+            if cfg.sports_rewards_only and meta.rewards_daily_rate <= 0:
+                continue
+            kept.append(meta)
+            slug = meta.slug or ""
+            if is_moneyline_slug(slug) or kind == "moneyline":
+                kept_moneyline += 1
+            elif is_spread_slug(slug) or kind == "spread":
+                kept_spread += 1
+            elif is_total_slug(slug) or kind == "total":
+                kept_total += 1
     log.info(
         "sports_scan_complete",
         series=series_slug,
         seen=seen,
         kept=len(kept),
+        kept_moneyline=kept_moneyline,
+        kept_spread=kept_spread,
+        kept_total=kept_total,
         skipped_live=skipped_live,
         skipped_window=skipped_window,
     )

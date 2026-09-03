@@ -206,6 +206,37 @@ def test_filter_plays_tier_and_market() -> None:
     )
     assert [p.matchup for p in wnba_only] == ["DAL @ GS"]
 
+    spread_and_total = filter_plays(
+        plays,
+        SharpTradeConfig(min_tier="B", markets=frozenset({"moneyline", "spread", "total"})),
+    )
+    assert [p.matchup for p in spread_and_total] == ["AZ @ ATL", "BOS @ NYY", "LAD @ SF", "DAL @ GS"]
+
+    total_play = SharpPlay(
+        league="NCAAF",
+        matchup="OHIO @ NEB",
+        side="Under",
+        market="total",
+        tier="A",
+        home_away="under",
+        game_time_utc=None,
+        implied_fair_prob=0.5,
+        rlm_confirmed=True,
+        composite_gap=12.0,
+        source_path="x",
+        raw={"live": 46.0, "open": 46.5},
+    )
+    with_total = filter_plays(
+        [*plays, total_play],
+        SharpTradeConfig(min_tier="B", markets=frozenset({"moneyline", "spread", "total"})),
+    )
+    assert any(p.market == "total" and p.side == "Under" for p in with_total)
+    ml_only_drops_total = filter_plays(
+        [*plays, total_play],
+        SharpTradeConfig(min_tier="B", markets=frozenset({"moneyline"})),
+    )
+    assert all(p.market == "moneyline" for p in ml_only_drops_total)
+
 
 @pytest.mark.asyncio
 async def test_match_wnba_play_with_catalog(tmp_path: Path) -> None:
@@ -339,6 +370,247 @@ async def test_match_play_with_catalog(tmp_path: Path) -> None:
     assert matched[0].slug == "mlb-ari-atl-2026-08-16"
     assert matched[0].token is not None
     assert matched[0].token.outcome == "Arizona Diamondbacks"
+
+
+def _gamma_binary(
+    slug: str,
+    condition_id: str,
+    outcomes: tuple[str, str],
+    tokens: tuple[str, str],
+    *,
+    liquidity: float = 5000.0,
+) -> dict:
+    return {
+        "slug": slug,
+        "conditionId": condition_id,
+        "closed": False,
+        "acceptingOrders": True,
+        "clobTokenIds": json.dumps(list(tokens)),
+        "outcomes": json.dumps(list(outcomes)),
+        "orderPriceMinTickSize": 0.01,
+        "orderMinSize": 5,
+        "negRisk": False,
+        "liquidityNum": liquidity,
+        "bestAsk": 0.48,
+        "bestBid": 0.46,
+        "volume24hr": 100.0,
+    }
+
+
+class _EventGamma:
+    def __init__(self, events: dict[str, dict]) -> None:
+        self.events = events
+
+    async def event_by_slug(self, slug: str) -> dict | None:
+        return self.events.get(slug)
+
+    async def market_by_slug(self, slug: str) -> None:
+        return None
+
+    async def iter_events(self, **kwargs: object):  # noqa: ANN003
+        if False:
+            yield {}
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_match_cfb_total_over_under(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    import polymaker.trading.match as match_mod
+    from polymaker.catalog.store import CatalogStore
+    from polymaker.trading.match import match_sharp_plays
+
+    real_resolve = match_mod.resolve_team
+
+    def _guard(league: str, raw: str):
+        assert str(raw).strip().lower() not in {"over", "under"}, raw
+        return real_resolve(league, raw)
+
+    monkeypatch.setattr(match_mod, "resolve_team", _guard)
+
+    kickoff = datetime.now(UTC) + timedelta(days=4)
+    ymd = kickoff.date().isoformat()
+    event_slug = f"cfb-ohio-neb-{ymd}"
+    total_slug = f"{event_slug}-total-46"
+    start = kickoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    event = {
+        "slug": event_slug,
+        "eventDate": ymd,
+        "startTime": start,
+        "markets": [
+            _gamma_binary(
+                event_slug,
+                "0xml-ohio",
+                ("Ohio", "Nebraska"),
+                ("tok-ohio", "tok-neb"),
+            ),
+            _gamma_binary(
+                total_slug,
+                "0xtot-ohio",
+                ("Over", "Under"),
+                ("tok-over", "tok-under"),
+            ),
+            _gamma_binary(
+                f"{event_slug}-total-49pt5",
+                "0xtot-far",
+                ("Over", "Under"),
+                ("tok-over-far", "tok-under-far"),
+                liquidity=9000.0,
+            ),
+            {
+                "slug": f"{event_slug}-1h-total-24pt5",
+                "closed": False,
+                "liquidityNum": 8000,
+                "acceptingOrders": True,
+            },
+        ],
+    }
+    store = CatalogStore(tmp_path / "s.db")
+    play = SharpPlay(
+        league="NCAAF",
+        matchup="OHIO @ NEB",
+        side="Under",
+        market="total",
+        tier="A",
+        home_away="under",
+        game_time_utc=kickoff.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        implied_fair_prob=0.51,
+        rlm_confirmed=True,
+        composite_gap=12.0,
+        source_path="x",
+        raw={"live": 46.0, "open": 46.5, "date": ymd},
+    )
+    matched = await match_sharp_plays(
+        [play],
+        store=store,
+        gamma=_EventGamma({event_slug: event}),  # type: ignore[arg-type]
+        markets=frozenset({"moneyline", "spread", "total"}),
+    )
+    store.close()
+    assert matched[0].status == "matched"
+    assert matched[0].slug == total_slug
+    assert matched[0].token is not None
+    assert matched[0].token.outcome == "Under"
+
+
+@pytest.mark.asyncio
+async def test_match_cfb_spread_fresno(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from polymaker.catalog.store import CatalogStore
+    from polymaker.trading.match import match_sharp_plays
+
+    kickoff = datetime.now(UTC) + timedelta(days=4)
+    ymd = kickoff.date().isoformat()
+    event_slug = f"cfb-fres-usc-{ymd}"
+    spread_slug = f"{event_slug}-spread-home-21pt5"
+    start = kickoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    event = {
+        "slug": event_slug,
+        "eventDate": ymd,
+        "startTime": start,
+        "markets": [
+            _gamma_binary(
+                event_slug,
+                "0xml-fres",
+                ("Fresno State", "USC"),
+                ("tok-fres", "tok-usc"),
+            ),
+            _gamma_binary(
+                f"{event_slug}-spread-home-14pt5",
+                "0xsp-14",
+                ("Fresno State", "USC"),
+                ("tok-fres-14", "tok-usc-14"),
+                liquidity=9000.0,
+            ),
+            _gamma_binary(
+                spread_slug,
+                "0xsp-21",
+                ("Fresno State", "USC"),
+                ("tok-fres-21", "tok-usc-21"),
+                liquidity=2500.0,
+            ),
+        ],
+    }
+    store = CatalogStore(tmp_path / "s.db")
+    play = SharpPlay(
+        league="NCAAF",
+        matchup="FRES @ USC",
+        side="FRES",
+        market="spread",
+        tier="B",
+        home_away="away",
+        game_time_utc=kickoff.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        implied_fair_prob=0.48,
+        rlm_confirmed=True,
+        composite_gap=15.0,
+        source_path="x",
+        raw={"live": 21.5, "open": 23.0, "date": ymd},
+    )
+    matched = await match_sharp_plays(
+        [play],
+        store=store,
+        gamma=_EventGamma({event_slug: event}),  # type: ignore[arg-type]
+        markets=frozenset({"moneyline", "spread", "total"}),
+    )
+    store.close()
+    assert matched[0].status == "matched"
+    assert matched[0].slug == spread_slug
+    assert matched[0].token is not None
+    assert matched[0].token.outcome == "Fresno State"
+
+
+@pytest.mark.asyncio
+async def test_match_spread_line_mismatch_skips(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from polymaker.catalog.store import CatalogStore
+    from polymaker.trading.match import match_sharp_plays
+
+    kickoff = datetime.now(UTC) + timedelta(days=4)
+    ymd = kickoff.date().isoformat()
+    event_slug = f"cfb-fres-usc-{ymd}"
+    start = kickoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    event = {
+        "slug": event_slug,
+        "eventDate": ymd,
+        "startTime": start,
+        "markets": [
+            _gamma_binary(
+                f"{event_slug}-spread-home-14pt5",
+                "0xsp-14",
+                ("Fresno State", "USC"),
+                ("tok-fres-14", "tok-usc-14"),
+            ),
+        ],
+    }
+    store = CatalogStore(tmp_path / "s.db")
+    play = SharpPlay(
+        league="NCAAF",
+        matchup="FRES @ USC",
+        side="FRES",
+        market="spread",
+        tier="B",
+        home_away="away",
+        game_time_utc=kickoff.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        implied_fair_prob=0.48,
+        rlm_confirmed=True,
+        composite_gap=15.0,
+        source_path="x",
+        raw={"live": 21.5, "open": 23.0, "date": ymd},
+    )
+    matched = await match_sharp_plays(
+        [play],
+        store=store,
+        gamma=_EventGamma({event_slug: event}),  # type: ignore[arg-type]
+        markets=frozenset({"spread"}),
+    )
+    store.close()
+    assert matched[0].status == "no_market"
+    assert "spread line mismatch play=21.5 poly=14.5" in matched[0].detail
 
 
 @pytest.mark.asyncio

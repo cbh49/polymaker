@@ -41,7 +41,7 @@ ncaaf_path = "data-aggregation/output/ncaaf_sharp_money.json"
 usd_tier_a = 25.0               # USDC stake for Tier A/A+ (to-win target for +200 ML dogs)
 usd_tier_b = 10.0               # USDC stake for Tier B (same: to-win target when low_volume_dog_flag)
 min_tier = "B"                  # "A" = Tier A only; "B" = A+B
-markets = ["moneyline"]         # catalog is moneyline-only today
+markets = ["moneyline", "spread", "total"]
 require_rlm = false
 max_ask = 0.55                  # never auto-buy if best ask / last price is above this
 # min_edge = 0.02               # optional: require ask <= fair_prob - min_edge

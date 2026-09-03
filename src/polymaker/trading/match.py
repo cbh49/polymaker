@@ -1,4 +1,4 @@
-"""Match sharp-money plays to Polymarket moneyline markets."""
+"""Match sharp-money plays to Polymarket moneyline / spread / total markets."""
 
 from __future__ import annotations
 
@@ -11,8 +11,15 @@ from zoneinfo import ZoneInfo
 from polymaker.catalog.gamma import GammaClient, parse_market
 from polymaker.catalog.sports import (
     DEFAULT_PREGAME_BUFFER_MINUTES,
+    EVENT_SLUG_RE,
+    LINE_MATCH_TOLERANCE,
+    SPREAD_SLUG_RE,
+    TOTAL_SLUG_RE,
+    implied_home_spread,
     is_moneyline_slug,
     is_pre_game,
+    parse_pt_number,
+    pick_market_for_kind,
     pick_moneyline_market,
 )
 from polymaker.catalog.store import CatalogStore
@@ -23,9 +30,7 @@ from polymaker.trading.teams import TeamRef, parse_matchup, resolve_team
 _ET = ZoneInfo("America/New_York")
 _PT = ZoneInfo("America/Los_Angeles")
 
-_SLUG_TEAMS_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
-)
+_TOTAL_SIDES = frozenset({"over", "under"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +55,7 @@ async def match_sharp_plays(
     markets: frozenset[str] = frozenset({"moneyline"}),
     reward_rates: dict[str, float] | None = None,
 ) -> list[MatchedPlay]:
-    """Resolve each play to a Polymarket moneyline market + outcome token."""
+    """Resolve each play to a Polymarket market + outcome token."""
     owns_gamma = gamma is None
     client = gamma or GammaClient()
     # Cache Gamma events per series so we only page once per league.
@@ -114,20 +119,37 @@ async def _match_one(
     away_raw, home_raw = parsed
     away = resolve_team(play.league, away_raw)
     home = resolve_team(play.league, home_raw)
-    side = resolve_team(play.league, play.side)
-    if away is None or home is None or side is None:
-        return MatchedPlay(
-            play=play,
-            away=away or _dummy_team(away_raw),
-            home=home or _dummy_team(home_raw),
-            side_team=side or _dummy_team(play.side),
-            event_date=None,
-            slug=None,
-            meta=None,
-            token=None,
-            status="unresolved_team",
-            detail="could not map team abbr to Polymarket code",
-        )
+    is_total = play.market == "total"
+    if is_total:
+        side = _dummy_team(play.side)
+        if away is None or home is None:
+            return MatchedPlay(
+                play=play,
+                away=away or _dummy_team(away_raw),
+                home=home or _dummy_team(home_raw),
+                side_team=side,
+                event_date=None,
+                slug=None,
+                meta=None,
+                token=None,
+                status="unresolved_team",
+                detail="could not map team abbr to Polymarket code",
+            )
+    else:
+        side = resolve_team(play.league, play.side)
+        if away is None or home is None or side is None:
+            return MatchedPlay(
+                play=play,
+                away=away or _dummy_team(away_raw),
+                home=home or _dummy_team(home_raw),
+                side_team=side or _dummy_team(play.side),
+                event_date=None,
+                slug=None,
+                meta=None,
+                token=None,
+                status="unresolved_team",
+                detail="could not map team abbr to Polymarket code",
+            )
 
     event_dates = candidate_event_dates(play.game_time_utc)
     raw_date = play.raw.get("date") if isinstance(play.raw, dict) else None
@@ -143,89 +165,85 @@ async def _match_one(
         league = "ncaaf"
     slug_league = "cfb" if league == "ncaaf" else league
 
+    play_line = _play_line_number(play)
+    target_line = _play_target_line(play, away=away, home=home, side=side)
+
+    event = await _find_event(
+        league=league,
+        slug_league=slug_league,
+        away=away,
+        home=home,
+        event_dates=event_dates,
+        store=store,
+        gamma=gamma,
+        series_cache=series_cache,
+    )
+
     meta: MarketMeta | None = None
     slug: str | None = None
+    pick_detail = ""
 
-    if league == "ufc":
-        events = await _series_events(gamma, league, series_cache)
-        meta, slug = await _match_ufc_from_events(
-            events,
-            away_name=away.full_name,
-            home_name=home.full_name,
+    if event is not None:
+        raw, pick_detail = pick_market_for_kind(
+            event,
+            play.market,
+            target_line=target_line,
+            max_line_delta=LINE_MATCH_TOLERANCE,
+            play_line=play_line,
+            home_away=play.home_away,
+        )
+        if raw is not None:
+            parsed_meta = parse_market(_attach_parent_event(raw, event), reward_rates)
+            if parsed_meta is not None:
+                meta = parsed_meta
+                slug = parsed_meta.slug
+            else:
+                pick_detail = pick_detail or f"no open {play.market}"
+    else:
+        # Catalog / constructed-slug fallback only when Gamma never returned the event.
+        meta, slug, pick_detail = await _catalog_or_moneyline_fallback(
+            play,
+            slug_league=slug_league,
+            away=away,
+            home=home,
             event_dates=event_dates,
+            store=store,
             gamma=gamma,
             reward_rates=reward_rates,
+            target_line=target_line,
+            play_line=play_line,
         )
-    elif league == "ncaaf":
-        for d in event_dates:
-            candidate = f"cfb-{away.poly_code}-{home.poly_code}-{d.isoformat()}"
-            meta = await _resolve_meta(candidate, store=store, gamma=gamma, reward_rates=reward_rates)
-            if meta is not None:
-                slug = meta.slug
-                break
-        if meta is None and store is not None:
-            meta, slug = _match_from_catalog(
-                store, slug_league, away.poly_code, home.poly_code, event_dates
-            )
-        if meta is None:
-            events = await _series_events_for_slugs(
-                gamma, _cfb_series_slugs(event_dates), series_cache
-            )
-            meta, slug = await _match_ncaaf_from_events(
-                events,
-                away_name=away.full_name,
-                home_name=home.full_name,
-                away_code=away.poly_code,
-                home_code=home.poly_code,
-                event_dates=event_dates,
-                gamma=gamma,
-                reward_rates=reward_rates,
-            )
-    else:
-        # 1) Try constructed slugs for each plausible calendar date.
-        for d in event_dates:
-            candidate = f"{league}-{away.poly_code}-{home.poly_code}-{d.isoformat()}"
-            meta = await _resolve_meta(candidate, store=store, gamma=gamma, reward_rates=reward_rates)
-            if meta is not None:
-                slug = meta.slug
-                break
-
-        # 2) Catalog scan: any moneyline with matching away/home codes.
-        if meta is None and store is not None:
-            meta, slug = _match_from_catalog(store, league, away.poly_code, home.poly_code, event_dates)
-
-        # 3) Gamma series sweep filtered by codes + eventDate.
-        if meta is None:
-            events = await _series_events(gamma, league, series_cache)
-            meta, slug = await _match_from_events(
-                events,
-                league=league,
-                away=away.poly_code,
-                home=home.poly_code,
-                event_dates=event_dates,
-                gamma=gamma,
-                reward_rates=reward_rates,
-            )
 
     if meta is None:
         tried = ", ".join(d.isoformat() for d in event_dates) or "no-date"
+        if pick_detail and ("mismatch" in pick_detail or pick_detail.startswith("no open ")):
+            detail = pick_detail
+        elif league in {"ufc", "ncaaf"}:
+            detail = (
+                f"no open {play.market} for {away.full_name} vs {home.full_name} on {tried}"
+            )
+        else:
+            detail = (
+                f"no open {play.market} for {away.poly_code}@{home.poly_code} on {tried}"
+            )
         return MatchedPlay(
             play=play,
             away=away,
             home=home,
             side_team=side,
             event_date=event_dates[0] if event_dates else None,
-            slug=None,
+            slug=slug,
             meta=None,
             token=None,
             status="no_market",
-            detail=f"no open moneyline for {away.full_name} vs {home.full_name} on {tried}"
-            if league in {"ufc", "ncaaf"}
-            else f"no open moneyline for {away.poly_code}@{home.poly_code} on {tried}",
+            detail=detail,
         )
 
     try:
-        token = resolve_outcome_token(meta, side.full_name, side.poly_code)
+        if is_total:
+            token = resolve_total_outcome_token(meta, play.side)
+        else:
+            token = resolve_outcome_token(meta, side.full_name, side.poly_code)
     except ValueError as exc:
         return MatchedPlay(
             play=play,
@@ -299,6 +317,56 @@ def resolve_outcome_token(meta: MarketMeta, full_name: str, poly_code: str) -> T
     )
 
 
+def resolve_total_outcome_token(meta: MarketMeta, side: str) -> TokenMeta:
+    """Map Over/Under onto a total market's outcome tokens."""
+    want = side.strip().lower()
+    if want not in _TOTAL_SIDES:
+        raise ValueError(f"total side {side!r} is not Over/Under")
+    for t in meta.tokens:
+        if t.outcome.strip().lower() == want:
+            return t
+    raise ValueError(
+        f"outcome {side!r} not in tokens={[t.outcome for t in meta.tokens]}"
+    )
+
+
+def _play_line_number(play: SharpPlay) -> float | None:
+    raw = play.raw if isinstance(play.raw, dict) else {}
+    for key in ("live", "open"):
+        val = raw.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+    return None
+
+
+def _play_target_line(
+    play: SharpPlay,
+    *,
+    away: TeamRef,
+    home: TeamRef,
+    side: TeamRef,
+) -> float | None:
+    """Home-spread or total number used to pick the closest Polymarket line."""
+    line = _play_line_number(play)
+    if line is None:
+        return None
+    if play.market == "total":
+        return line
+    if play.market != "spread":
+        return None
+    ha = (play.home_away or "").lower()
+    if ha == "away":
+        return -line
+    if ha == "home":
+        return line
+    side_code = (side.poly_code or "").lower()
+    if side_code and side_code == (away.poly_code or "").lower():
+        return -line
+    if side_code and side_code == (home.poly_code or "").lower():
+        return line
+    return line
+
+
 def _attach_parent_event(raw: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     if raw.get("events"):
         return raw
@@ -319,6 +387,108 @@ def _meta_known_not_pre_game(meta: MarketMeta | None) -> bool:
     if meta is None or not meta.start_time_iso:
         return False
     return not is_pre_game({"startTime": meta.start_time_iso}, DEFAULT_PREGAME_BUFFER_MINUTES)
+
+
+async def _find_event(
+    *,
+    league: str,
+    slug_league: str,
+    away: TeamRef,
+    home: TeamRef,
+    event_dates: list[date],
+    store: CatalogStore | None,
+    gamma: GammaClient,
+    series_cache: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    """Resolve the Gamma sports EVENT (moneyline slug) for a matchup."""
+    for d in event_dates:
+        candidate = f"{slug_league}-{away.poly_code}-{home.poly_code}-{d.isoformat()}"
+        event = await gamma.event_by_slug(candidate)
+        if event and not _known_not_pre_game(event):
+            return event
+
+    if store is not None:
+        _, cat_slug = _match_from_catalog(
+            store, slug_league, away.poly_code, home.poly_code, event_dates
+        )
+        if cat_slug:
+            event = await gamma.event_by_slug(cat_slug)
+            if event and not _known_not_pre_game(event):
+                return event
+
+    if league == "ufc":
+        events = await _series_events(gamma, league, series_cache)
+        return _find_ufc_event(
+            events,
+            away_name=away.full_name,
+            home_name=home.full_name,
+            event_dates=event_dates,
+        )
+    if league == "ncaaf":
+        events = await _series_events_for_slugs(
+            gamma, _cfb_series_slugs(event_dates), series_cache
+        )
+        return _find_ncaaf_event(
+            events,
+            away_name=away.full_name,
+            home_name=home.full_name,
+            away_code=away.poly_code,
+            home_code=home.poly_code,
+            event_dates=event_dates,
+        )
+    events = await _series_events(gamma, league, series_cache)
+    return _find_coded_event(
+        events,
+        league=league,
+        away=away.poly_code,
+        home=home.poly_code,
+        event_dates=event_dates,
+    )
+
+
+async def _catalog_or_moneyline_fallback(
+    play: SharpPlay,
+    *,
+    slug_league: str,
+    away: TeamRef,
+    home: TeamRef,
+    event_dates: list[date],
+    store: CatalogStore | None,
+    gamma: GammaClient,
+    reward_rates: dict[str, float] | None,
+    target_line: float | None,
+    play_line: float | None,
+) -> tuple[MarketMeta | None, str | None, str]:
+    """When Gamma did not yield a nested market, try catalog / moneyline slug lookup."""
+    if play.market == "moneyline":
+        for d in event_dates:
+            candidate = f"{slug_league}-{away.poly_code}-{home.poly_code}-{d.isoformat()}"
+            meta = await _resolve_meta(
+                candidate, store=store, gamma=gamma, reward_rates=reward_rates
+            )
+            if meta is not None:
+                return meta, meta.slug, ""
+        if store is not None:
+            meta, slug = _match_from_catalog(
+                store, slug_league, away.poly_code, home.poly_code, event_dates
+            )
+            if meta is not None:
+                return meta, slug, ""
+        return None, None, ""
+
+    if play.market in {"spread", "total"} and store is not None:
+        return _match_kind_from_catalog(
+            store,
+            slug_league,
+            away.poly_code,
+            home.poly_code,
+            event_dates,
+            play.market,
+            target_line=target_line,
+            play_line=play_line,
+            home_away=play.home_away,
+        )
+    return None, None, ""
 
 
 async def _resolve_meta(
@@ -360,11 +530,11 @@ def _match_from_catalog(
     prefix = f"{league}-{away}-{home}-"
     date_set = {d.isoformat() for d in event_dates}
     fallback: MarketMeta | None = None
-    for meta in store.by_slug_prefix(prefix, limit=20):
+    for meta in store.by_slug_prefix(prefix, limit=100):
         slug = meta.slug or ""
         if not is_moneyline_slug(slug):
             continue
-        m = _SLUG_TEAMS_RE.match(slug)
+        m = EVENT_SLUG_RE.match(slug)
         if not m:
             continue
         if date_set and m.group("ymd") in date_set:
@@ -376,6 +546,61 @@ def _match_from_catalog(
     if fallback is not None and not date_set:
         return fallback, fallback.slug
     return None, None
+
+
+def _match_kind_from_catalog(
+    store: CatalogStore,
+    league: str,
+    away: str,
+    home: str,
+    event_dates: list[date],
+    kind: str,
+    *,
+    target_line: float | None,
+    play_line: float | None,
+    home_away: str | None,
+) -> tuple[MarketMeta | None, str | None, str]:
+    prefix = f"{league}-{away}-{home}-"
+    date_set = {d.isoformat() for d in event_dates}
+    usable: list[tuple[MarketMeta, float]] = []
+    for meta in store.by_slug_prefix(prefix, limit=100):
+        slug = meta.slug or ""
+        if _meta_known_not_pre_game(meta):
+            continue
+        if kind == "spread":
+            m = SPREAD_SLUG_RE.match(slug)
+            if not m:
+                continue
+            if date_set and m.group("ymd") not in date_set:
+                continue
+            pts = parse_pt_number(m.group("pts"))
+            if pts is None:
+                continue
+            usable.append((meta, implied_home_spread(m.group("favored"), pts)))
+        elif kind == "total":
+            m = TOTAL_SLUG_RE.match(slug)
+            if not m:
+                continue
+            if date_set and m.group("ymd") not in date_set:
+                continue
+            pts = parse_pt_number(m.group("pts"))
+            if pts is None:
+                continue
+            usable.append((meta, pts))
+    if not usable:
+        return None, None, f"no open {kind}"
+    if target_line is None:
+        meta = usable[0][0]
+        return meta, meta.slug, ""
+    best_meta, best_val = min(usable, key=lambda row: abs(row[1] - target_line))
+    delta = abs(best_val - target_line)
+    if delta < 0.01 or delta <= LINE_MATCH_TOLERANCE:
+        return best_meta, best_meta.slug, ""
+    ha = (home_away or "").lower()
+    poly_for_play = -best_val if kind == "spread" and ha == "away" else best_val
+    shown_play = play_line if play_line is not None else target_line
+    shown_poly = poly_for_play if play_line is not None else best_val
+    return None, None, f"{kind} line mismatch play={shown_play:g} poly={shown_poly:g}"
 
 
 async def _series_events(
@@ -392,21 +617,19 @@ async def _series_events(
     return events
 
 
-async def _match_from_events(
+def _find_coded_event(
     events: list[dict[str, Any]],
     *,
     league: str,
     away: str,
     home: str,
     event_dates: list[date],
-    gamma: GammaClient,
-    reward_rates: dict[str, float] | None,
-) -> tuple[MarketMeta | None, str | None]:
+) -> dict[str, Any] | None:
     date_set = {d.isoformat() for d in event_dates}
-    fallback_raw: dict[str, Any] | None = None
+    fallback: dict[str, Any] | None = None
     for event in events:
         slug = str(event.get("slug") or "")
-        m = _SLUG_TEAMS_RE.match(slug)
+        m = EVENT_SLUG_RE.match(slug)
         if not m:
             continue
         if m.group("league") != league or m.group("away") != away or m.group("home") != home:
@@ -414,21 +637,13 @@ async def _match_from_events(
         if _known_not_pre_game(event):
             continue
         event_date = str(event.get("eventDate") or "")[:10]
-        raw = pick_moneyline_market(event)
-        if raw is None:
-            continue
-        raw = _attach_parent_event(raw, event)
         if date_set and event_date in date_set:
-            meta = parse_market(raw, reward_rates)
-            if meta is not None:
-                return meta, meta.slug
-        if fallback_raw is None:
-            fallback_raw = raw
-    if fallback_raw is not None and not date_set:
-        meta = parse_market(fallback_raw, reward_rates)
-        if meta is not None:
-            return meta, meta.slug
-    return None, None
+            return event
+        if fallback is None:
+            fallback = event
+    if fallback is not None and not date_set:
+        return fallback
+    return None
 
 
 def _fighter_names_match(a: str, b: str) -> bool:
@@ -465,19 +680,16 @@ def _ufc_event_fighter_names(event: dict[str, Any]) -> list[str]:
     return []
 
 
-async def _match_ufc_from_events(
+def _find_ufc_event(
     events: list[dict[str, Any]],
     *,
     away_name: str,
     home_name: str,
     event_dates: list[date],
-    gamma: GammaClient,
-    reward_rates: dict[str, float] | None,
-) -> tuple[MarketMeta | None, str | None]:
+) -> dict[str, Any] | None:
     """Match a UFC bout by fighter names in Gamma outcomes / title."""
-    _ = gamma
     date_set = {d.isoformat() for d in event_dates}
-    fallback_raw: dict[str, Any] | None = None
+    fallback: dict[str, Any] | None = None
     for event in events:
         names = _ufc_event_fighter_names(event)
         if len(names) < 2:
@@ -488,22 +700,12 @@ async def _match_ufc_from_events(
             continue
         if _known_not_pre_game(event):
             continue
-        raw = pick_moneyline_market(event)
-        if raw is None:
-            continue
-        raw = _attach_parent_event(raw, event)
         event_date = str(event.get("eventDate") or "")[:10]
         if date_set and event_date in date_set:
-            meta = parse_market(raw, reward_rates)
-            if meta is not None:
-                return meta, meta.slug
-        if fallback_raw is None:
-            fallback_raw = raw
-    if fallback_raw is not None:
-        meta = parse_market(fallback_raw, reward_rates)
-        if meta is not None:
-            return meta, meta.slug
-    return None, None
+            return event
+        if fallback is None:
+            fallback = event
+    return fallback
 
 
 async def _series_events_for_slugs(
@@ -551,7 +753,7 @@ def _cfb_names_match(a: str, b: str) -> bool:
     return bool(names_match(a, b))
 
 
-async def _match_ncaaf_from_events(
+def _find_ncaaf_event(
     events: list[dict[str, Any]],
     *,
     away_name: str,
@@ -559,16 +761,13 @@ async def _match_ncaaf_from_events(
     away_code: str,
     home_code: str,
     event_dates: list[date],
-    gamma: GammaClient,
-    reward_rates: dict[str, float] | None,
-) -> tuple[MarketMeta | None, str | None]:
+) -> dict[str, Any] | None:
     """Match a CFB game by slug codes or school names in Gamma outcomes / title."""
-    _ = gamma
     date_set = {d.isoformat() for d in event_dates}
-    fallback_raw: dict[str, Any] | None = None
+    fallback: dict[str, Any] | None = None
     for event in events:
         slug = str(event.get("slug") or "")
-        m = _SLUG_TEAMS_RE.match(slug)
+        m = EVENT_SLUG_RE.match(slug)
         codes_ok = (
             m is not None
             and m.group("league") == "cfb"
@@ -585,22 +784,12 @@ async def _match_ncaaf_from_events(
             continue
         if _known_not_pre_game(event):
             continue
-        raw = pick_moneyline_market(event)
-        if raw is None:
-            continue
-        raw = _attach_parent_event(raw, event)
         event_date = str(event.get("eventDate") or "")[:10]
         if date_set and event_date in date_set:
-            meta = parse_market(raw, reward_rates)
-            if meta is not None:
-                return meta, meta.slug
-        if fallback_raw is None:
-            fallback_raw = raw
-    if fallback_raw is not None:
-        meta = parse_market(fallback_raw, reward_rates)
-        if meta is not None:
-            return meta, meta.slug
-    return None, None
+            return event
+        if fallback is None:
+            fallback = event
+    return fallback
 
 
 def _dummy_team(label: str = "?") -> TeamRef:

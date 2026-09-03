@@ -25,7 +25,7 @@ class SharpTradeConfig:
     usd_tier_a: float = 25.0
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # A = Tier A only; B = A+B
-    markets: frozenset[str] = frozenset({"moneyline"})
+    markets: frozenset[str] = frozenset({"moneyline", "spread", "total"})
     require_rlm: bool = False
     max_ask: float | None = 0.55
     min_edge: float | None = None  # require ask <= fair - min_edge
@@ -50,7 +50,7 @@ async def run_sharp_trades(
     *,
     gateway: ExecutionGateway | None = None,
 ) -> list[SharpTradeResult]:
-    """Buy (or dry-run) each matched moneyline play that passes filters."""
+    """Buy (or dry-run) each matched play that passes filters."""
     already = _load_filled_keys(trade_cfg.filled_log)
     owns_gw = gateway is None
     gw = gateway or ExecutionGateway(cfg, paper=trade_cfg.dry_run)

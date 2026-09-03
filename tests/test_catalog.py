@@ -161,15 +161,28 @@ def test_store_upsert_is_idempotent(tmp_path):
 
 
 def test_moneyline_slug_pattern():
-    from polymaker.catalog.sports import is_moneyline_slug, pick_moneyline_market
+    from polymaker.catalog.sports import (
+        is_moneyline_slug,
+        is_spread_slug,
+        is_total_slug,
+        pick_moneyline_market,
+    )
 
     assert is_moneyline_slug("mlb-atl-cws-2026-08-20")
     assert is_moneyline_slug("wnba-wsh-gsv-2026-07-20")
     assert is_moneyline_slug("ufc-ant-gre3-2026-08-22")
+    assert is_moneyline_slug("cfb-hawaii-stan-2026-08-29")
     assert not is_moneyline_slug("mlb-atl-cws-2026-08-20-spread-home-1pt5")
     assert not is_moneyline_slug("mlb-ari-stl-2026-06-25-first-five-winner")
     assert not is_moneyline_slug("ufc-ant-gre3-2026-08-22-totals-1pt5")
+    assert not is_moneyline_slug("cfb-hawaii-stan-2026-08-29-spread-home-5pt5")
     assert not is_moneyline_slug("will-x-win")
+    assert is_spread_slug("cfb-hawaii-stan-2026-08-29-spread-home-5pt5")
+    assert is_spread_slug("mlb-atl-cws-2026-08-20-spread-away-1pt5")
+    assert not is_spread_slug("cfb-hawaii-stan-2026-08-29")
+    assert is_total_slug("cfb-hawaii-stan-2026-08-29-total-49pt5")
+    assert is_total_slug("ufc-ant-gre3-2026-08-22-totals-1pt5")
+    assert not is_total_slug("cfb-hawaii-stan-2026-08-29-1h-total-24pt5")
 
     event = {
         "slug": "mlb-atl-cws-2026-08-20",
@@ -181,6 +194,90 @@ def test_moneyline_slug_pattern():
     }
     money = pick_moneyline_market(event)
     assert money is not None and money["conditionId"] == "0xmlb"
+
+
+def test_parse_pt_and_pick_nested_markets():
+    from polymaker.catalog.sports import (
+        LINE_MATCH_TOLERANCE,
+        parse_pt_number,
+        pick_market_for_kind,
+        pick_spread_market,
+        pick_total_market,
+    )
+
+    assert parse_pt_number("5pt5") == 5.5
+    assert parse_pt_number("21pt5") == 21.5
+    assert parse_pt_number("46") == 46.0
+
+    spreads = [
+        {"favored": "home", "points": 14.5, "liquidity": 8000.0, "raw": {"id": "far"}},
+        {"favored": "home", "points": 21.5, "liquidity": 2000.0, "raw": {"id": "close"}},
+    ]
+    picked = pick_spread_market(spreads, target_home_line=-21.5)
+    assert picked is not None and picked["raw"]["id"] == "close"
+    skipped = pick_spread_market(
+        [{"favored": "home", "points": 14.5, "liquidity": 8000.0, "raw": {"id": "far"}}],
+        target_home_line=-21.5,
+        max_line_delta=LINE_MATCH_TOLERANCE,
+    )
+    assert skipped is None
+
+    totals = [
+        {"points": 49.5, "liquidity": 100.0, "raw": {"id": "hi"}},
+        {"points": 46.0, "liquidity": 50.0, "raw": {"id": "hit"}},
+    ]
+    tot = pick_total_market(totals, target_line=46.0)
+    assert tot is not None and tot["raw"]["id"] == "hit"
+
+    event = {
+        "slug": "cfb-fres-usc-2026-09-06",
+        "markets": [
+            {
+                "slug": "cfb-fres-usc-2026-09-06",
+                "closed": False,
+                "liquidityNum": 10,
+            },
+            {
+                "slug": "cfb-fres-usc-2026-09-06-spread-home-14pt5",
+                "closed": False,
+                "liquidityNum": 5000,
+                "id": "sp14",
+            },
+            {
+                "slug": "cfb-fres-usc-2026-09-06-spread-home-21pt5",
+                "closed": False,
+                "liquidityNum": 2000,
+                "id": "sp21",
+            },
+            {
+                "slug": "cfb-fres-usc-2026-09-06-1h-spread-home-10pt5",
+                "closed": False,
+                "liquidityNum": 9000,
+            },
+        ],
+    }
+    raw, detail = pick_market_for_kind(event, "spread", target_line=-21.5, play_line=21.5, home_away="away")
+    assert raw is not None and raw["id"] == "sp21"
+    assert detail == ""
+    raw_miss, miss = pick_market_for_kind(
+        {
+            "slug": "cfb-fres-usc-2026-09-06",
+            "markets": [
+                {
+                    "slug": "cfb-fres-usc-2026-09-06-spread-home-14pt5",
+                    "closed": False,
+                    "liquidityNum": 5000,
+                    "id": "sp14",
+                }
+            ],
+        },
+        "spread",
+        target_line=-21.5,
+        play_line=21.5,
+        home_away="away",
+    )
+    assert raw_miss is None
+    assert miss == "spread line mismatch play=21.5 poly=14.5"
 
 
 def test_event_date_window():
