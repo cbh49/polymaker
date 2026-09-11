@@ -265,7 +265,7 @@ def match_sharp(
     ),
     tier: str | None = typer.Option(None, "--tier", help="min tier: A or B (default from config)"),
 ) -> None:
-    """Match sharp-money plays to Polymarket MLB/WNBA/UFC/NCAAF moneylines (no orders)."""
+    """Match sharp-money plays to Polymarket MLB/WNBA/UFC/NCAAF markets (no orders)."""
     from polymaker.trading.execute import filter_plays, load_configured_plays
     from polymaker.trading.match import match_sharp_plays
 
@@ -333,7 +333,7 @@ def trade_sharp(
         help="actually send market buys (default is dry-run)",
     ),
 ) -> None:
-    """Buy Polymarket moneylines for sharp-money plays (dry-run unless --live)."""
+    """Buy Polymarket markets for sharp-money plays (dry-run unless --live)."""
     from polymaker.trading.execute import (
         filter_plays,
         load_configured_plays,
@@ -466,6 +466,7 @@ def _sharp_trade_cfg(
         markets=frozenset(m.lower() for m in s.markets),
         require_rlm=s.require_rlm,
         max_ask=s.max_ask,
+        min_moneyline_ask=s.min_moneyline_ask,
         min_edge=s.min_edge,
         filled_log=s.filled_log,
         dry_run=dry_run,
@@ -501,7 +502,7 @@ def _print_match_table(matched: list[Any]) -> None:
     table = Table(title="Sharp → Polymarket matches")
     table.add_column("status")
     table.add_column("tier")
-    table.add_column("league")
+    table.add_column("market")
     table.add_column("matchup")
     table.add_column("side")
     table.add_column("slug")
@@ -511,12 +512,12 @@ def _print_match_table(matched: list[Any]) -> None:
         table.add_row(
             m.status,
             m.play.tier,
-            m.play.league,
+            m.play.market,
             m.play.matchup,
             m.play.side,
-            (m.slug or "")[:36],
+            (m.slug or "")[:42],
             m.token.outcome if m.token else "",
-            (m.detail or "")[:40],
+            (m.detail or "")[:48],
         )
     console.print(table)
 
@@ -569,9 +570,9 @@ def buy(
         console.print(f"[red]No market with slug {slug!r}. Run `polymaker scan` first.[/red]")
         raise typer.Exit(1)
 
-    from polymaker.catalog.sports import is_moneyline_slug, is_pre_game
+    from polymaker.catalog.sports import is_pre_game, is_sports_market_slug
 
-    if is_moneyline_slug(meta.slug) and not is_pre_game(
+    if is_sports_market_slug(meta.slug) and not is_pre_game(
         {"startTime": meta.start_time_iso},
         cfg.catalog.pregame_buffer_minutes,
     ):

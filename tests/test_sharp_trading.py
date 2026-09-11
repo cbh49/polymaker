@@ -692,6 +692,21 @@ def test_price_gate_max_ask() -> None:
     assert missing is not None and "no ask" in missing
 
 
+def test_price_gate_min_moneyline_ask() -> None:
+    from polymaker.trading.execute import SharpTradeConfig, _price_gate
+
+    cfg = SharpTradeConfig(max_ask=0.55, min_moneyline_ask=0.40)
+    assert _price_gate(0.40, None, cfg, market="moneyline") is None
+    assert _price_gate(0.45, None, cfg, market="moneyline") is None
+    cheap = _price_gate(0.39, None, cfg, market="moneyline")
+    assert cheap is not None and "min_moneyline_ask" in cheap
+    # Spreads / totals can still trade below 40¢.
+    assert _price_gate(0.28, None, cfg, market="spread") is None
+    assert _price_gate(0.28, None, cfg, market="total") is None
+    missing = _price_gate(None, None, cfg, market="moneyline")
+    assert missing is not None and "no ask" in missing
+
+
 def test_stake_to_win_plus_250() -> None:
     from polymaker.trading.execute import stake_to_win
 

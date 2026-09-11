@@ -44,6 +44,7 @@ min_tier = "B"                  # "A" = Tier A only; "B" = A+B
 markets = ["moneyline", "spread", "total"]
 require_rlm = false
 max_ask = 0.55                  # never auto-buy if best ask / last price is above this
+min_moneyline_ask = 0.40        # never auto-buy a moneyline if best ask is below this
 # min_edge = 0.02               # optional: require ask <= fair_prob - min_edge
 filled_log = "journal/sharp_trades.jsonl"
 

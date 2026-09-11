@@ -28,6 +28,7 @@ class SharpTradeConfig:
     markets: frozenset[str] = frozenset({"moneyline", "spread", "total"})
     require_rlm: bool = False
     max_ask: float | None = 0.55
+    min_moneyline_ask: float | None = 0.40  # skip ML if best ask is cheaper than this
     min_edge: float | None = None  # require ask <= fair - min_edge
     filled_log: str = "journal/sharp_trades.jsonl"
     dry_run: bool = True
@@ -149,7 +150,9 @@ async def _trade_one(
     if usd <= 0:
         return SharpTradeResult(matched=m, action="skipped", detail="usd size is 0")
 
-    skip_reason = _price_gate(ask, m.play.implied_fair_prob, trade_cfg)
+    skip_reason = _price_gate(
+        ask, m.play.implied_fair_prob, trade_cfg, market=m.play.market
+    )
     if skip_reason:
         return SharpTradeResult(matched=m, action="skipped", detail=skip_reason, usd=usd)
 
@@ -326,12 +329,22 @@ def _price_gate(
     ask: float | None,
     fair: float | None,
     cfg: SharpTradeConfig,
+    *,
+    market: str | None = None,
 ) -> str | None:
     if cfg.max_ask is not None:
         if ask is None:
             return f"no ask (max_ask {cfg.max_ask})"
         if ask > cfg.max_ask:
             return f"ask {ask:.3f} above max_ask {cfg.max_ask}"
+    is_moneyline = (market or "").strip().lower() == "moneyline"
+    if is_moneyline and cfg.min_moneyline_ask is not None:
+        if ask is None:
+            return f"no ask (min_moneyline_ask {cfg.min_moneyline_ask})"
+        if ask < cfg.min_moneyline_ask:
+            return (
+                f"ask {ask:.3f} below min_moneyline_ask {cfg.min_moneyline_ask}"
+            )
     if ask is None:
         return None
     if cfg.min_edge is not None and fair is not None and ask > fair - cfg.min_edge:

@@ -75,20 +75,23 @@ uv run polymaker cancel-all
 
 Pipeline:
 
-1. Scrape splits → `data-aggregation/output/{mlb,wnba}_betting_splits.json`
-2. `find_sharp_money.py` → `{mlb,wnba}_sharp_money.json`
-3. `polymaker trade-sharp` maps plays to Polymarket moneylines
-   (`mlb-ari-atl-…` / `wnba-dal-gsv-…`) and market-buys the sharp side
+1. Scrape splits → `data-aggregation/output/{mlb,wnba,ufc,ncaaf}_betting_splits.json`
+2. `find_sharp_money.py` → `{mlb,wnba,ufc,ncaaf}_sharp_money.json`
+3. `polymaker trade-sharp` maps plays to Polymarket moneylines, spreads, and
+   totals (`mlb-ari-atl-…`, `cfb-ohio-neb-…-total-46pt5`,
+   `cfb-fres-usc-…-spread-home-21pt5`) and market-buys the sharp side
 
 Matching uses betting abbrs → Polymarket codes (e.g. `AZ`→`ari`, `LV`→`las`,
-`GS`→`gsv`), then Gamma/catalog lookup by away/home + game date. Spreads are
-skipped until the catalog includes them (`[sharp] markets = ["moneyline"]`).
+`GS`→`gsv`), then Gamma/catalog lookup of the game event. Spreads/totals pick
+the nested line closest to the play's live (else open) number within 1 pt
+(`[sharp] markets = ["moneyline", "spread", "total"]`). Totals map Over/Under
+onto outcome tokens; they never go through the team map.
 
-Use `--league mlb|wnba|both` to scope which sharp file(s) are loaded. Today's
+Use `--league mlb|wnba|ufc|ncaaf|both` to scope which sharp file(s) are loaded. Today's
 `wnba_sharp_money.json` can have `play_count: 0` when no gaps clear the
 thresholds — re-run `find_sharp_money.py` on a fresh splits scrape.
 
-Defaults in [`config/config.toml`](config/config.toml) `[sharp]`: Tier A/B USDC sizes, `max_ask`, optional `min_edge` vs `implied_fair_prob`, and a dedupe log at `journal/sharp_trades.jsonl`. Moneyline underdogs flagged `low_volume_dog_flag` (American odds ≥ +200) are sized to *win* the tier amount (e.g. $10 at +250 to profit $25), not to stake it. **`trade-sharp` is dry-run unless you pass `--live`.**
+Defaults in [`config/config.toml`](config/config.toml) `[sharp]`: Tier A/B USDC sizes, `max_ask`, `min_moneyline_ask` (skip moneylines cheaper than 40¢; spreads/totals are unaffected), optional `min_edge` vs `implied_fair_prob`, and a dedupe log at `journal/sharp_trades.jsonl`. Moneyline underdogs flagged `low_volume_dog_flag` (American odds ≥ +200) are sized to *win* the tier amount (e.g. $10 at +250 to profit $25), not to stake it. **`trade-sharp` is dry-run unless you pass `--live`.**
 
 Suggested daily loop once tomorrow's slate is live:
 
@@ -103,7 +106,7 @@ Production (EC2 eu-west-1) is documented in [`infra/README.md`](infra/README.md)
 ## Layout
 
 ```
-catalog/     Gamma scan (politics + sports moneylines) → SQLite
+catalog/     Gamma scan (politics + sports ML/spread/total) → SQLite
 execution/   ExecutionGateway — connect wallet, place/cancel, market buy, balances
 research/    MLB article research agents → sized_plays.json
 trading/     sharp-money → market match + auto-buy
