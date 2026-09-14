@@ -27,7 +27,7 @@ class SharpTradeConfig:
     min_tier: str = "B"  # A = Tier A only; B = A+B
     markets: frozenset[str] = frozenset({"moneyline", "spread", "total"})
     require_rlm: bool = False
-    max_ask: float | None = 0.55
+    max_ask: float | None = 0.60
     min_moneyline_ask: float | None = 0.40  # skip ML if best ask is cheaper than this
     min_edge: float | None = None  # require ask <= fair - min_edge
     filled_log: str = "journal/sharp_trades.jsonl"

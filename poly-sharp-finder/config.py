@@ -49,7 +49,7 @@ class TradeConfig:
     enabled: bool = True
     dry_run: bool = True
     usd_per_signal: float = 10.0
-    max_ask: float = 0.55  # never buy if best ask / last price is above this
+    max_ask: float = 0.60  # never buy if best ask / last price is above this
     filled_log: str = "journal/poly_sharp_signals.jsonl"
     # Would-buys (dry-run) + successful live fills — sit next to signals/ for easy review.
     intents_log: str = "poly-sharp-finder/intents/poly_sharp_intents.jsonl"

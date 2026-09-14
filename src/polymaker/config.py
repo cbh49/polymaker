@@ -62,7 +62,7 @@ class SharpConfig(BaseModel):
     min_tier: str = "B"  # "A" = Tier A only; "B" = A+B
     markets: list[str] = Field(default_factory=lambda: ["moneyline", "spread", "total"])
     require_rlm: bool = False
-    max_ask: float = 0.55  # skip if best ask / last price is above this
+    max_ask: float = 0.60  # skip if best ask / last price is above this
     min_moneyline_ask: float = 0.40  # skip moneyline if best ask is cheaper than this
     # If set, require best ask <= implied_fair_prob - min_edge
     min_edge: float | None = None
