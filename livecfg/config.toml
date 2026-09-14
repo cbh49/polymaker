@@ -32,7 +32,7 @@ min_tier = "B"
 markets = ["moneyline", "spread", "total"]
 require_rlm = false
 max_ask = 0.60
-min_moneyline_ask = 0.40
+min_moneyline_ask = 0.35
 filled_log = "livecfg/journal/sharp_trades.jsonl"
 
 [paths]
