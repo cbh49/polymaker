@@ -62,7 +62,16 @@ def _run_scraper(script: str, extra: list[str]) -> bool:
     return True
 
 
-def _write_sharp(splits_path: Path, json_out: Path, csv_out: Path, market: str) -> dict[str, Any]:
+def _write_sharp(
+    splits_path: Path,
+    json_out: Path,
+    csv_out: Path,
+    market: str,
+    *,
+    discord: bool = True,
+    discord_dry_run: bool = False,
+    discord_force: bool = False,
+) -> dict[str, Any]:
     payload = json.loads(splits_path.read_text(encoding="utf-8"))
     markets = _markets_from_arg(market)
     frame = process_slate(payload, markets=markets)
@@ -72,6 +81,13 @@ def _write_sharp(splits_path: Path, json_out: Path, csv_out: Path, market: str) 
     _frame_for_csv(frame).to_csv(csv_out, index=False)
     print_summary(frame)
     print(f"JSON → {json_out}")
+    if discord:
+        try:
+            from discord_sharp_alerts import post_sharp_alerts
+
+            post_sharp_alerts(output, dry_run=discord_dry_run, force=discord_force)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Discord alerts failed: {exc}", file=sys.stderr)
     return output
 
 
@@ -142,6 +158,11 @@ def main() -> int:
         action="store_true",
         help="Never send CLOB orders (overrides POLYMAKER_LIVE)",
     )
+    parser.add_argument("--no-discord", action="store_true", help="Skip Discord A/A+ alerts")
+    parser.add_argument("--discord-dry-run", action="store_true", help="Print Discord payloads, do not POST")
+    parser.add_argument("--discord-force", action="store_true", help="Ignore the sent-play cache")
+    parser.add_argument("--no-x", action="store_true", help="Skip X (Twitter) sharp-money tweets")
+    parser.add_argument("--x-dry-run", action="store_true", help="Print X payloads, do not tweet")
     args = parser.parse_args()
 
     day: date = date.fromisoformat(args.date) if args.date else pacific_today()
@@ -170,6 +191,7 @@ def main() -> int:
     cfg = Config.load(args.config_dir)
     trade_rows: list[dict[str, Any]] = []
     alignments: dict[str, dict[str, Any]] = {}
+    sharp_outputs: list[dict[str, Any]] = []
 
     specs = {
         "mlb": (
@@ -204,8 +226,25 @@ def main() -> int:
         print(result.reason)
         if not result.aligned:
             continue
-        _write_sharp(splits_path, json_out, csv_out, market)
+        out = _write_sharp(
+            splits_path,
+            json_out,
+            csv_out,
+            market,
+            discord=not args.no_discord,
+            discord_dry_run=args.discord_dry_run,
+            discord_force=args.discord_force,
+        )
+        sharp_outputs.append(out)
         trade_rows.extend(_trade_league(cfg, league, live=live))
+
+    if not args.no_x and sharp_outputs:
+        try:
+            from sharp_tweets import post_sharp_tweets
+
+            post_sharp_tweets(sharp_outputs, dry_run=args.x_dry_run)
+        except Exception as exc:  # noqa: BLE001
+            print(f"X sharp tweets failed: {exc}", file=sys.stderr)
 
     try:
         _refresh_watch_list(args.config_dir)

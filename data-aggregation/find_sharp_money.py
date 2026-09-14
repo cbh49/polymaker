@@ -173,9 +173,12 @@ def _as_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(value)
+        out = float(value)
     except (TypeError, ValueError):
         return None
+    if out != out:  # NaN
+        return None
+    return out
 
 
 # --- Step 1: per-source gaps --------------------------------------------------
@@ -787,6 +790,101 @@ def _spread_composite_on_side(
     return compute_composite(gaps, present)
 
 
+def _team_name(game: dict[str, Any], which: Literal["away", "home"]) -> str:
+    name = str(game.get(which) or "").strip()
+    if name:
+        return name
+    abbr = str(game.get(f"{which}_abbr") or "").strip()
+    return abbr
+
+
+def _side_display_name(
+    game: dict[str, Any],
+    labeled: str | None,
+    market: Market,
+    fallback: str | None = None,
+) -> str:
+    if labeled in {"over", "under"}:
+        return labeled.capitalize()
+    if labeled == "away":
+        return _team_name(game, "away") or (fallback or "Away")
+    if labeled == "home":
+        return _team_name(game, "home") or (fallback or "Home")
+    return str(fallback or labeled or "").strip()
+
+
+def _format_american(odds: float | None) -> str | None:
+    val = _as_float(odds)
+    if val is None:
+        return None
+    n = int(round(val))
+    return f"+{n}" if n > 0 else str(n)
+
+
+def _format_number_line(value: float | None, *, signed: bool) -> str | None:
+    val = _as_float(value)
+    if val is None:
+        return None
+    if val == int(val):
+        n = int(val)
+        if signed and n > 0:
+            return f"+{n}"
+        return str(n)
+    text = f"{val:g}"
+    if signed and val > 0 and not text.startswith(("+", "-")):
+        return f"+{text}"
+    return text
+
+
+def format_play_label(
+    *,
+    name: str,
+    market: Market,
+    line: float | None,
+    odds: float | None = None,
+) -> str:
+    """Human play string: 'Purdue +3', 'APP +210', 'Under 49.5'."""
+    label = (name or "").strip() or "—"
+    if market == "moneyline":
+        formatted = _format_american(odds if odds is not None else line)
+        return f"{label} {formatted}" if formatted else label
+    formatted = _format_number_line(line, signed=(market == "spread"))
+    return f"{label} {formatted}" if formatted else label
+
+
+def compute_model_confidence(play: dict[str, Any]) -> int:
+    """Stable 70–100 UI score from signal quality (not implied_fair_prob)."""
+    score = 78 if play.get("tier") == "A+" else 70
+    gap = _as_float(play.get("composite_gap")) or 0.0
+    score += min(12, int(gap / 10.0))
+    n_agree = play.get("n_sources_agreeing") or 0
+    try:
+        n_agree = int(n_agree)
+    except (TypeError, ValueError):
+        n_agree = 0
+    if n_agree >= 3:
+        score += 4
+    conf = play.get("exchange_confirmation")
+    conf = conf if isinstance(conf, dict) else {}
+    edge = _as_float(conf.get("exchange_edge_pct"))
+    if edge is not None and edge >= TIER_A_PLUS_EDGE_PCT:
+        score += 4
+    if conf.get("exchange_rlm_confirmed") is True:
+        score += 3
+    low_liq = conf.get("low_liquidity")
+    if low_liq is False or play.get("polymarket_low_liquidity") is False:
+        score += 2
+    if play.get("rlm_source_conflict"):
+        score -= 4
+    if play.get("low_volume_dog_flag"):
+        score -= 8
+    if play.get("ml_spread_divergence"):
+        score -= 6
+    if low_liq is True or play.get("polymarket_low_liquidity") is True:
+        score -= 4
+    return max(70, min(100, int(score)))
+
+
 def _ml_confidence_fields(
     game: dict[str, Any],
     side_data: dict[str, Any],
@@ -846,14 +944,49 @@ def build_output(
         open_px, live_px = rlm.open_px, rlm.live_px
     else:
         open_px, live_px = _open_live_number(side_data)
+    away_team = _team_name(game, "away")
+    home_team = _team_name(game, "home")
+    if away_team and home_team:
+        matchup_display = f"{away_team} @ {home_team}"
+    else:
+        matchup_display = game.get("matchup")
+    play_name = _side_display_name(game, labeled, market, fallback=str(abbr) if abbr else None)
+    if market == "moneyline":
+        play_line = _as_float(live_px) if live_px is not None else _ml_american_odds(side_data)
+        play_odds = play_line
+    else:
+        play_line = _as_float(live_px)
+        play_odds = _as_float(side_data.get("live_odds"))
+        if play_odds is None:
+            play_odds = _as_float(side_data.get("open_odds"))
+    open_num = _as_float(open_px)
+    live_num = _as_float(live_px)
+    line_move = None if open_num is None or live_num is None else round(live_num - open_num, 4)
+    pub_labeled = _label_side(rlm.public_favors, market)
+    pub_data = away if rlm.public_favors == "away" else home if rlm.public_favors == "home" else None
     row: dict[str, Any] = {
         "matchup": game.get("matchup"),
+        "matchup_display": matchup_display,
+        "away_team": away_team or None,
+        "home_team": home_team or None,
         "game_time_utc": game.get("game_time_utc"),
+        "game_time_local": game.get("game_time_local"),
         "date": game.get("date"),
         "event_id": game.get("event_id"),
         "market": market,
         "side": abbr,
         "home_away": labeled,
+        "play_label": format_play_label(name=play_name, market=market, line=play_line, odds=play_odds),
+        "play_line": play_line,
+        "play_odds": play_odds,
+        "line_move": line_move,
+        "public_bet_pct": _as_float(side_data.get("public_bet_pct")),
+        "handle_bet_pct": _as_float(side_data.get("handle_bet_pct")),
+        "public_favors_bet_pct": None if pub_data is None else _as_float(pub_data.get("public_bet_pct")),
+        "vsin_public_bet_pct": _as_float(side_data.get("vsin_public_bet_pct")),
+        "vsin_handle_bet_pct": _as_float(side_data.get("vsin_handle_bet_pct")),
+        "sbd_public_bet_pct": _as_float(side_data.get("sbd_public_bet_pct")),
+        "sbd_handle_bet_pct": _as_float(side_data.get("sbd_handle_bet_pct")),
         "tier": tier,
         "composite_gap": round(composite_gap, 4),
         "primary_gap": gaps["primary"],
@@ -870,7 +1003,8 @@ def build_output(
             "rlm_confirmed": rlm.rlm_confirmed,
             "rlm_source_used": rlm.rlm_source_used,
             "rlm_source_conflict": rlm.rlm_source_conflict,
-            "public_favors": _label_side(rlm.public_favors, market),
+            "public_favors": pub_labeled,
+            "public_favors_name": _side_display_name(game, pub_labeled, market),
             "line_moved_toward": _label_side(rlm.line_moved_toward, market),
             "eva_line_moved_toward": _label_side(rlm.eva_line_moved_toward, market),
             "polymarket_line_moved_toward": _label_side(rlm.polymarket_line_moved_toward, market),
@@ -979,6 +1113,7 @@ def enrich_with_exchange_data(play: dict[str, Any], game_data: dict[str, Any]) -
 
     if not covers_ok and poly is None:
         play["exchange_confirmation"] = _null_exchange_confirmation()
+        play["model_confidence"] = compute_model_confidence(play)
         return play
 
     books_used: list[str] = []
@@ -1031,6 +1166,7 @@ def enrich_with_exchange_data(play: dict[str, Any], game_data: dict[str, Any]) -
     ):
         play["tier"] = "A+"
 
+    play["model_confidence"] = compute_model_confidence(play)
     return play
 
 
@@ -1168,7 +1304,9 @@ def print_summary(frame: pd.DataFrame) -> None:
         "tier",
         "market",
         "matchup",
+        "play_label",
         "side",
+        "model_confidence",
         "composite_gap",
         "primary_gap",
         "vsin_gap",
@@ -1245,6 +1383,11 @@ def main() -> None:
         choices=["moneyline", "spread", "total", "both", "all"],
         help="Market to evaluate (NCAAF should use 'all'; WNBA 'both' or 'spread')",
     )
+    parser.add_argument("--no-discord", action="store_true", help="Skip Discord A/A+ alerts")
+    parser.add_argument("--discord-dry-run", action="store_true", help="Print Discord payloads, do not POST")
+    parser.add_argument("--discord-force", action="store_true", help="Ignore the sent-play cache")
+    parser.add_argument("--no-x", action="store_true", help="Skip X (Twitter) sharp-money tweets")
+    parser.add_argument("--x-dry-run", action="store_true", help="Print X payloads, do not tweet")
     args = parser.parse_args()
     args.input = _resolve_cli_path(args.input)
     args.out = _resolve_cli_path(args.out)
@@ -1263,6 +1406,14 @@ def main() -> None:
     print_summary(frame)
     print(f"JSON → {args.out}")
     print(f"CSV  → {args.csv}")
+    if not args.no_discord:
+        from discord_sharp_alerts import post_sharp_alerts
+
+        post_sharp_alerts(output, dry_run=args.discord_dry_run, force=args.discord_force)
+    if not args.no_x:
+        from sharp_tweets import post_sharp_tweets
+
+        post_sharp_tweets(output, dry_run=args.x_dry_run)
 
 
 if __name__ == "__main__":

@@ -19,17 +19,21 @@ aws ssm put-parameter --region $REGION --name /polymaker/X_API_KEY_SECRET --type
 aws ssm put-parameter --region $REGION --name /polymaker/X_ACCESS_TOKEN --type SecureString --value '...' --overwrite
 aws ssm put-parameter --region $REGION --name /polymaker/X_ACCESS_TOKEN_SECRET --type SecureString --value '...' --overwrite
 aws ssm put-parameter --region $REGION --name /polymaker/X_WHALE_POSTS --type SecureString --value '1' --overwrite
+aws ssm put-parameter --region $REGION --name /polymaker/DISCORD_SHARP_WEBHOOK_URL --type SecureString --value 'https://discord.com/api/webhooks/...' --overwrite
 ```
 
 `POLYMAKER_LIVE=1` sends real CLOB buys. Leave it unset (or `0`) for dry-run.
 
-`X_WHALE_POSTS=1` tweets whale detections from the monitor (same X app as MLB POTD). Omit it (or `0`) to keep the monitor silent on X. Keys in `trading-bot/.env` only reach local compose — production reads `/etc/polymaker.env` from these SSM parameters.
+`X_WHALE_POSTS=1` tweets whale detections from the monitor (same X app as MLB POTD). Omit it (or `0`) to keep the monitor silent on X. Keys in `trading-bot/.env` only reach local compose — production reads `/etc/polymaker.env` from these SSM parameters. The same switch (or `X_SHARP_POSTS=1`) also lets the sharp container tweet **at most two** A/A+ sharp-money plays per Pacific day; Discord still gets every A/A+ card. Set `X_SHARP_POSTS=0` to tweet whales only.
+
+`DISCORD_SHARP_WEBHOOK_URL` posts Tier A / A+ sharp-money cards from the 30-minute `sharp` container (`scripts/run_sharp_pipeline.py`). The sent-play cache lives on the host volume `/var/lib/polymaker/output/.discord_sent.json` so reruns do not spam. Omit the parameter to skip Discord.
 
 On an **existing** instance (user-data does not re-run), after putting the parameters:
 
 ```bash
-# append X_* into /etc/polymaker.env, rebuild/pull the image, then:
+# append X_* / DISCORD_SHARP_WEBHOOK_URL into /etc/polymaker.env, rebuild/pull the image, then:
 systemctl restart polymaker-monitor
+# next polymaker-sharp.timer run picks up /etc/polymaker.env automatically
 ```
 
 Convex: `npx convex env set PUBLISH_TOKEN <token>` in `dashboard/`, then deploy the `trades` table + HTTP routes.

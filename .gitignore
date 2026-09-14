@@ -1,6 +1,8 @@
 markets.csv
 output.txt
 output/
+.discord_sent.json
+.x_sharp_posted.json
 data/
 credentials.json
 */credentials.json

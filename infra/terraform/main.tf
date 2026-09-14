@@ -220,6 +220,7 @@ resource "aws_ssm_parameter" "placeholders" {
     "X_ACCESS_TOKEN",
     "X_ACCESS_TOKEN_SECRET",
     "X_WHALE_POSTS",
+    "DISCORD_SHARP_WEBHOOK_URL",
   ])
 
   name        = "/polymaker/${each.key}"

@@ -130,6 +130,11 @@ def test_ncaaf_process_game_moneyline() -> None:
     assert play["tier"] in {"A", "A+"}
     assert play["rlm_source_used"] == "thespread"
     assert play["sbd_override"] is False
+    assert play["play_label"] == "North Carolina +250"
+    assert play["public_bet_pct"] == 18
+    assert play["handle_bet_pct"] == 38
+    assert play["public_favors_name"] == "TCU"
+    assert 70 <= play["model_confidence"] <= 100
 
 
 def test_ncaaf_process_game_total() -> None:
@@ -323,6 +328,8 @@ def test_cfb_moneyline_slug() -> None:
     assert is_moneyline_slug("cfb-hawaii-stan-2026-08-29")
     assert not is_moneyline_slug("cfb-hawaii-stan-2026-08-29-total-49pt5")
     assert look_ahead_days_for_series("cfb-2026", 3) == 7
+    assert look_ahead_days_for_series("nfl-2026", 3) == 7
+    assert look_ahead_days_for_series("nfl", 3) == 7
 
 
 def test_resolve_team_ncaaf() -> None:

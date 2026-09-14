@@ -101,7 +101,7 @@ uv run polymaker trade-sharp --refresh          # inspect dry-run
 uv run polymaker trade-sharp --refresh --live   # send buys
 ```
 
-Production (EC2 eu-west-1) is documented in [`infra/README.md`](infra/README.md): a 30-minute systemd timer runs `scripts/run_sharp_pipeline.py` (trades only when all scrape sources share today's Pacific slate) and `scripts/run_monitor.py` stays up for whale + smart-wallet signals. Live buys require `POLYMAKER_LIVE=1` and Convex claim/complete so the two bots cannot fill the same market twice.
+Production (EC2 eu-west-1) is documented in [`infra/README.md`](infra/README.md): a 30-minute systemd timer runs `scripts/run_sharp_pipeline.py` (trades only when all scrape sources share today's Pacific slate) and `scripts/run_monitor.py` stays up for whale + smart-wallet signals. Live buys require `POLYMAKER_LIVE=1` and Convex claim/complete so the two bots cannot fill the same market twice. Set `DISCORD_SHARP_WEBHOOK_URL` (SSM `/polymaker/DISCORD_SHARP_WEBHOOK_URL` in prod) to auto-post Tier A / A+ cards from that same sharp container. With `X_WHALE_POSTS=1` (or `X_SHARP_POSTS=1`), that container also tweets the **two best** A/A+ plays per Pacific day.
 
 ## Layout
 
