@@ -2,16 +2,19 @@
 """
 Pull Polymarket moneyline / spread / total prices and attach them to splits games.
 
-Share price is stored as implied_prob_pct (percent). American odds are converted
-from that share price. History is the CLOB 24h price series (collapsed to
-line-change timestamps), same role as eva_history.
+Share price `implied_prob_pct` is Gamma's outcomePrices mid (always sums to 100).
+Tradable CLOB quotes are stored as `bid` / `ask` on game sides and
+`over_bid` / `over_ask` / `under_bid` / `under_ask` on player props (Gamma
+`bestBid`/`bestAsk` on token 0; the other outcome is the complement). American
+odds are converted from the mid. History is the CLOB 24h price series
+(collapsed to line-change timestamps), same role as eva_history.
 
 If a market is missing or liquidity is 0/null, the polymarket object is omitted.
 
 Usage:
   python scrape_polymarket_odds.py
   python scrape_polymarket_odds.py --league WNBA --out output/polymarket_wnba_odds.json
-  python scrape_polymarket_odds.py --league NCAAF --out output/polymarket_ncaaf_odds.json
+  python scrape_polymarket_odds.py --league NFL --out output/polymarket_nfl_odds.json
 """
 
 from __future__ import annotations
@@ -29,7 +32,24 @@ from zoneinfo import ZoneInfo
 import requests
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+_SRC = SCRIPT_DIR.parent / "src"
 _TEAMS_PATH = SCRIPT_DIR.parent / "src" / "polymaker" / "trading" / "teams.py"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from polymaker.catalog.sports import (  # noqa: E402,F401,I001
+    EVENT_SLUG_RE as _EVENT_SLUG_RE,
+    PLAYER_PROPS_EVENT_RE as _PLAYER_PROPS_EVENT_RE,
+    SPREAD_SLUG_RE as _SPREAD_SLUG_RE,
+    TOTAL_SLUG_RE as _TOTAL_SLUG_RE,
+    classify_event_markets as _classify_markets,
+    classify_player_prop_markets,
+    implied_home_spread,
+    parse_pt_number,
+    pick_spread_market,
+    pick_total_market,
+    player_props_slug_for_event,
+)
 
 
 def _load_resolve_team():
@@ -54,6 +74,7 @@ DEFAULT_OUT = {
     "WNBA": SCRIPT_DIR / "output" / "polymarket_wnba_odds.json",
     "UFC": SCRIPT_DIR / "output" / "polymarket_ufc_odds.json",
     "NCAAF": SCRIPT_DIR / "output" / "polymarket_ncaaf_odds.json",
+    "NFL": SCRIPT_DIR / "output" / "polymarket_nfl_odds.json",
 }
 
 # Polymarket ticker/series is CFB; NCAAF is the league name we expose.
@@ -63,6 +84,7 @@ _POLY_EVENT_PREFIX = {
     "UFC": "ufc",
     "NCAAF": "cfb",
     "CFB": "cfb",
+    "NFL": "nfl",
 }
 
 HEADERS = {
@@ -74,17 +96,6 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-_EVENT_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
-)
-_SPREAD_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})"
-    r"-spread-(?P<favored>home|away)-(?P<pts>\d+(?:pt\d+)?)$"
-)
-_TOTAL_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})"
-    r"-(?:total|totals)-(?P<pts>\d+(?:pt\d+)?)$"
-)
 _CFB_GENERIC_NICKS = frozenset({"state", "univ", "university", "college", "tech", "a&m", "am"})
 
 
@@ -101,17 +112,22 @@ def poly_event_prefix(league: str) -> str:
 
 
 def poly_series_slugs(league: str, day: date | None = None) -> tuple[str, ...]:
-    """Gamma `series_slug` values. CFB is year-tagged (`cfb-2026`), not `cfb`."""
+    """Gamma `series_slug` values. CFB/NFL are year-tagged (`cfb-2026`, `nfl-2026`)."""
     prefix = poly_event_prefix(league)
-    if prefix != "cfb":
+    if prefix not in {"cfb", "nfl"}:
         return (prefix,)
     year = (day or datetime.now(PAGE_TZ).date()).year
-    return (f"cfb-{year}", f"cfb-{year - 1}", f"cfb-{year + 1}", "cfb")
+    return (f"{prefix}-{year}", f"{prefix}-{year - 1}", f"{prefix}-{year + 1}", prefix)
 
 
 def _event_date_max_delta(league: str) -> int:
-    # CFB slates cluster on weekends; ±1 day would drop Saturday from a Thursday run.
-    return 4 if normalize_league(league) == "NCAAF" else 1
+    # CFB/NFL/UFC slates cluster on weekends; ±1 day would drop Saturday from a Thursday run.
+    key = normalize_league(league)
+    if key in {"NCAAF", "NFL"}:
+        return 4
+    if key == "UFC":
+        return 14
+    return 1
 
 
 def _json_list(value: Any) -> list[Any]:
@@ -124,22 +140,6 @@ def _json_list(value: Any) -> list[Any]:
         return parsed if isinstance(parsed, list) else []
     except (json.JSONDecodeError, TypeError):
         return []
-
-
-def parse_pt_number(raw: str) -> float | None:
-    text = (raw or "").strip().lower()
-    if not text:
-        return None
-    if "pt" in text:
-        left, _, right = text.partition("pt")
-        try:
-            return float(f"{left}.{right}")
-        except ValueError:
-            return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
 
 
 def share_to_american(share: float) -> int | None:
@@ -159,6 +159,38 @@ def _parse_share(value: Any) -> float | None:
     if share <= 0 or share >= 1:
         return None
     return share
+
+
+def _token_book(raw: dict[str, Any], idx: int | None) -> tuple[float | None, float | None]:
+    """CLOB bid/ask for outcomes[idx]. Gamma bestBid/bestAsk are token 0 only."""
+    if idx is None or idx < 0:
+        return None, None
+    bid0 = _parse_share(raw.get("bestBid"))
+    ask0 = _parse_share(raw.get("bestAsk"))
+    if idx == 0:
+        return bid0, ask0
+    if idx == 1:
+        bid1 = None if ask0 is None else _parse_share(round(1.0 - ask0, 4))
+        ask1 = None if bid0 is None else _parse_share(round(1.0 - bid0, 4))
+        return bid1, ask1
+    return None, None
+
+
+def _ou_indices(raw: dict[str, Any]) -> tuple[int | None, int | None]:
+    outcomes = [str(x).strip().lower() for x in _json_list(raw.get("outcomes"))]
+    n = max(len(outcomes), len(_json_list(raw.get("outcomePrices"))))
+    yes_idx = None
+    no_idx = None
+    for i, label in enumerate(outcomes):
+        if label in {"over", "yes"}:
+            yes_idx = i
+        elif label in {"under", "no"}:
+            no_idx = i
+    if yes_idx is None and n:
+        yes_idx = 0
+    if no_idx is None and n > 1:
+        no_idx = 1
+    return yes_idx, no_idx
 
 
 def _liquidity(raw: dict[str, Any]) -> float | None:
@@ -457,16 +489,6 @@ def fetch_price_history(
     return hist
 
 
-def _side_line_number(side: dict[str, Any] | None) -> float | None:
-    if not isinstance(side, dict):
-        return None
-    for key in ("live", "eva_line", "sbd_line", "open"):
-        val = side.get(key)
-        if isinstance(val, (int, float)):
-            return float(val)
-    return None
-
-
 def _market_id(raw: dict[str, Any]) -> str:
     if raw.get("id") is not None:
         return str(raw["id"])
@@ -475,85 +497,33 @@ def _market_id(raw: dict[str, Any]) -> str:
     return str(raw.get("slug") or "")
 
 
-def _classify_markets(event: dict[str, Any]) -> dict[str, Any]:
-    event_slug = str(event.get("slug") or "")
-    moneyline = None
-    spreads: list[dict[str, Any]] = []
-    totals: list[dict[str, Any]] = []
-    for raw in event.get("markets") or []:
-        if not isinstance(raw, dict) or raw.get("closed"):
-            continue
-        slug = str(raw.get("slug") or "")
-        if slug == event_slug and _EVENT_SLUG_RE.match(slug):
-            moneyline = raw
-            continue
-        spread_m = _SPREAD_SLUG_RE.match(slug)
-        if spread_m:
-            pts = parse_pt_number(spread_m.group("pts"))
-            if pts is None:
-                continue
-            spreads.append(
-                {
-                    "raw": raw,
-                    "favored": spread_m.group("favored"),
-                    "points": pts,
-                    "liquidity": _liquidity(raw) or 0.0,
-                }
-            )
-            continue
-        total_m = _TOTAL_SLUG_RE.match(slug)
-        if total_m:
-            pts = parse_pt_number(total_m.group("pts"))
-            if pts is None:
-                continue
-            totals.append(
-                {
-                    "raw": raw,
-                    "points": pts,
-                    "liquidity": _liquidity(raw) or 0.0,
-                }
-            )
-    return {"moneyline": moneyline, "spreads": spreads, "totals": totals}
-
-
-def pick_spread_market(
-    spreads: list[dict[str, Any]],
-    dest_spread: dict[str, Any] | None,
+def _price_snap(
+    raw: dict[str, Any],
+    idx: int | None,
+    ts: str,
 ) -> dict[str, Any] | None:
-    usable = [s for s in spreads if (s.get("liquidity") or 0) > 0]
-    if not usable:
+    """American-odds snapshot without CLOB history."""
+    liq = _liquidity(raw)
+    if liq is None:
         return None
-    home_line = _side_line_number((dest_spread or {}).get("home"))
-    away_line = _side_line_number((dest_spread or {}).get("away"))
-    target = home_line if home_line is not None else (
-        -away_line if away_line is not None else None
-    )
-    if target is not None:
-        for row in usable:
-            pts = float(row["points"])
-            favored = row["favored"]
-            implied_home = -pts if favored == "home" else pts
-            if abs(implied_home - target) < 0.01:
-                return row
-    return max(usable, key=lambda r: r["liquidity"])
-
-
-def pick_total_market(
-    totals: list[dict[str, Any]],
-    dest_total: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    usable = [t for t in totals if (t.get("liquidity") or 0) > 0]
-    if not usable:
+    prices = _json_list(raw.get("outcomePrices"))
+    if idx is None or idx < 0 or idx >= len(prices):
         return None
-    target = _side_line_number((dest_total or {}).get("over"))
-    if target is None:
-        target = _side_line_number((dest_total or {}).get("under"))
-    if target is not None:
-        for row in usable:
-            if abs(float(row["points"]) - target) < 0.01:
-                return row
-        return min(usable, key=lambda r: abs(float(r["points"]) - target))
-    return max(usable, key=lambda r: r["liquidity"])
+    share = _parse_share(prices[idx])
+    if share is None:
+        return None
+    market_id = _market_id(raw)
+    if not market_id:
+        return None
+    snap = _snapshot(share, liq, _volume_24hr(raw), ts, market_id)
+    if snap is None:
+        return None
+    bid, ask = _token_book(raw, idx)
+    if bid is not None:
+        snap["bid"] = bid
+    if ask is not None:
+        snap["ask"] = ask
+    return snap
 
 
 def _poly_for_outcome(
@@ -564,23 +534,11 @@ def _poly_for_outcome(
     session: requests.Session | None = None,
     history_cache: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any] | None:
-    liq = _liquidity(raw)
-    if liq is None:
-        return None
-    prices = _json_list(raw.get("outcomePrices"))
-    if idx is None or idx < 0 or idx >= len(prices):
-        return None
-    share = _parse_share(prices[idx] if idx < len(prices) else None)
-    if share is None:
-        return None
-    market_id = _market_id(raw)
-    if not market_id:
-        return None
-    snap = _snapshot(share, liq, _volume_24hr(raw), ts, market_id)
+    snap = _price_snap(raw, idx, ts)
     if snap is None:
         return None
     tokens = _json_list(raw.get("clobTokenIds"))
-    token_id = str(tokens[idx]) if idx < len(tokens) else ""
+    token_id = str(tokens[idx]) if idx is not None and idx < len(tokens) else ""
     hist: list[dict[str, Any]] = []
     if session is not None:
         hist = fetch_price_history(session, token_id, history_cache if history_cache is not None else {})
@@ -588,6 +546,59 @@ def _poly_for_outcome(
         hist = [_history_point(snap)]
     snap["history"] = hist
     return snap
+
+
+def _spread_alt_row(
+    row: dict[str, Any],
+    *,
+    away_names: list[str],
+    home_names: list[str],
+    away_ref: Any,
+    home_ref: Any,
+    ts: str,
+) -> dict[str, Any] | None:
+    raw = row.get("raw")
+    if not isinstance(raw, dict):
+        return None
+    outcomes = _json_list(raw.get("outcomes"))
+    away_snap = _price_snap(raw, _outcome_index(outcomes, away_names, away_ref.poly_code), ts)
+    home_snap = _price_snap(raw, _outcome_index(outcomes, home_names, home_ref.poly_code), ts)
+    if not away_snap and not home_snap:
+        return None
+    points = float(row["points"])
+    alt: dict[str, Any] = {
+        "home_line": implied_home_spread(str(row["favored"]), points),
+        "points": points,
+        "favored": row["favored"],
+        "market_id": _market_id(raw),
+        "liquidity": float(row.get("liquidity") or 0.0),
+    }
+    if away_snap:
+        alt["away"] = away_snap
+    if home_snap:
+        alt["home"] = home_snap
+    return alt
+
+
+def _total_alt_row(row: dict[str, Any], ts: str) -> dict[str, Any] | None:
+    raw = row.get("raw")
+    if not isinstance(raw, dict):
+        return None
+    outcomes = _json_list(raw.get("outcomes"))
+    over_snap = _price_snap(raw, _total_index(outcomes, "over"), ts)
+    under_snap = _price_snap(raw, _total_index(outcomes, "under"), ts)
+    if not over_snap and not under_snap:
+        return None
+    alt: dict[str, Any] = {
+        "points": float(row["points"]),
+        "market_id": _market_id(raw),
+        "liquidity": float(row.get("liquidity") or 0.0),
+    }
+    if over_snap:
+        alt["over"] = over_snap
+    if under_snap:
+        alt["under"] = under_snap
+    return alt
 
 
 def build_poly_sides(
@@ -632,6 +643,10 @@ def build_poly_sides(
             spread["away"] = away_snap
         if home_snap:
             spread["home"] = home_snap
+        if spread:
+            points = float(picked_sp["points"])
+            spread["points"] = points
+            spread["home_line"] = implied_home_spread(str(picked_sp["favored"]), points)
 
     total: dict[str, Any] = {}
     picked_tot = pick_total_market(classified["totals"], dest_game.get("total"))
@@ -644,8 +659,85 @@ def build_poly_sides(
             total["over"] = over_snap
         if under_snap:
             total["under"] = under_snap
+        if total:
+            total["points"] = float(picked_tot["points"])
 
-    return {"moneyline": moneyline, "spread": spread, "total": total}
+    spread_alts: list[dict[str, Any]] = []
+    for row in classified["spreads"]:
+        alt = _spread_alt_row(
+            row,
+            away_names=away_names,
+            home_names=home_names,
+            away_ref=away_ref,
+            home_ref=home_ref,
+            ts=ts,
+        )
+        if alt is not None:
+            spread_alts.append(alt)
+    spread_alts.sort(key=lambda r: float(r["home_line"]))
+
+    total_alts: list[dict[str, Any]] = []
+    for row in classified["totals"]:
+        alt = _total_alt_row(row, ts)
+        if alt is not None:
+            total_alts.append(alt)
+    total_alts.sort(key=lambda r: float(r["points"]))
+
+    return {
+        "moneyline": moneyline,
+        "spread": spread,
+        "total": total,
+        "spread_alts": spread_alts,
+        "total_alts": total_alts,
+    }
+
+
+def _prop_side_prices(raw: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Return (over/yes, under/no) mid prices from Gamma outcomePrices."""
+    prices = _json_list(raw.get("outcomePrices"))
+    yes_idx, no_idx = _ou_indices(raw)
+    yes = _parse_share(prices[yes_idx]) if yes_idx is not None and yes_idx < len(prices) else None
+    no = _parse_share(prices[no_idx]) if no_idx is not None and no_idx < len(prices) else None
+    return yes, no
+
+
+def build_player_props(event: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Snapshot yardage/TD props from a `*-player-props` Gamma event (no CLOB history)."""
+    if not event:
+        return []
+    out: list[dict[str, Any]] = []
+    for row in classify_player_prop_markets(event):
+        raw = row.get("raw")
+        if not isinstance(raw, dict):
+            continue
+        over, under = _prop_side_prices(raw)
+        yes_idx, no_idx = _ou_indices(raw)
+        over_bid, over_ask = _token_book(raw, yes_idx)
+        under_bid, under_ask = _token_book(raw, no_idx)
+        if over is None and under is None and over_ask is None and under_ask is None:
+            continue
+        prop: dict[str, Any] = {
+            "slug": raw.get("slug"),
+            "type": row.get("type"),
+            "player": row.get("player") or "",
+            "line": row.get("line"),
+            "yes_sub_title": raw.get("groupItemTitle") or raw.get("question") or "",
+            "over": over,
+            "under": under,
+            "volume": _volume_24hr(raw),
+            "liquidity": _liquidity(raw) or 0.0,
+            "market_id": _market_id(raw),
+        }
+        if over_bid is not None:
+            prop["over_bid"] = over_bid
+        if over_ask is not None:
+            prop["over_ask"] = over_ask
+        if under_bid is not None:
+            prop["under_bid"] = under_bid
+        if under_ask is not None:
+            prop["under_ask"] = under_ask
+        out.append(prop)
+    return out
 
 
 def fetch_event(session: requests.Session, slug: str) -> dict[str, Any] | None:
@@ -759,6 +851,85 @@ def _index_series_events(events: list[dict[str, Any]]) -> dict[tuple[str, str, s
     return indexed
 
 
+def _index_player_prop_events(events: list[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    indexed: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for event in events:
+        slug = str(event.get("slug") or "")
+        m = _PLAYER_PROPS_EVENT_RE.match(slug)
+        if not m:
+            continue
+        keys = {
+            (m.group("away"), m.group("home"), m.group("ymd")),
+            (m.group("away"), m.group("home"), str(event.get("eventDate") or "")[:10]),
+        }
+        for key in keys:
+            if key[2]:
+                indexed[key] = event
+    return indexed
+
+
+def _lookup_player_props_event(
+    session: requests.Session,
+    moneyline_event: dict[str, Any] | None,
+    *,
+    away_code: str,
+    home_code: str,
+    dates: list[date],
+    props_index: dict[tuple[str, str, str], dict[str, Any]] | None,
+    cache: dict[str, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    if props_index:
+        for d in dates:
+            found = props_index.get((away_code, home_code, d.isoformat()))
+            if found:
+                return found
+        event_day = str((moneyline_event or {}).get("eventDate") or "")[:10]
+        if event_day:
+            found = props_index.get((away_code, home_code, event_day))
+            if found:
+                return found
+    slug = player_props_slug_for_event(str((moneyline_event or {}).get("slug") or ""))
+    if not slug:
+        return None
+    if slug not in cache:
+        cache[slug] = fetch_event(session, slug)
+    return cache[slug]
+
+
+def _attach_player_props(
+    session: requests.Session,
+    dest: dict[str, Any],
+    moneyline_event: dict[str, Any] | None,
+    *,
+    league: str,
+    away_code: str,
+    home_code: str,
+    event_day: str,
+    props_index: dict[tuple[str, str, str], dict[str, Any]] | None,
+    cache: dict[str, dict[str, Any] | None],
+) -> None:
+    if league != "NFL":
+        return
+    dates: list[date] = []
+    if event_day:
+        try:
+            dates.append(date.fromisoformat(event_day[:10]))
+        except ValueError:
+            pass
+    props_event = _lookup_player_props_event(
+        session,
+        moneyline_event,
+        away_code=away_code,
+        home_code=home_code,
+        dates=dates,
+        props_index=props_index,
+        cache=cache,
+    )
+    dest["player_props"] = build_player_props(props_event)
+    if props_event and props_event.get("slug"):
+        dest["polymarket_player_props_slug"] = props_event["slug"]
+
+
 def scrape(
     league: str = "MLB",
     games: list[dict[str, Any]] | None = None,
@@ -775,10 +946,12 @@ def scrape(
         cache: dict[str, dict[str, Any] | None] = {}
         history_cache: dict[str, list[dict[str, Any]]] = {}
         series_index: dict[tuple[str, str, str], dict[str, Any]] | None = None
+        props_index: dict[tuple[str, str, str], dict[str, Any]] | None = None
 
         if not dest_games:
             events = iter_series_events(session, league, day=day)
             series_index = _index_series_events(events)
+            props_index = _index_player_prop_events(events)
             # Standalone: one row per event in the date window.
             window = day or datetime.now(PAGE_TZ).date()
             max_delta = _event_date_max_delta(league)
@@ -817,6 +990,17 @@ def scrape(
                         )
                     )
                     dest["polymarket_event_slug"] = slug
+                    _attach_player_props(
+                        session,
+                        dest,
+                        event,
+                        league=league,
+                        away_code=m.group("away"),
+                        home_code=m.group("home"),
+                        event_day=event_day,
+                        props_index=props_index,
+                        cache=cache,
+                    )
                     built.append(dest)
                     continue
                 dest = {
@@ -848,11 +1032,25 @@ def scrape(
                     )
                 )
                 dest["polymarket_event_slug"] = slug
+                _attach_player_props(
+                    session,
+                    dest,
+                    event,
+                    league=league,
+                    away_code=away_ref.poly_code,
+                    home_code=home_ref.poly_code,
+                    event_day=event_day,
+                    props_index=props_index,
+                    cache=cache,
+                )
                 built.append(dest)
         else:
             named_events: list[dict[str, Any]] | None = None
-            if league in {"UFC", "NCAAF"}:
+            if league in {"UFC", "NCAAF", "NFL"}:
                 named_events = iter_series_events(session, league, day=day)
+                if league == "NFL":
+                    series_index = _index_series_events(named_events or [])
+                    props_index = _index_player_prop_events(named_events or [])
             for game in dest_games:
                 if league in {"UFC", "NCAAF"}:
                     away_name = str(game.get("away") or game.get("away_abbr") or "")
@@ -940,6 +1138,17 @@ def scrape(
                         history_cache=history_cache,
                     )
                 )
+                _attach_player_props(
+                    session,
+                    row,
+                    event,
+                    league=league,
+                    away_code=away_ref.poly_code,
+                    home_code=home_ref.poly_code,
+                    event_day=str(event.get("eventDate") or game.get("date") or ""),
+                    props_index=props_index,
+                    cache=cache,
+                )
                 built.append(row)
 
     return {
@@ -998,8 +1207,10 @@ def merge_polymarket_into_game(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scrape Polymarket moneyline/spread/total prices")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC", "NCAAF", "CFB"])
+    parser = argparse.ArgumentParser(
+        description="Scrape Polymarket moneyline/spread/total prices (NFL also pulls player props)"
+    )
+    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC", "NCAAF", "CFB", "NFL"])
     parser.add_argument("--date", default=None, help="Slate date YYYY-MM-DD")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
@@ -1010,6 +1221,9 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {result['game_count']} {league} Polymarket games → {out}")
+    if league == "NFL":
+        n_props = sum(len(g.get("player_props") or []) for g in result.get("games") or [])
+        print(f"  player props: {n_props}")
 
 
 if __name__ == "__main__":

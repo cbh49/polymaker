@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Scrape MLB or NCAAF public betting % + handle % from SportsBettingDime.
+Scrape MLB, NCAAF, or NFL public betting % + handle % from SportsBettingDime.
 
 Source pages:
   MLB:   https://www.sportsbettingdime.com/mlb/public-betting-trends/
   NCAAF: https://www.sportsbettingdime.com/college-football/public-betting-trends/
+  NFL:   https://www.sportsbettingdime.com/nfl/public-betting-trends/
 
 Data comes from:
   /wp-json/adpt/v1/mlb-odds
   /wp-json/adpt/v1/ncaafb-odds
+  /wp-json/adpt/v1/nfl-odds
   (each game includes bettingSplits)
 
 The college-football HTML page may say splits are unavailable while the
@@ -22,6 +24,7 @@ Fields are prefixed with sbd_ when merged into the combined splits file:
 Usage:
   python scrape_sbd_splits.py
   python scrape_sbd_splits.py --league NCAAF --out output/sbd_ncaaf_betting_splits.json
+  python scrape_sbd_splits.py --league NFL --out output/sbd_nfl_betting_splits.json
 """
 
 from __future__ import annotations
@@ -41,15 +44,18 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = {
     "MLB": SCRIPT_DIR / "output" / "sbd_betting_splits.json",
     "NCAAF": SCRIPT_DIR / "output" / "sbd_ncaaf_betting_splits.json",
+    "NFL": SCRIPT_DIR / "output" / "sbd_nfl_betting_splits.json",
 }
 
 PAGE_URLS = {
     "MLB": "https://www.sportsbettingdime.com/mlb/public-betting-trends/",
     "NCAAF": "https://www.sportsbettingdime.com/college-football/public-betting-trends/",
+    "NFL": "https://www.sportsbettingdime.com/nfl/public-betting-trends/",
 }
 API_URLS = {
     "MLB": "https://www.sportsbettingdime.com/wp-json/adpt/v1/mlb-odds",
     "NCAAF": "https://www.sportsbettingdime.com/wp-json/adpt/v1/ncaafb-odds",
+    "NFL": "https://www.sportsbettingdime.com/wp-json/adpt/v1/nfl-odds",
 }
 PAGE_URL = PAGE_URLS["MLB"]
 API_URL = API_URLS["MLB"]
@@ -361,7 +367,14 @@ def scrape(
     if league not in API_URLS:
         raise ValueError(f"Unsupported SBD league: {league}")
     day = day or datetime.now(PAGE_TZ).date()
-    window = 6 if day_window is None and league == "NCAAF" else (day_window or 0)
+    if day_window is not None:
+        window = day_window
+    elif league == "NCAAF":
+        window = 6
+    elif league == "NFL":
+        window = 7
+    else:
+        window = 0
     allowed = {day + timedelta(days=offset) for offset in range(0, window + 1)}
     page_url = PAGE_URLS[league]
     api_url = API_URLS[league]
@@ -372,6 +385,13 @@ def scrape(
         for alias, canon in ABBR_ALIASES.items():
             abbr_map[alias] = ABBR_TO_NAME[canon]
         matchups: list[dict[str, Any]] = []
+    elif league == "NFL":
+        from nfl_team_map import ABBR_ALIASES, ABBR_TO_NAME, canonical_abbr, canonical_name
+
+        abbr_map = dict(ABBR_TO_NAME)
+        for alias, canon in ABBR_ALIASES.items():
+            abbr_map[alias] = ABBR_TO_NAME.get(canon, canon)
+        matchups = []
     else:
         abbr_map = load_abbr_to_team(abbrevs_path)
         matchups = load_matchups(matchups_path)
@@ -396,7 +416,7 @@ def scrape(
         parsed = parse_event(event, abbr_map, matchups)
         if not parsed:
             continue
-        if league == "NCAAF":
+        if league in {"NCAAF", "NFL"}:
             away_name = canonical_name(str(parsed.get("away") or parsed.get("away_abbr") or ""))
             home_name = canonical_name(str(parsed.get("home") or parsed.get("home_abbr") or ""))
             away_abbr = canonical_abbr(str(parsed.get("away_abbr") or away_name or "")) or parsed.get("away_abbr")
@@ -459,7 +479,7 @@ def merge_sbd_into_game(game: dict[str, Any], sbd_game: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape SportsBettingDime public betting splits")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "NCAAF", "CFB"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "NCAAF", "CFB", "NFL"])
     parser.add_argument(
         "--date",
         default=None,

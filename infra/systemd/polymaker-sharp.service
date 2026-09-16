@@ -1,5 +1,5 @@
 [Unit]
-Description=Polymaker MLB/WNBA/NCAAF sharp-money scrape + trade (oneshot)
+Description=Polymaker MLB/WNBA/NCAAF/NFL sharp-money scrape + trade (oneshot)
 After=docker.service
 Requires=docker.service
 

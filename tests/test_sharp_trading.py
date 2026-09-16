@@ -54,6 +54,28 @@ def test_ncaaf_team_aliases() -> None:
     assert haw.betting_abbr == "HAW"
 
 
+def test_nfl_team_aliases() -> None:
+    dal = resolve_team("NFL", "DAL")
+    assert dal is not None
+    assert dal.poly_code == "dal"
+    assert dal.full_name == "Dallas Cowboys"
+
+    rams = resolve_team("NFL", "LAR")
+    assert rams is not None and rams.poly_code == "la"
+
+    chargers = resolve_team("NFL", "LAC")
+    assert chargers is not None and chargers.poly_code == "lac"
+
+    jax = resolve_team("NFL", "JAC")
+    assert jax is not None and jax.poly_code == "jax"
+
+    was = resolve_team("nfl", "WSH")
+    assert was is not None and was.poly_code == "was"
+
+    chiefs = resolve_team("NFL", "Kansas City Chiefs")
+    assert chiefs is not None and chiefs.poly_code == "kc"
+
+
 def test_candidate_event_dates_et() -> None:
     # 17:35 UTC = 1:35 PM ET on Aug 16
     dates = candidate_event_dates("2026-08-16T17:35:00.000Z")

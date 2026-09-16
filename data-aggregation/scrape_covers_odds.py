@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Scrape prediction-market odds from Covers.com (MLB, WNBA, and NCAAF).
+Scrape prediction-market odds from Covers.com (MLB, WNBA, NCAAF, and NFL).
 
 Source pages:
   MLB:   https://www.covers.com/sport/baseball/mlb/odds
   WNBA:  https://www.covers.com/sport/basketball/wnba/odds
   NCAAF: https://www.covers.com/sport/football/ncaaf/odds
+  NFL:   https://www.covers.com/sport/football/nfl/odds
 
-MLB/WNBA keep rows whose Time (ET) label is "Today". NCAAF keeps upcoming
+MLB/WNBA keep rows whose Time (ET) label is "Today". NCAAF/NFL keep upcoming
 weekend rows (not Final). Moneyline, spread, and total are read from the
 matching tab panes. Columns are prediction markets (Polymarket, ProphetX,
 Novig, OG, Crypto.com, DK Predictions) when present.
@@ -37,11 +38,13 @@ DEFAULT_OUT = {
     "MLB": SCRIPT_DIR / "output" / "covers_mlb_odds.json",
     "WNBA": SCRIPT_DIR / "output" / "covers_wnba_odds.json",
     "NCAAF": SCRIPT_DIR / "output" / "covers_ncaaf_odds.json",
+    "NFL": SCRIPT_DIR / "output" / "covers_nfl_odds.json",
 }
 PAGE_URLS = {
     "MLB": "https://www.covers.com/sport/baseball/mlb/odds",
     "WNBA": "https://www.covers.com/sport/basketball/wnba/odds",
     "NCAAF": "https://www.covers.com/sport/football/ncaaf/odds",
+    "NFL": "https://www.covers.com/sport/football/nfl/odds",
 }
 PAGE_TZ = ZoneInfo("America/New_York")
 MARKET_PANES = (
@@ -140,6 +143,11 @@ def _canonical_team(abbr: str, league: str, abbr_map: dict[str, str]) -> tuple[s
         return canon_abbr, canonical_name(canon_abbr) or canonical_name(raw)
     if league == "NCAAF":
         from cfb_team_map import canonical_abbr, canonical_name
+
+        canon_abbr = canonical_abbr(raw) or raw
+        return canon_abbr, canonical_name(canon_abbr) or canonical_name(raw)
+    if league == "NFL":
+        from nfl_team_map import canonical_abbr, canonical_name
 
         canon_abbr = canonical_abbr(raw) or raw
         return canon_abbr, canonical_name(canon_abbr) or canonical_name(raw)
@@ -289,7 +297,7 @@ def parse_today_games(html: str, league: str, abbr_map: dict[str, str], day: dat
         if pane is None:
             continue
         for row in pane.select("tr.oddsGameRow"):
-            keep = _row_is_upcoming(row) if league == "NCAAF" else _row_is_today(row)
+            keep = _row_is_upcoming(row) if league in {"NCAAF", "NFL"} else _row_is_today(row)
             if not keep:
                 continue
             game_id = _row_game_id(row)
@@ -346,7 +354,7 @@ def scrape(
     abbr_map = load_abbr_to_team(abbrevs_path) if league == "MLB" else {}
     html = fetch_html(page_url)
     games = parse_today_games(html, league, abbr_map, et_today)
-    if day is not None and league != "NCAAF" and day != et_today:
+    if day is not None and league not in {"NCAAF", "NFL"} and day != et_today:
         games = []
     return {
         "source": "covers.com",
@@ -381,7 +389,7 @@ def merge_covers_into_game(game: dict[str, Any], covers_game: dict[str, Any]) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape Covers.com prediction-market odds")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "NCAAF", "CFB"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "NCAAF", "CFB", "NFL"])
     parser.add_argument(
         "--date",
         default=None,

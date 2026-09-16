@@ -3,11 +3,11 @@
 Identify daily "sharp money" plays from combined betting splits.
 
 Input schema (per game.moneyline.away/home, game.spread.away/home, or
-game.total.over/under) — confirmed against mlb/wnba/ufc/ncaaf_betting_splits.json:
+game.total.over/under) — confirmed against mlb/wnba/ufc/ncaaf/nfl_betting_splits.json:
 
   primary  public_bet_pct / handle_bet_pct
-           (MLB: PlayerProps.ai; WNBA/UFC/NCAAF: DraftKings Network)
-  sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NCAAF)
+           (MLB: PlayerProps.ai; WNBA/UFC/NCAAF/NFL: DraftKings Network)
+  sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NCAAF + NFL)
   vsin     vsin_public_bet_pct / vsin_handle_bet_pct
   prices   eva_open / eva_line first when EVA detected a move, else
            TheSpread open / live, else Polymarket history
@@ -18,7 +18,7 @@ game.total.over/under) — confirmed against mlb/wnba/ufc/ncaaf_betting_splits.j
 Moneyline is the default market. Spread open/live are point-spread numbers,
 so RLM uses the number first and falls back to juice implied-prob movement.
 Totals use over/under: a rising total confirms Over, a falling total Under.
-WNBA/UFC weight DraftKings (primary) + VSiN only. NCAAF is three-source
+WNBA/UFC weight DraftKings (primary) + VSiN only. NCAAF/NFL are three-source
 (DK + VSiN + SBD) like MLB; Pinnacle is skipped. RLM source order:
 EV Analytics (chart history), then TheSpread open→live, then Polymarket.
 SBD is not scraped for WNBA/UFC. Covers is not scraped for UFC;
@@ -38,6 +38,9 @@ Usage:
       --out output/ufc_sharp_money.json --csv output/ufc_sharp_money.csv
   python find_sharp_money.py --input output/ncaaf_betting_splits.json \\
       --out output/ncaaf_sharp_money.json --csv output/ncaaf_sharp_money.csv \\
+      --market all
+  python find_sharp_money.py --input output/nfl_betting_splits.json \\
+      --out output/nfl_sharp_money.json --csv output/nfl_sharp_money.csv \\
       --market all
 """
 
@@ -122,7 +125,7 @@ def sources_for_league(league: str | None) -> tuple[str, ...]:
 
 
 def primary_source_label(league: str | None) -> str:
-    if _league_key(league) in {"WNBA", "UFC", "NCAAF"}:
+    if _league_key(league) in {"WNBA", "UFC", "NCAAF", "NFL"}:
         return "draftkings"
     return "playerprops"
 
@@ -1381,7 +1384,7 @@ def main() -> None:
         "--market",
         default="moneyline",
         choices=["moneyline", "spread", "total", "both", "all"],
-        help="Market to evaluate (NCAAF should use 'all'; WNBA 'both' or 'spread')",
+        help="Market to evaluate (NCAAF/NFL should use 'all'; WNBA 'both' or 'spread')",
     )
     parser.add_argument("--no-discord", action="store_true", help="Skip Discord A/A+ alerts")
     parser.add_argument("--discord-dry-run", action="store_true", help="Print Discord payloads, do not POST")

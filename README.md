@@ -75,8 +75,8 @@ uv run polymaker cancel-all
 
 Pipeline:
 
-1. Scrape splits → `data-aggregation/output/{mlb,wnba,ufc,ncaaf}_betting_splits.json`
-2. `find_sharp_money.py` → `{mlb,wnba,ufc,ncaaf}_sharp_money.json`
+1. Scrape splits → `data-aggregation/output/{mlb,wnba,ufc,ncaaf,nfl}_betting_splits.json`
+2. `find_sharp_money.py` → `{mlb,wnba,ufc,ncaaf,nfl}_sharp_money.json`
 3. `polymaker trade-sharp` maps plays to Polymarket moneylines, spreads, and
    totals (`mlb-ari-atl-…`, `cfb-ohio-neb-…-total-46pt5`,
    `cfb-fres-usc-…-spread-home-21pt5`) and market-buys the sharp side
@@ -87,7 +87,7 @@ the nested line closest to the play's live (else open) number within 1 pt
 (`[sharp] markets = ["moneyline", "spread", "total"]`). Totals map Over/Under
 onto outcome tokens; they never go through the team map.
 
-Use `--league mlb|wnba|ufc|ncaaf|both` to scope which sharp file(s) are loaded. Today's
+Use `--league mlb|wnba|ufc|ncaaf|nfl|both` to scope which sharp file(s) are loaded. Today's
 `wnba_sharp_money.json` can have `play_count: 0` when no gaps clear the
 thresholds — re-run `find_sharp_money.py` on a fresh splits scrape.
 

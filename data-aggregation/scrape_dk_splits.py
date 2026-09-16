@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
-Scrape DraftKings Network betting splits for WNBA, UFC, or NCAAF.
+Scrape DraftKings Network betting splits for WNBA, UFC, NCAAF, or NFL.
 
-PlayerProps.ai does not publish WNBA/UFC/NCAAF splits; this is the stand-in
+PlayerProps.ai does not publish WNBA/UFC/NCAAF/NFL splits; this is the stand-in
 for scrape_playerprops_splits.py.
 
 Sources:
   WNBA:  ...?tb_eg=WNBA&tb_edate=today&tb_emt=0&itm_content=WNBA
   UFC:   ...?tb_eg=UFC&tb_edate=n30days&tb_emt=0&itm_content=UFC
   NCAAF: ...?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football
+  NFL:   ...?tb_eg=NF&tb_edate=n7days&tb_emt=0
 
 The page is server-rendered (and 403s to plain requests), so HTML is
 loaded with Playwright. Per-game cards expose Moneyline / Spread / Total
 with % Handle and % Bets. UFC and NCAAF paginate via tb_page. UFC uses
-"A vs B" titles and is filtered to the requested slate date; NCAAF keeps
-the next-7-days board (weekend slates).
+"A vs B" titles and looks ahead 14 days, then keeps the next card
+(Friday prelims + Saturday main). NCAAF keeps the next-7-days board
+(weekend slates).
 
 Fields (unprefixed, same role as PlayerProps on MLB):
   public_bet_pct  <- % Bets
@@ -27,6 +29,7 @@ Usage:
   python scrape_dk_splits.py
   python scrape_dk_splits.py --league UFC --out output/dk_ufc_betting_splits.json
   python scrape_dk_splits.py --league NCAAF --out output/dk_ncaaf_betting_splits.json
+  python scrape_dk_splits.py --league NFL --out output/dk_nfl_betting_splits.json
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "dk_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "dk_ufc_betting_splits.json"
 DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "dk_ncaaf_betting_splits.json"
+DEFAULT_NFL_OUT = SCRIPT_DIR / "output" / "dk_nfl_betting_splits.json"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 
 PAGE_URLS = {
@@ -65,6 +69,10 @@ PAGE_URLS = {
     "NCAAF": (
         "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
         "?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football"
+    ),
+    "NFL": (
+        "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
+        "?tb_eg=NF&tb_edate=n7days&tb_emt=0"
     ),
 }
 PAGE_URL = PAGE_URLS["WNBA"]
@@ -238,6 +246,7 @@ def parse_game(
     names_match_fn=None,
     match_matchup_fn=wnba_match_matchup,
     day: date | None = None,
+    allowed_days: set[date] | None = None,
 ) -> dict[str, Any] | None:
     vs_matchup = league == "UFC"
     away_name, home_name, when, href = _parse_title(
@@ -246,8 +255,12 @@ def parse_game(
     if not away_name or not home_name:
         return None
     card_day = _parse_when_date(when, (day or datetime.now(PAGE_TZ)).year)
-    if vs_matchup and day is not None and (card_day is None or card_day != day):
-        return None
+    if vs_matchup:
+        if allowed_days is not None:
+            if card_day is None or card_day not in allowed_days:
+                return None
+        elif day is not None and (card_day is None or card_day != day):
+            return None
     away_abbr = canonical_abbr_fn(away_name) or away_name
     home_abbr = canonical_abbr_fn(home_name) or home_name
 
@@ -378,6 +391,7 @@ def parse_games(
     names_match_fn=None,
     match_matchup_fn=wnba_match_matchup,
     day: date | None = None,
+    allowed_days: set[date] | None = None,
 ) -> list[dict[str, Any]]:
     from bs4 import BeautifulSoup
 
@@ -393,6 +407,7 @@ def parse_games(
             names_match_fn=names_match_fn,
             match_matchup_fn=match_matchup_fn,
             day=day,
+            allowed_days=allowed_days,
         )
         if parsed:
             games.append(parsed)
@@ -438,12 +453,14 @@ def scrape(
     if league == "UFC":
         from ufc_fighter_map import canonical_name as ufc_canonical_name
         from ufc_fighter_map import names_match as ufc_names_match
+        from ufc_fighter_map import ufc_allowed_days
 
         matchups: list[dict[str, Any]] = []
         canonical_name_fn = ufc_canonical_name
         canonical_abbr_fn = _identity_abbr
         names_match_fn = ufc_names_match
         max_pages = 8
+        allowed_days: set[date] | None = ufc_allowed_days(day)
     elif league == "NCAAF":
         from cfb_team_map import canonical_abbr as cfb_canonical_abbr
         from cfb_team_map import canonical_name as cfb_canonical_name
@@ -456,12 +473,27 @@ def scrape(
         names_match_fn = cfb_names_match
         match_matchup_fn = cfb_match_matchup
         max_pages = 8
+        allowed_days = None
+    elif league == "NFL":
+        from nfl_team_map import canonical_abbr as nfl_canonical_abbr
+        from nfl_team_map import canonical_name as nfl_canonical_name
+        from nfl_team_map import match_matchup as nfl_match_matchup
+        from nfl_team_map import names_match as nfl_names_match
+
+        matchups = []
+        canonical_name_fn = nfl_canonical_name
+        canonical_abbr_fn = nfl_canonical_abbr
+        names_match_fn = nfl_names_match
+        match_matchup_fn = nfl_match_matchup
+        max_pages = 8
+        allowed_days = None
     else:
         matchups = load_matchups(matchups_path)
         canonical_name_fn = wnba_canonical_name
         canonical_abbr_fn = wnba_canonical_abbr
         names_match_fn = None
         max_pages = 1
+        allowed_days = None
 
     parse_kw = {
         "league": league,
@@ -470,6 +502,7 @@ def scrape(
         "names_match_fn": names_match_fn,
         "match_matchup_fn": match_matchup_fn,
         "day": day,
+        "allowed_days": allowed_days,
     }
 
     games: list[dict[str, Any]] = []
@@ -512,6 +545,12 @@ def scrape(
             time.sleep(2)
     if not games and ("Unable to fetch" in last_html or "403" in last_html):
         print("Warning: DraftKings returned no events (403 / empty table)")
+    if league == "UFC" and games:
+        from ufc_fighter_map import filter_to_next_ufc_card
+
+        games, card_days = filter_to_next_ufc_card(games, day)
+        if card_days:
+            day = max(card_days)
     return {
         "source": "dknetwork.draftkings.com",
         "source_page": page_url,
@@ -525,11 +564,11 @@ def scrape(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape DraftKings betting splits")
-    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB"])
+    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB", "NFL"])
     parser.add_argument(
         "--date",
         default=None,
-        help="Slate date YYYY-MM-DD (default: today Pacific).",
+        help="Slate date YYYY-MM-DD (default: today Pacific). UFC looks ahead 14 days and keeps the next card.",
     )
     parser.add_argument("--matchups", type=Path, default=DEFAULT_MATCHUPS)
     parser.add_argument("--out", type=Path, default=None)
@@ -551,6 +590,7 @@ def main() -> None:
     out = args.out or {
         "UFC": DEFAULT_UFC_OUT,
         "NCAAF": DEFAULT_NCAAF_OUT,
+        "NFL": DEFAULT_NFL_OUT,
     }.get(league, DEFAULT_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

@@ -1,6 +1,6 @@
 """polymaker CLI — Polymarket catalog + trading foundation.
 
-  polymaker scan                 discover politics + MLB/WNBA events -> SQLite
+  polymaker scan                 discover politics + sports events -> SQLite
   polymaker markets              browse the catalog
   polymaker research             MLB daily Best Bets → sized plays JSON
   polymaker match-sharp          map sharp-money JSON → Polymarket moneylines
@@ -45,11 +45,11 @@ def scan(
     min_liquidity: float | None = typer.Option(None, help="minimum market liquidity (USDC)"),
     all_markets: bool = typer.Option(False, "--all", help="include non-rewards politics markets"),
     politics_only: bool = typer.Option(False, "--politics-only", help="skip sports discovery"),
-    sports_only: bool = typer.Option(False, "--sports-only", help="skip politics; scan MLB/WNBA only"),
+    sports_only: bool = typer.Option(False, "--sports-only", help="skip politics; scan sports series only"),
     series: str | None = typer.Option(
         None,
         "--series",
-        help="comma-separated sports series slugs (default: mlb,wnba from config)",
+        help="comma-separated sports series slugs (default: mlb,wnba,ufc,cfb-2026,nfl-2026 from config)",
     ),
     look_ahead_days: int | None = typer.Option(None, help="keep games with eventDate today..+N days UTC"),
     include_live: bool = typer.Option(
@@ -58,7 +58,7 @@ def scan(
         help="do not exclude sports games that fail the pre-game startTime check",
     ),
 ) -> None:
-    """Sweep Gamma for politics + MLB/WNBA moneylines and persist to SQLite."""
+    """Sweep Gamma for politics + sports moneylines/spreads/totals and persist to SQLite."""
     from polymaker.catalog.scanner import ScanConfig, run_scan
     from polymaker.catalog.sports import SPORTS_SERIES_SLUGS
     from polymaker.catalog.store import CatalogStore
@@ -253,10 +253,11 @@ def match_sharp(
     wnba: str | None = typer.Option(None, "--wnba", help="override wnba_sharp_money.json path"),
     ufc: str | None = typer.Option(None, "--ufc", help="override ufc_sharp_money.json path"),
     ncaaf: str | None = typer.Option(None, "--ncaaf", help="override ncaaf_sharp_money.json path"),
+    nfl: str | None = typer.Option(None, "--nfl", help="override nfl_sharp_money.json path"),
     league: str = typer.Option(
         "both",
         "--league",
-        help="mlb | wnba | ufc | ncaaf | both (which sharp file(s) / plays to use)",
+        help="mlb | wnba | ufc | ncaaf | nfl | both (which sharp file(s) / plays to use)",
     ),
     refresh: bool = typer.Option(
         False,
@@ -265,13 +266,13 @@ def match_sharp(
     ),
     tier: str | None = typer.Option(None, "--tier", help="min tier: A or B (default from config)"),
 ) -> None:
-    """Match sharp-money plays to Polymarket MLB/WNBA/UFC/NCAAF markets (no orders)."""
+    """Match sharp-money plays to Polymarket MLB/WNBA/UFC/NCAAF/NFL markets (no orders)."""
     from polymaker.trading.execute import filter_plays, load_configured_plays
     from polymaker.trading.match import match_sharp_plays
 
     league_key = _normalize_league(league)
     cfg = Config.load(config_dir)
-    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, league_key)
+    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, nfl, league_key)
 
     try:
         plays = load_configured_plays(cfg, paths, league=league_key)
@@ -314,10 +315,11 @@ def trade_sharp(
     wnba: str | None = typer.Option(None, "--wnba", help="override wnba_sharp_money.json path"),
     ufc: str | None = typer.Option(None, "--ufc", help="override ufc_sharp_money.json path"),
     ncaaf: str | None = typer.Option(None, "--ncaaf", help="override ncaaf_sharp_money.json path"),
+    nfl: str | None = typer.Option(None, "--nfl", help="override nfl_sharp_money.json path"),
     league: str = typer.Option(
         "both",
         "--league",
-        help="mlb | wnba | ufc | ncaaf | both (which sharp file(s) / plays to use)",
+        help="mlb | wnba | ufc | ncaaf | nfl | both (which sharp file(s) / plays to use)",
     ),
     refresh: bool = typer.Option(
         True,
@@ -343,7 +345,7 @@ def trade_sharp(
 
     league_key = _normalize_league(league)
     cfg = Config.load(config_dir)
-    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, league_key)
+    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, nfl, league_key)
 
     try:
         plays = load_configured_plays(cfg, paths, league=league_key)
@@ -410,8 +412,8 @@ def _normalize_league(league: str) -> str:
     key = league.strip().lower()
     if key == "cfb":
         key = "ncaaf"
-    if key not in {"mlb", "wnba", "ufc", "ncaaf", "both"}:
-        console.print("[red]--league must be mlb, wnba, ufc, ncaaf, or both[/red]")
+    if key not in {"mlb", "wnba", "ufc", "ncaaf", "nfl", "both"}:
+        console.print("[red]--league must be mlb, wnba, ufc, ncaaf, nfl, or both[/red]")
         raise typer.Exit(1)
     return key
 
@@ -421,10 +423,11 @@ def _sharp_path_overrides(
     wnba: str | None,
     ufc: str | None,
     ncaaf: str | None,
+    nfl: str | None,
     league: str,
 ) -> list[str] | None:
-    """Explicit --mlb/--wnba/--ufc/--ncaaf paths win; otherwise None → config defaults by league."""
-    if mlb is None and wnba is None and ufc is None and ncaaf is None:
+    """Explicit --mlb/--wnba/--ufc/--ncaaf/--nfl paths win; otherwise None → config defaults by league."""
+    if mlb is None and wnba is None and ufc is None and ncaaf is None and nfl is None:
         return None
     paths: list[str] = []
     if league in {"mlb", "both"} and mlb:
@@ -435,6 +438,8 @@ def _sharp_path_overrides(
         paths.append(ufc)
     if league in {"ncaaf", "both"} and ncaaf:
         paths.append(ncaaf)
+    if league in {"nfl", "both"} and nfl:
+        paths.append(nfl)
     # If user passed only one override while league=both, still use it.
     if not paths:
         if mlb:
@@ -445,6 +450,8 @@ def _sharp_path_overrides(
             paths.append(ufc)
         if ncaaf:
             paths.append(ncaaf)
+        if nfl:
+            paths.append(nfl)
     return paths or None
 
 

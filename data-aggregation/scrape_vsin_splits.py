@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Scrape betting splits from VSiN (MLB, WNBA, UFC, or NCAAF).
+Scrape betting splits from VSiN (MLB, WNBA, UFC, NCAAF, or NFL).
 
 Sources:
   MLB:   https://data.vsin.com/betting-splits/?bookid=dk&view=mlb
   WNBA:  https://data.vsin.com/betting-splits/?source=DK&sport=WNBA
   UFC:   https://data.vsin.com/betting-splits/?source=DK&sport=UFC
   NCAAF: https://data.vsin.com/betting-splits/?source=DK&sport=CFB
+  NFL:   https://data.vsin.com/betting-splits/?source=DK&sport=NFL
 
 Table columns per team/fighter row:
   Spread LINE | HANDLE | BETS | Total LINE | HANDLE | BETS | Money LINE | HANDLE | BETS
@@ -24,6 +25,7 @@ Usage:
   python scrape_vsin_splits.py --league WNBA --out output/vsin_wnba_betting_splits.json
   python scrape_vsin_splits.py --league UFC --out output/vsin_ufc_betting_splits.json
   python scrape_vsin_splits.py --league NCAAF --out output/vsin_ncaaf_betting_splits.json
+  python scrape_vsin_splits.py --league NFL --out output/vsin_nfl_betting_splits.json
 """
 
 from __future__ import annotations
@@ -49,12 +51,14 @@ DEFAULT_OUT = SCRIPT_DIR / "output" / "vsin_betting_splits.json"
 DEFAULT_WNBA_OUT = SCRIPT_DIR / "output" / "vsin_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "vsin_ufc_betting_splits.json"
 DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "vsin_ncaaf_betting_splits.json"
+DEFAULT_NFL_OUT = SCRIPT_DIR / "output" / "vsin_nfl_betting_splits.json"
 
 PAGE_URLS = {
     "MLB": "https://data.vsin.com/betting-splits/?bookid=dk&view=mlb",
     "WNBA": "https://data.vsin.com/betting-splits/?source=DK&sport=WNBA",
     "UFC": "https://data.vsin.com/betting-splits/?source=DK&sport=UFC",
     "NCAAF": "https://data.vsin.com/betting-splits/?source=DK&sport=CFB",
+    "NFL": "https://data.vsin.com/betting-splits/?source=DK&sport=NFL",
 }
 PAGE_URL = PAGE_URLS["MLB"]
 TEAM_HREF = {
@@ -62,6 +66,7 @@ TEAM_HREF = {
     "WNBA": r"/wnba/teams/",
     "UFC": r"/ufc/teams/",
     "NCAAF": r"/college-football/teams/",
+    "NFL": r"/nfl/teams/",
 }
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -313,6 +318,12 @@ def _cfb_normalize(name: str) -> str:
     return canonical_name(name) or name.strip()
 
 
+def _nfl_normalize(name: str) -> str:
+    from nfl_team_map import canonical_name
+
+    return canonical_name(name) or name.strip()
+
+
 def scrape(
     matchups_path: Path | None = None,
     abbrevs_path: Path = DEFAULT_ABBREVS,
@@ -339,11 +350,14 @@ def scrape(
         normalize_name_fn = _wnba_normalize
         filter_day = day
     elif fighter_mode:
+        from ufc_fighter_map import filter_to_next_ufc_card, ufc_allowed_days
+
         abbr_to_name = {}
         name_to_abbr = {}
         matchups = []
         normalize_name_fn = _ufc_normalize
-        filter_day = day
+        filter_day = None
+        allowed_days = ufc_allowed_days(day)
     elif league == "NCAAF":
         from cfb_team_map import ABBR_TO_NAME, NAME_TO_ABBR
 
@@ -353,6 +367,15 @@ def scrape(
         normalize_name_fn = _cfb_normalize
         filter_day = None
         allowed_days = {day + timedelta(days=offset) for offset in range(0, 7)}
+    elif league == "NFL":
+        from nfl_team_map import ABBR_TO_NAME, NAME_TO_ABBR
+
+        abbr_to_name = dict(ABBR_TO_NAME)
+        name_to_abbr = dict(NAME_TO_ABBR)
+        matchups = load_matchups(matchups_path) if matchups_path else []
+        normalize_name_fn = _nfl_normalize
+        filter_day = None
+        allowed_days = {day + timedelta(days=offset) for offset in range(0, 8)}
     else:
         abbr_to_name, name_to_abbr = load_abbr_maps(abbrevs_path)
         matchups = load_matchups(matchups_path or DEFAULT_MATCHUPS)
@@ -371,6 +394,10 @@ def scrape(
         normalize_name_fn=normalize_name_fn,
         fighter_mode=fighter_mode,
     )
+    if fighter_mode and games:
+        games, card_days = filter_to_next_ufc_card(games, day)
+        if card_days:
+            day = max(card_days)
     return {
         "source": "data.vsin.com",
         "source_page": page_url,
@@ -408,11 +435,11 @@ def merge_vsin_into_game(game: dict[str, Any], vsin_game: dict[str, Any]) -> Non
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape VSiN betting splits")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC", "NCAAF", "CFB"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC", "NCAAF", "CFB", "NFL"])
     parser.add_argument(
         "--date",
         default=None,
-        help="Slate date YYYY-MM-DD (NCAAF keeps this day through +6; default today Pacific)",
+        help="Slate date YYYY-MM-DD (NCAAF keeps this day through +6; NFL through +7; UFC looks ahead 14 days and keeps the next card; default today Pacific)",
     )
     parser.add_argument("--matchups", type=Path, default=None)
     parser.add_argument("--abbrevs", type=Path, default=DEFAULT_ABBREVS)
@@ -428,6 +455,7 @@ def main() -> None:
         "WNBA": DEFAULT_WNBA_OUT,
         "UFC": DEFAULT_UFC_OUT,
         "NCAAF": DEFAULT_NCAAF_OUT,
+        "NFL": DEFAULT_NFL_OUT,
     }.get(league, DEFAULT_OUT)
     result = scrape(
         matchups_path=args.matchups,

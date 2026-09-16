@@ -108,7 +108,15 @@ def default_sharp_paths(cfg: Config, *, league: str | None = None) -> list[Path]
         return [Path(sharp.ufc_path)]
     if league_l == "ncaaf":
         return [Path(sharp.ncaaf_path)]
-    return [Path(sharp.mlb_path), Path(sharp.wnba_path), Path(sharp.ufc_path), Path(sharp.ncaaf_path)]
+    if league_l == "nfl":
+        return [Path(sharp.nfl_path)]
+    return [
+        Path(sharp.mlb_path),
+        Path(sharp.wnba_path),
+        Path(sharp.ufc_path),
+        Path(sharp.ncaaf_path),
+        Path(sharp.nfl_path),
+    ]
 
 
 def load_configured_plays(

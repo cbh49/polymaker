@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Scrape public-betting line movement from TheSpread.com (WNBA, UFC, or NCAAF).
+Scrape public-betting line movement from TheSpread.com (WNBA, UFC, NCAAF, or NFL).
 
 SportsBettingDime does not publish WNBA/UFC splits; this is the stand-in
 for scrape_sbd_splits.py, used for open → current line movement (RLM).
-NCAAF uses both: SBD for handle/public % and TheSpread for RLM.
+NCAAF and NFL use both: SBD for handle/public % and TheSpread for RLM.
 
 Sources:
   WNBA:  https://www.thespread.com/wnba-public-betting-chart/
   UFC:   https://www.thespread.com/mma-odds/
   NCAAF: https://www.thespread.com/ncaa-college-football-public-betting-chart/
+  NFL:   https://www.thespread.com/nfl-odds/
 
 WNBA: Cloudflare-protected public-betting chart. Market-average pie
 percentages are burned into a SportsInsights GIF; we keep open/current
@@ -51,11 +52,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "thespread_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "thespread_ufc_betting_splits.json"
 DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "thespread_ncaaf_betting_splits.json"
+DEFAULT_NFL_OUT = SCRIPT_DIR / "output" / "thespread_nfl_betting_splits.json"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 PAGE_URLS = {
     "WNBA": "https://www.thespread.com/wnba-public-betting-chart/",
     "UFC": "https://www.thespread.com/mma-odds/",
     "NCAAF": "https://www.thespread.com/ncaa-college-football-public-betting-chart/",
+    "NFL": "https://www.thespread.com/nfl-odds/",
 }
 PAGE_URL = PAGE_URLS["WNBA"]
 # Keep these tight: a dead/Cloudflare-stuck thespread.com used to hang the
@@ -311,6 +314,17 @@ def _tse_hcap(cell: Any) -> float | int | None:
     return parse_number(hcap.get_text(strip=True))
 
 
+def _tse_hcaps(cell: Any) -> list[float | int]:
+    if cell is None:
+        return []
+    out: list[float | int] = []
+    for el in cell.select(".tse-hcap"):
+        num = parse_number(el.get_text(strip=True))
+        if num is not None:
+            out.append(num)
+    return out
+
+
 def _parse_mma_mdy(text: str, year_hint: int) -> date | None:
     m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{2})", text or "")
     if not m:
@@ -348,13 +362,21 @@ def _mma_side(
     return row
 
 
-def parse_mma_game(card: Any, day: date) -> dict[str, Any] | None:
+def parse_mma_game(
+    card: Any,
+    day: date,
+    *,
+    allowed_days: set[date] | None = None,
+) -> dict[str, Any] | None:
     from ufc_fighter_map import canonical_name
 
     date_el = card.select_one(".tse-cell-time-date")
     time_el = card.select_one(".tse-cell-time-time")
     row_day = _parse_mma_mdy(date_el.get_text(strip=True) if date_el else "", day.year)
-    if row_day is None or row_day != day:
+    if allowed_days is not None:
+        if row_day is None or row_day not in allowed_days:
+            return None
+    elif row_day is None or row_day != day:
         return None
 
     away_el = card.select_one(".tse-team-name.tse-away")
@@ -387,7 +409,7 @@ def parse_mma_game(card: Any, day: date) -> dict[str, Any] | None:
         "home_abbr": home_name,
         "away": away_name,
         "home": home_name,
-        "date": day.isoformat(),
+        "date": (row_day or day).isoformat(),
         "game_time_local": time_el.get_text(strip=True) if time_el else None,
         "thespread_event_id": card.get("data-event-id"),
         "moneyline": {
@@ -422,13 +444,144 @@ def parse_mma_game(card: Any, day: date) -> dict[str, Any] | None:
     return game
 
 
-def parse_mma_games(html: str, day: date) -> list[dict[str, Any]]:
+def parse_mma_games(
+    html: str,
+    day: date,
+    *,
+    allowed_days: set[date] | None = None,
+) -> list[dict[str, Any]]:
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "html.parser")
     games: list[dict[str, Any]] = []
     for card in soup.select(".tse-game"):
-        parsed = parse_mma_game(card, day)
+        parsed = parse_mma_game(card, day, allowed_days=allowed_days)
+        if parsed:
+            games.append(parsed)
+    return games
+
+
+def parse_tse_football_game(
+    card: Any,
+    day: date,
+    *,
+    canonical_name_fn,
+    canonical_abbr_fn,
+    allowed_days: set[date] | None = None,
+) -> dict[str, Any] | None:
+    """NFL odds board (.tse-game) with live spread/total/ML plus an OPEN row."""
+    date_el = card.select_one(".tse-cell-time-date")
+    time_el = card.select_one(".tse-cell-time-time")
+    row_day = _parse_mma_mdy(date_el.get_text(strip=True) if date_el else "", day.year)
+    if allowed_days is not None:
+        if row_day is None or row_day not in allowed_days:
+            return None
+    elif row_day is None or row_day != day:
+        return None
+
+    away_el = card.select_one(".tse-team-name.tse-away")
+    home_el = card.select_one(".tse-team-name.tse-home")
+    away_name = canonical_name_fn(away_el.get_text(" ", strip=True) if away_el else "")
+    home_name = canonical_name_fn(home_el.get_text(" ", strip=True) if home_el else "")
+    if not away_name or not home_name:
+        return None
+    away_abbr = canonical_abbr_fn(away_name) or away_name
+    home_abbr = canonical_abbr_fn(home_name) or home_name
+
+    away_row = card.select_one(".tse-row-away")
+    home_row = card.select_one(".tse-row-home")
+    open_row = card.select_one(".tse-row-open")
+    if away_row is None or home_row is None:
+        return None
+
+    away_ml = _tse_price(away_row.select_one(".tse-cell-ml"))
+    home_ml = _tse_price(home_row.select_one(".tse-cell-ml"))
+    open_mls = _tse_prices(open_row.select_one(".tse-cell-ml") if open_row else None)
+    away_open_ml = open_mls[0] if len(open_mls) > 0 else None
+    home_open_ml = open_mls[1] if len(open_mls) > 1 else None
+
+    away_sp = away_row.select_one(".tse-cell-spread")
+    home_sp = home_row.select_one(".tse-cell-spread")
+    tot_away = away_row.select_one(".tse-cell-total")
+    tot_home = home_row.select_one(".tse-cell-total")
+    open_sp = open_row.select_one(".tse-cell-spread") if open_row else None
+    open_tot = open_row.select_one(".tse-cell-total") if open_row else None
+    open_spreads = _tse_hcaps(open_sp)
+    if not open_spreads:
+        hcap = _tse_hcap(open_sp)
+        if hcap is not None:
+            open_spreads = [hcap, -hcap if hcap != 0 else 0]
+    open_totals = _tse_hcaps(open_tot)
+    if not open_totals:
+        hcap = _tse_hcap(open_tot)
+        if hcap is not None:
+            open_totals = [hcap, hcap]
+
+    game: dict[str, Any] = {
+        "matchup": f"{away_abbr} @ {home_abbr}",
+        "away_abbr": away_abbr,
+        "home_abbr": home_abbr,
+        "away": away_name,
+        "home": home_name,
+        "date": (row_day or day).isoformat(),
+        "game_time_local": time_el.get_text(strip=True) if time_el else None,
+        "thespread_event_id": card.get("data-event-id"),
+        "moneyline": {
+            "away": _mma_side(away_abbr, live=away_ml, opened=away_open_ml),
+            "home": _mma_side(home_abbr, live=home_ml, opened=home_open_ml),
+        },
+        "spread": {
+            "away": _mma_side(
+                away_abbr,
+                live=_tse_hcap(away_sp),
+                live_odds=_tse_price(away_sp),
+                opened=open_spreads[0] if len(open_spreads) > 0 else None,
+            ),
+            "home": _mma_side(
+                home_abbr,
+                live=_tse_hcap(home_sp),
+                live_odds=_tse_price(home_sp),
+                opened=open_spreads[1] if len(open_spreads) > 1 else None,
+            ),
+        },
+        "total": {
+            "over": _mma_side(
+                "Over",
+                live=_tse_hcap(tot_away),
+                live_odds=_tse_price(tot_away),
+                opened=open_totals[0] if len(open_totals) > 0 else None,
+            ),
+            "under": _mma_side(
+                "Under",
+                live=_tse_hcap(tot_home),
+                live_odds=_tse_price(tot_home),
+                opened=open_totals[1] if len(open_totals) > 1 else None,
+            ),
+        },
+    }
+    return game
+
+
+def parse_tse_football_games(
+    html: str,
+    day: date,
+    *,
+    canonical_name_fn,
+    canonical_abbr_fn,
+    allowed_days: set[date] | None = None,
+) -> list[dict[str, Any]]:
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    games: list[dict[str, Any]] = []
+    for card in soup.select(".tse-game"):
+        parsed = parse_tse_football_game(
+            card,
+            day,
+            canonical_name_fn=canonical_name_fn,
+            canonical_abbr_fn=canonical_abbr_fn,
+            allowed_days=allowed_days,
+        )
         if parsed:
             games.append(parsed)
     return games
@@ -569,8 +722,15 @@ def scrape(
     day = day or datetime.now(PAGE_TZ).date()
     page_url = url or PAGE_URLS.get(league, PAGE_URL)
     if league == "UFC":
+        from ufc_fighter_map import filter_to_next_ufc_card, ufc_allowed_days
+
         html = _fetch_thespread_html(page_url, ".tse-game", headed=headed)
-        games = parse_mma_games(html, day) if html else []
+        allowed_days = ufc_allowed_days(day)
+        games = parse_mma_games(html, day, allowed_days=allowed_days) if html else []
+        if games:
+            games, card_days = filter_to_next_ufc_card(games, day)
+            if card_days:
+                day = max(card_days)
     elif league == "NCAAF":
         from cfb_team_map import canonical_abbr as cfb_canonical_abbr
         from cfb_team_map import canonical_name as cfb_canonical_name
@@ -592,6 +752,34 @@ def scrape(
             if html
             else []
         )
+    elif league == "NFL":
+        from nfl_team_map import canonical_abbr as nfl_canonical_abbr
+        from nfl_team_map import canonical_name as nfl_canonical_name
+        from nfl_team_map import match_matchup as nfl_match_matchup
+
+        matchups = load_matchups(matchups_path) if matchups_path and matchups_path.exists() else []
+        html = _fetch_thespread_html(page_url, ".datarow, .tse-game", headed=headed)
+        allowed_mds = {_md_for_day(day + timedelta(days=offset)) for offset in range(0, 8)}
+        allowed_days = {day + timedelta(days=offset) for offset in range(0, 8)}
+        games = []
+        if html:
+            games = parse_games(
+                html,
+                day,
+                matchups,
+                canonical_name_fn=nfl_canonical_name,
+                canonical_abbr_fn=nfl_canonical_abbr,
+                match_matchup_fn=nfl_match_matchup,
+                allowed_mds=allowed_mds,
+            )
+            if not games:
+                games = parse_tse_football_games(
+                    html,
+                    day,
+                    canonical_name_fn=nfl_canonical_name,
+                    canonical_abbr_fn=nfl_canonical_abbr,
+                    allowed_days=allowed_days,
+                )
     else:
         matchups = load_matchups(matchups_path)
         html = _fetch_thespread_html(page_url, ".datarow", headed=headed)
@@ -609,11 +797,11 @@ def scrape(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape TheSpread public betting / MMA odds")
-    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB"])
+    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB", "NFL"])
     parser.add_argument(
         "--date",
         default=None,
-        help="Slate date YYYY-MM-DD (default: today Pacific).",
+        help="Slate date YYYY-MM-DD (default: today Pacific). UFC looks ahead 14 days and keeps the next card.",
     )
     parser.add_argument("--matchups", type=Path, default=DEFAULT_MATCHUPS)
     parser.add_argument("--out", type=Path, default=None)
@@ -635,6 +823,7 @@ def main() -> None:
     out = args.out or {
         "UFC": DEFAULT_UFC_OUT,
         "NCAAF": DEFAULT_NCAAF_OUT,
+        "NFL": DEFAULT_NFL_OUT,
     }.get(league, DEFAULT_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

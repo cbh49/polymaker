@@ -20,7 +20,7 @@ polygon_rpc = "https://polygon-bor-rpc.publicnode.com"
 
 [catalog]
 include_politics = true
-series_slugs = ["mlb", "wnba", "ufc", "cfb-2026"]  # Gamma series_slug values for sports discovery
+series_slugs = ["mlb", "wnba", "ufc", "cfb-2026", "nfl-2026"]  # Gamma series_slug values for sports discovery
 look_ahead_days = 7             # keep games with eventDate today UTC through +N days (CFB weekends)
 skip_live_events = true         # exclude games that are not pre-game (startTime vs UTC)
 pregame_buffer_minutes = 5      # require startTime more than N minutes in the future
@@ -38,6 +38,7 @@ mlb_path = "data-aggregation/output/mlb_sharp_money.json"
 wnba_path = "data-aggregation/output/wnba_sharp_money.json"
 ufc_path = "data-aggregation/output/ufc_sharp_money.json"
 ncaaf_path = "data-aggregation/output/ncaaf_sharp_money.json"
+nfl_path = "data-aggregation/output/nfl_sharp_money.json"
 usd_tier_a = 25.0               # USDC stake for Tier A/A+ (to-win target for +200 ML dogs)
 usd_tier_b = 10.0               # USDC stake for Tier B (same: to-win target when low_volume_dog_flag)
 min_tier = "B"                  # "A" = Tier A only; "B" = A+B

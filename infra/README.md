@@ -3,7 +3,7 @@
 One Ubuntu 24.04 `t3.medium` in **eu-west-1** runs two processes:
 
 - **Monitor** (`polymaker-monitor.service`) — always-on `poly-sharp-finder` (whale + smart-wallet convergence).
-- **Sharp pipeline** (`polymaker-sharp.timer`) — every 30 minutes, scrape MLB + WNBA + NCAAF splits and trade only when every required source is on **today's Pacific slate** (NCAAF uses a 6-day weekend window).
+- **Sharp pipeline** (`polymaker-sharp.timer`) — every 30 minutes, scrape MLB + WNBA + NCAAF + NFL splits and trade only when every required source is on **today's Pacific slate** (NCAAF uses a 6-day weekend window; NFL uses 7 days so Monday night is included).
 
 ## 1. Put secrets in SSM
 

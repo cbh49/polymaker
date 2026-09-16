@@ -6,9 +6,10 @@ Source pages:
   MLB:   https://evanalytics.com/mlb/odds
   WNBA:  https://evanalytics.com/wnba/odds
   NCAAF: https://evanalytics.com/ncaaf/odds
+  NFL:   https://evanalytics.com/nfl/odds
 
 Line History charts are loaded from:
-  POST /modules/odds/data/chart.php?sport=mlb|wnba|ncaaf&gid=...&tid=...&cid=...&parent_cid=...
+  POST /modules/odds/data/chart.php?sport=mlb|wnba|ncaaf|nfl&gid=...&tid=...&cid=...&parent_cid=...
 
 Only the full-game board (category "Game Line") is kept so the series map
 onto moneyline / spread / total in the combined splits JSON.
@@ -49,16 +50,18 @@ DEFAULT_OUT = {
     "MLB": SCRIPT_DIR / "output" / "eva_betting_splits.json",
     "WNBA": SCRIPT_DIR / "output" / "eva_wnba_betting_splits.json",
     "NCAAF": SCRIPT_DIR / "output" / "eva_ncaaf_betting_splits.json",
+    "NFL": SCRIPT_DIR / "output" / "eva_nfl_betting_splits.json",
 }
 
 PAGE_URLS = {
     "MLB": "https://evanalytics.com/mlb/odds",
     "WNBA": "https://evanalytics.com/wnba/odds",
     "NCAAF": "https://evanalytics.com/ncaaf/odds",
+    "NFL": "https://evanalytics.com/nfl/odds",
 }
 CHART_URL = "https://evanalytics.com/modules/odds/data/chart.php"
 CHART_TZ = ZoneInfo("America/New_York")
-SPORT_CODES = {"MLB": "mlb", "WNBA": "wnba", "NCAAF": "ncaaf"}
+SPORT_CODES = {"MLB": "mlb", "WNBA": "wnba", "NCAAF": "ncaaf", "NFL": "nfl"}
 # SYN to evanalytics.com can sit in SYN_SENT past requests' timeout and stall
 # the whole NCAAF/WNBA/MLB aggregator with no log output. Cap each call and
 # skip remaining charts after a couple of consecutive hangs.
@@ -362,6 +365,10 @@ def _canonical_abbr(abbr: str, league: str, abbr_map: dict[str, str]) -> str:
         from cfb_team_map import canonical_abbr
 
         return canonical_abbr(raw) or raw
+    if league == "NFL":
+        from nfl_team_map import canonical_abbr
+
+        return canonical_abbr(raw) or raw
     return raw
 
 
@@ -372,6 +379,10 @@ def _canonical_name(name: str | None, abbr: str, league: str, abbr_map: dict[str
         return canonical_name(name or abbr) or name or team_name_from_abbr(abbr, abbr_map)
     if league == "NCAAF":
         from cfb_team_map import canonical_name
+
+        return canonical_name(name or abbr) or name or team_name_from_abbr(abbr, abbr_map)
+    if league == "NFL":
+        from nfl_team_map import canonical_name
 
         return canonical_name(name or abbr) or name or team_name_from_abbr(abbr, abbr_map)
     return name or team_name_from_abbr(abbr, abbr_map)
@@ -540,7 +551,7 @@ def merge_eva_into_game(game: dict[str, Any], eva_game: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape EV Analytics line movement")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "NCAAF", "CFB"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "NCAAF", "CFB", "NFL"])
     parser.add_argument(
         "--date",
         default=None,

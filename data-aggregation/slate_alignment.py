@@ -1,9 +1,9 @@
-"""Same-day source alignment for MLB/WNBA/NCAAF sharp-money trading.
+"""Same-day source alignment for MLB/WNBA/NCAAF/NFL sharp-money trading.
 
 A league is tradeable only when every *required* splits source is on the
-Pacific slate day (NCAAF: a weekend window) and at least one game has
+Pacific slate day (NCAAF/NFL: a weekend window) and at least one game has
 overlapping fields from all of those sources. EVA / Covers are enrichment
-and never block trading. Pinnacle is not used for NCAAF.
+and never block trading. Pinnacle is not used for NCAAF or NFL.
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ PAGE_TZ = ZoneInfo("America/Los_Angeles")
 MLB_REQUIRED: tuple[str, ...] = ("primary", "vsin", "sbd")
 WNBA_REQUIRED: tuple[str, ...] = ("primary", "vsin", "thespread")
 NCAAF_REQUIRED: tuple[str, ...] = ("primary", "vsin", "sbd")
+NFL_REQUIRED: tuple[str, ...] = ("primary", "vsin", "sbd")
 NCAAF_SLATE_WINDOW_DAYS = 6
+NFL_SLATE_WINDOW_DAYS = 7
 
 # Combined-file `sources` object keys for each logical source.
 MLB_SOURCE_KEYS: dict[str, str] = {
@@ -32,6 +34,11 @@ WNBA_SOURCE_KEYS: dict[str, str] = {
     "thespread": "thespread",
 }
 NCAAF_SOURCE_KEYS: dict[str, str] = {
+    "primary": "draftkings",
+    "vsin": "vsin",
+    "sbd": "sportsbettingdime",
+}
+NFL_SOURCE_KEYS: dict[str, str] = {
     "primary": "draftkings",
     "vsin": "vsin",
     "sbd": "sportsbettingdime",
@@ -108,7 +115,12 @@ def normalize_league(league: str | None) -> str:
 
 
 def slate_window_days(league: str | None) -> int:
-    return NCAAF_SLATE_WINDOW_DAYS if normalize_league(league) == "NCAAF" else 0
+    key = normalize_league(league)
+    if key == "NCAAF":
+        return NCAAF_SLATE_WINDOW_DAYS
+    if key == "NFL":
+        return NFL_SLATE_WINDOW_DAYS
+    return 0
 
 
 def in_slate_window(game_day: date | None, slate_day: date, window_days: int) -> bool:
@@ -125,6 +137,8 @@ def required_sources(league: str | None) -> tuple[str, ...]:
         return WNBA_REQUIRED
     if key == "NCAAF":
         return NCAAF_REQUIRED
+    if key == "NFL":
+        return NFL_REQUIRED
     return MLB_REQUIRED
 
 
@@ -134,6 +148,8 @@ def source_block_key(league: str | None, logical: str) -> str:
         mapping = WNBA_SOURCE_KEYS
     elif key == "NCAAF":
         mapping = NCAAF_SOURCE_KEYS
+    elif key == "NFL":
+        mapping = NFL_SOURCE_KEYS
     else:
         mapping = MLB_SOURCE_KEYS
     return mapping.get(logical, logical)
