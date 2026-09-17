@@ -1,9 +1,10 @@
 """Sports event discovery helpers for Polymarket Gamma series.
 
-MLB / WNBA / UFC / CFB are discovered via `GET /events?series_slug=…`.
+MLB / WNBA / UFC / CFB / NFL are discovered via `GET /events?series_slug=…`.
 A Gamma sports event slug is the moneyline (`{league}-{away}-{home}-YYYY-MM-DD`);
 spreads and totals are nested markets under that event. Gamma's `startDate` is
 listing time — game day is `eventDate`; tip-off is `startTime`.
+CFB and NFL series slugs are year-tagged (`cfb-2026`, `nfl-2026`).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any
 
 def default_sports_series_slugs(today: date | None = None) -> tuple[str, ...]:
     year = (today or datetime.now(UTC).date()).year
-    return ("mlb", "wnba", "ufc", f"cfb-{year}")
+    return ("mlb", "wnba", "ufc", f"cfb-{year}", f"nfl-{year}")
 
 
 # Supported Polymarket sports series slugs (Gamma `series_slug` query param).
@@ -30,41 +31,88 @@ UFC_LOOK_AHEAD_DAYS = 14
 LINE_MATCH_TOLERANCE = 1.0
 
 # Moneyline / event: mlb-atl-cws-2026-08-20 / wnba-wsh-gsv-2026-07-20
-# / ufc-ant-gre3-2026-08-22 / cfb-hawaii-stan-2026-08-29
+# / ufc-ant-gre3-2026-08-22 / cfb-hawaii-stan-2026-08-29 / nfl-dal-nyg-2026-09-14
+_LEAGUE = r"mlb|wnba|ufc|cfb|nfl"
 _MONEYLINE_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
     r"-(?P<ymd>\d{4}-\d{2}-\d{2})$"
 )
 _SPREAD_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
     r"-(?P<ymd>\d{4}-\d{2}-\d{2})-spread-(?P<favored>home|away)-(?P<pts>\d+(?:pt\d+)?)$"
 )
 _TOTAL_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
     r"-(?P<ymd>\d{4}-\d{2}-\d{2})-(?:total|totals)-(?P<pts>\d+(?:pt\d+)?)$"
+)
+_PLAYER_PROPS_EVENT_RE = re.compile(
+    rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    r"-(?P<ymd>\d{4}-\d{2}-\d{2})-player-props$"
+)
+# nfl-atl-pit-2026-09-13-pyd-aaron-rodgers-149pt5 / recyd / ryd / rryd
+_PLAYER_PROP_SLUG_RE = re.compile(
+    rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    r"-(?P<ymd>\d{4}-\d{2}-\d{2})-(?P<code>pyd|recyd|ryd|rryd|scrim)"
+    r"-(?P<player>[a-z0-9-]+)-(?P<pts>\d+(?:pt\d+)?)$"
 )
 
 # Public aliases — scrape_polymarket_odds and tests import these names.
 EVENT_SLUG_RE = _MONEYLINE_RE
 SPREAD_SLUG_RE = _SPREAD_SLUG_RE
 TOTAL_SLUG_RE = _TOTAL_SLUG_RE
+PLAYER_PROPS_EVENT_RE = _PLAYER_PROPS_EVENT_RE
+PLAYER_PROP_SLUG_RE = _PLAYER_PROP_SLUG_RE
+
+# Gamma `sportsMarketType` → our prop type. Yardage boards are Over/Under ladders.
+PLAYER_PROP_TYPE_MAP: dict[str, str] = {
+    "passing_yards": "passing_yards",
+    "receiving_yards": "receiving_yards",
+    "rushing_yards": "rushing_yards",
+    "rushing_receiving_yards": "rushing_receiving_yards",
+    "rush_rec_yards": "rushing_receiving_yards",
+    "yards_from_scrimmage": "rushing_receiving_yards",
+    "anytime_touchdowns": "anytime_td",
+    "two_plus_touchdowns": "2plus_td",
+}
+_SLUG_CODE_TO_PROP_TYPE: dict[str, str] = {
+    "pyd": "passing_yards",
+    "recyd": "receiving_yards",
+    "ryd": "rushing_yards",
+    "rryd": "rushing_receiving_yards",
+    "scrim": "rushing_receiving_yards",
+}
+YARDAGE_PROP_TYPES: frozenset[str] = frozenset(
+    {
+        "passing_yards",
+        "receiving_yards",
+        "rushing_yards",
+        "rushing_receiving_yards",
+    }
+)
+
+
+def _is_year_tagged_series(slug: str, prefix: str) -> bool:
+    if slug == prefix:
+        return True
+    tagged = prefix + "-"
+    return slug.startswith(tagged) and slug[len(tagged) :].isdigit()
 
 
 def is_sports_series(slug: str | None) -> bool:
     if not slug:
         return False
     s = slug.lower()
-    if s in {"mlb", "wnba", "ufc", "cfb"}:
+    if s in {"mlb", "wnba", "ufc", "cfb", "nfl"}:
         return True
-    if s.startswith("cfb-") and s[4:].isdigit():
+    if _is_year_tagged_series(s, "cfb") or _is_year_tagged_series(s, "nfl"):
         return True
     return s in SPORTS_SERIES_SLUGS
 
 
 def look_ahead_days_for_series(series_slug: str, default: int) -> int:
-    """CFB/UFC weekend slates need a longer window than daily MLB/WNBA boards."""
+    """CFB/NFL/UFC weekend slates need a longer window than daily MLB/WNBA boards."""
     s = (series_slug or "").lower()
-    if s == "cfb" or s.startswith("cfb-"):
+    if _is_year_tagged_series(s, "cfb") or _is_year_tagged_series(s, "nfl"):
         return max(default, CFB_LOOK_AHEAD_DAYS)
     if s == "ufc":
         return max(default, UFC_LOOK_AHEAD_DAYS)
@@ -93,6 +141,27 @@ def is_total_slug(slug: str | None) -> bool:
 def is_sports_market_slug(slug: str | None) -> bool:
     """Moneyline, spread, or total — not 1H / player props / first-five."""
     return is_moneyline_slug(slug) or is_spread_slug(slug) or is_total_slug(slug)
+
+
+def is_player_props_event_slug(slug: str | None) -> bool:
+    """True for the sibling event `nfl-atl-pit-2026-09-13-player-props`."""
+    if not slug:
+        return False
+    return _PLAYER_PROPS_EVENT_RE.match(slug) is not None
+
+
+def player_props_slug_for_event(moneyline_slug: str | None) -> str | None:
+    """Moneyline event slug → sibling player-props event slug."""
+    if not is_moneyline_slug(moneyline_slug):
+        return None
+    return f"{moneyline_slug}-player-props"
+
+
+def moneyline_slug_for_player_props(props_slug: str | None) -> str | None:
+    m = _PLAYER_PROPS_EVENT_RE.match(props_slug or "")
+    if not m:
+        return None
+    return f"{m.group('league')}-{m.group('away')}-{m.group('home')}-{m.group('ymd')}"
 
 
 def parse_pt_number(raw: str) -> float | None:
@@ -274,6 +343,73 @@ def classify_event_markets(event: dict[str, Any]) -> dict[str, Any]:
                 }
             )
     return {"moneyline": moneyline, "spreads": spreads, "totals": totals}
+
+
+def _player_from_prop_title(title: str) -> str:
+    """'Aaron Rodgers: Passing Yards O/U 149.5' → 'Aaron Rodgers'."""
+    text = (title or "").strip()
+    if ": " in text:
+        return text.split(": ", 1)[0].strip()
+    return text
+
+
+def _player_from_slug_token(token: str) -> str:
+    return " ".join(part.capitalize() for part in (token or "").split("-") if part)
+
+
+def _prop_line(raw: dict[str, Any], slug_pts: str | None = None) -> float | None:
+    val = raw.get("line")
+    if val is not None and val != "":
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            pass
+    if slug_pts:
+        return parse_pt_number(slug_pts)
+    return None
+
+
+def classify_player_prop(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Map one nested Gamma market to a yardage/TD prop, or None if not one of ours."""
+    if not isinstance(raw, dict) or raw.get("closed"):
+        return None
+    slug = str(raw.get("slug") or "")
+    gamma_type = str(raw.get("sportsMarketType") or "").strip().lower()
+    prop_type = PLAYER_PROP_TYPE_MAP.get(gamma_type)
+    slug_m = _PLAYER_PROP_SLUG_RE.match(slug)
+    if prop_type is None and slug_m:
+        prop_type = _SLUG_CODE_TO_PROP_TYPE.get(slug_m.group("code"))
+    if prop_type is None:
+        return None
+    title = str(raw.get("groupItemTitle") or raw.get("question") or "")
+    player = _player_from_prop_title(title)
+    if not player and slug_m:
+        player = _player_from_slug_token(slug_m.group("player"))
+    line = _prop_line(raw, slug_m.group("pts") if slug_m else None)
+    return {
+        "raw": raw,
+        "type": prop_type,
+        "player": player,
+        "line": line,
+        "liquidity": market_liquidity(raw),
+    }
+
+
+def classify_player_prop_markets(event: dict[str, Any]) -> list[dict[str, Any]]:
+    """Yardage + TD props nested under a `*-player-props` Gamma event."""
+    out: list[dict[str, Any]] = []
+    for raw in event.get("markets") or []:
+        parsed = classify_player_prop(raw)
+        if parsed is not None:
+            out.append(parsed)
+    out.sort(
+        key=lambda row: (
+            str(row.get("type") or ""),
+            str(row.get("player") or ""),
+            float(row["line"]) if row.get("line") is not None else -1.0,
+        )
+    )
+    return out
 
 
 def implied_home_spread(favored: str, pts: float) -> float:
