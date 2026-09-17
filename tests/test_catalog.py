@@ -284,6 +284,39 @@ def test_parse_pt_and_pick_nested_markets():
     assert miss == "spread line mismatch play=21.5 poly=14.5"
 
 
+def test_pick_consensus_line_prefers_fifty_cent_mid():
+    from polymaker.catalog.sports import game_event_slug, pick_consensus_line
+    from polymaker.domain import MarketMeta, TokenMeta
+
+    def priced(slug: str, cid: str, bid: float, ask: float, liq: float) -> MarketMeta:
+        return MarketMeta(
+            condition_id=cid,
+            question=slug,
+            slug=slug,
+            tokens=(TokenMeta("y", "Yes"), TokenMeta("n", "No")),
+            tick_size=0.01,
+            neg_risk=False,
+            min_order_size=5.0,
+            rewards_min_size=10.0,
+            rewards_max_spread=3.0,
+            rewards_daily_rate=0.0,
+            maker_fee_bps=0,
+            taker_fee_bps=0,
+            fees_enabled=False,
+            end_date_iso=None,
+            event_id="e",
+            best_bid=bid,
+            best_ask=ask,
+            liquidity_num=liq,
+        )
+
+    main = priced("nfl-mia-sf-2026-09-20-spread-home-12pt5", "main", 0.50, 0.51, 20_000)
+    alt = priced("nfl-mia-sf-2026-09-20-spread-home-21pt5", "alt", 0.23, 0.26, 80_000)
+    picked = pick_consensus_line([alt, main])
+    assert picked is not None and picked.condition_id == "main"
+    assert game_event_slug(main.slug) == "nfl-mia-sf-2026-09-20"
+
+
 def test_event_date_window():
     from datetime import date
 

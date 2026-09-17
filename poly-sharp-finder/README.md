@@ -1,6 +1,7 @@
 # Polymarket Sharp-Signal Monitor
 
-Websocket + polling monitor for MLB/WNBA/NFL Polymarket moneylines. Flags whale
+Websocket + polling monitor for MLB/WNBA/NFL moneylines plus the consensus
+spread and total. Flags whale
 trades, smart-wallet convergence, order-book imbalance, and fast price
 moves — then optionally buys convergence signals. Whale trades are tweeted, not traded.
 

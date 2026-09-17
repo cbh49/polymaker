@@ -10,6 +10,7 @@ CFB and NFL series slugs are year-tagged (`cfb-2026`, `nfl-2026`).
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -141,6 +142,43 @@ def is_total_slug(slug: str | None) -> bool:
 def is_sports_market_slug(slug: str | None) -> bool:
     """Moneyline, spread, or total — not 1H / player props / first-five."""
     return is_moneyline_slug(slug) or is_spread_slug(slug) or is_total_slug(slug)
+
+
+def game_event_slug(slug: str | None) -> str | None:
+    """Parent moneyline slug for a nested spread/total, or the moneyline itself."""
+    text = slug or ""
+    m = _MONEYLINE_RE.match(text) or _SPREAD_SLUG_RE.match(text) or _TOTAL_SLUG_RE.match(text)
+    if not m:
+        return None
+    return f"{m.group('league')}-{m.group('away')}-{m.group('home')}-{m.group('ymd')}"
+
+
+def market_mid_price(best_bid: float, best_ask: float) -> float | None:
+    """Yes-token mid; None when the book is missing both sides."""
+    if best_bid > 0 and best_ask > 0:
+        return (best_bid + best_ask) / 2
+    if best_bid > 0:
+        return best_bid
+    if best_ask > 0:
+        return best_ask
+    return None
+
+
+def pick_consensus_line(markets: Sequence[Any]) -> Any | None:
+    """Main full-game line: mid closest to 50¢, then highest liquidity.
+
+    Polymarket does not flag the consensus spread/total. Alternate ladders
+    trade far from 50¢; the main number sits on the coin flip.
+    """
+    if not markets:
+        return None
+
+    def sort_key(m: Any) -> tuple[float, float]:
+        mid = market_mid_price(float(getattr(m, "best_bid", 0) or 0), float(getattr(m, "best_ask", 0) or 0))
+        dist = abs(mid - 0.5) if mid is not None else 9.0
+        return (dist, -float(getattr(m, "liquidity_num", 0) or 0))
+
+    return min(markets, key=sort_key)
 
 
 def is_player_props_event_slug(slug: str | None) -> bool:

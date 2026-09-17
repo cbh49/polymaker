@@ -130,7 +130,43 @@ def test_format_whale_tweet_nfl_hashtags() -> None:
     assert "#NFL" in text
     assert "#MLB" not in text
     assert "#Polymarket" in text
+
+
+def test_format_whale_tweet_nfl_spread() -> None:
+    market = _market(
+        league="NFL",
+        label="49ers -12.5",
+        yes_outcome="San Francisco 49ers",
+        no_outcome="Miami Dolphins",
+        slug="nfl-mia-sf-2026-09-20-spread-home-12pt5",
+    )
+    text = format_whale_tweet(
+        _sig(league="NFL", label="49ers -12.5", detail={"size_usd": 75_000, "price": 0.51}),
+        market,
+    )
+    assert "🐋 WHALE NFL PLAY" in text
+    assert "49ers -12.5" in text
+    assert "49ers ML" not in text
+    assert "$75,000" in text
+    assert "#NFL" in text
     assert len(text) <= TWEET_CHAR_LIMIT
+
+
+def test_format_whale_tweet_nfl_total_under() -> None:
+    market = _market(
+        league="NFL",
+        label="O/U 44.5",
+        yes_outcome="Over",
+        no_outcome="Under",
+        slug="nfl-mia-sf-2026-09-20-total-44pt5",
+    )
+    text = format_whale_tweet(
+        _sig(league="NFL", side="no", label="O/U 44.5", detail={"size_usd": 90_000, "price": 0.49}),
+        market,
+    )
+    assert "Under 44.5" in text
+    assert "Over 44.5" not in text
+    assert "#NFL" in text
 
 
 def test_maybe_post_skips_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:

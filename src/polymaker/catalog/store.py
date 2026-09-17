@@ -89,13 +89,13 @@ class CatalogStore:
         ).fetchone()
         return _load_meta(row["meta_json"]) if row else None
 
-    def by_slug_prefix(self, prefix: str, *, limit: int = 50) -> list[MarketMeta]:
+    def by_slug_prefix(self, prefix: str, *, limit: int | None = 50) -> list[MarketMeta]:
         """Return markets whose slug starts with `prefix` (newest scan first)."""
-        rows = self._conn.execute(
-            "SELECT meta_json FROM markets WHERE slug LIKE ? "
-            "ORDER BY scanned_ts DESC LIMIT ?",
-            (f"{prefix}%", limit),
-        ).fetchall()
+        sql = "SELECT meta_json FROM markets WHERE slug LIKE ? ORDER BY scanned_ts DESC"
+        if limit is None:
+            rows = self._conn.execute(sql, (f"{prefix}%",)).fetchall()
+        else:
+            rows = self._conn.execute(sql + " LIMIT ?", (f"{prefix}%", limit)).fetchall()
         return [_load_meta(row["meta_json"]) for row in rows]
 
     def top(self, limit: int = 50, fresh_s: float = 3600.0) -> list[tuple[MarketMeta, MarketScore]]:

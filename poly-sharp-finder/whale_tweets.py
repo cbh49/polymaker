@@ -8,6 +8,14 @@ from typing import Any
 from detector import Signal
 from registry import WatchedMarket
 
+from polymaker.catalog.sports import (  # noqa: E402
+    SPREAD_SLUG_RE,
+    TOTAL_SLUG_RE,
+    is_spread_slug,
+    is_total_slug,
+    parse_pt_number,
+)
+
 TWEET_CHAR_LIMIT = 280
 
 _TWO_WORD_NICKS = (
@@ -39,11 +47,36 @@ def team_nickname(outcome: str) -> str:
 
 def play_label(market: WatchedMarket | None, sig: Signal) -> str:
     outcome = ""
+    slug = (market.slug if market is not None else "") or ""
     if market is not None:
         try:
             outcome = market.outcome_for_side(sig.side)
         except ValueError:
             outcome = ""
+
+    if is_total_slug(slug):
+        m = TOTAL_SLUG_RE.match(slug)
+        pts = parse_pt_number(m.group("pts")) if m else None
+        line = f"{pts:g}" if pts is not None else ""
+        name = (outcome or "").strip()
+        lower = name.lower()
+        if lower.startswith("over") or lower in {"o", "yes"}:
+            return f"Over {line}".strip()
+        if lower.startswith("under") or lower in {"u", "no"}:
+            return f"Under {line}".strip()
+        return name or (f"O/U {line}".strip() if line else "Total")
+
+    if is_spread_slug(slug):
+        m = SPREAD_SLUG_RE.match(slug)
+        pts = parse_pt_number(m.group("pts")) if m else None
+        nick = team_nickname(outcome) if outcome and outcome.lower() not in {"yes", "no"} else (outcome or "")
+        if pts is None:
+            return nick or (sig.label or "Spread")
+        sign = "-" if sig.side.strip().lower() in {"yes", "y", "0"} else "+"
+        if nick:
+            return f"{nick} {sign}{pts:g}"
+        return f"{sign}{pts:g}"
+
     if not outcome or outcome.lower() in {"yes", "no"}:
         fallback = (sig.label or (market.label if market else "") or "ML").strip()
         if fallback.upper().endswith(" ML"):

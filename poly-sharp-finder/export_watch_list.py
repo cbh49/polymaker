@@ -1,5 +1,6 @@
 """
-Export today's MLB/WNBA/NFL Polymarket moneylines into watch_list.json.
+Export today's MLB/WNBA/NFL watch list: moneylines plus the main spread
+and main total (50¢ consensus line) into watch_list.json.
 
 Uses the parent polymaker catalog (optionally refreshes via sports scan) and
 merges optional sharp-money annotations from data-aggregation JSON.
@@ -28,11 +29,18 @@ from polymaker.catalog.scanner import ScanConfig, run_scan  # noqa: E402
 from polymaker.catalog.sports import (  # noqa: E402
     DEFAULT_PREGAME_BUFFER_MINUTES,
     SPORTS_SERIES_SLUGS,
+    SPREAD_SLUG_RE,
+    TOTAL_SLUG_RE,
     event_date_in_window,
+    game_event_slug,
     is_moneyline_slug,
     is_pre_game,
+    is_spread_slug,
+    is_total_slug,
     look_ahead_days_for_series,
     parse_event_date,
+    parse_pt_number,
+    pick_consensus_line,
 )
 from polymaker.catalog.store import CatalogStore  # noqa: E402
 from polymaker.config import Config  # noqa: E402
@@ -40,7 +48,7 @@ from polymaker.domain import MarketMeta  # noqa: E402
 from polymaker.trading.sharp import SharpPlay, load_sharp_plays  # noqa: E402
 from polymaker.trading.teams import resolve_team  # noqa: E402
 
-# Whale monitor watches moneylines for these slug prefixes.
+# Whale monitor watches moneylines + the consensus spread/total for these prefixes.
 WATCH_SLUG_PREFIXES: tuple[str, ...] = ("mlb-", "wnba-", "nfl-")
 
 _SLUG_RE = re.compile(
@@ -49,21 +57,110 @@ _SLUG_RE = re.compile(
 
 
 def _league_from_slug(slug: str) -> str:
-    m = _SLUG_RE.match(slug or "")
+    game = game_event_slug(slug) or slug
+    m = _SLUG_RE.match(game or "")
     return (m.group("league") if m else "mlb").upper()
+
+
+def _format_line(pts: float) -> str:
+    return f"{pts:g}"
 
 
 def _label_from_meta(meta: MarketMeta) -> str:
     yes = meta.tokens[0].outcome
     no = meta.tokens[1].outcome
-    return f"{no} vs {yes} ML" if yes and no else (meta.question or meta.slug)
+    slug = meta.slug or ""
+    if is_spread_slug(slug):
+        m = SPREAD_SLUG_RE.match(slug)
+        pts = parse_pt_number(m.group("pts")) if m else None
+        if yes and pts is not None:
+            if any(ch in yes for ch in "+-") and any(c.isdigit() for c in yes):
+                return yes
+            return f"{yes} -{_format_line(pts)}"
+        return yes or (meta.question or slug)
+    if is_total_slug(slug):
+        m = TOTAL_SLUG_RE.match(slug)
+        pts = parse_pt_number(m.group("pts")) if m else None
+        if pts is not None:
+            return f"O/U {_format_line(pts)}"
+        return meta.question or slug
+    return f"{no} vs {yes} ML" if yes and no else (meta.question or slug)
 
 
 def _event_date_from_slug(slug: str) -> date | None:
-    m = _SLUG_RE.match(slug or "")
+    game = game_event_slug(slug)
+    m = _SLUG_RE.match(game or "")
     if not m:
         return None
     return parse_event_date(m.group("ymd"))
+
+
+def _in_window(meta: MarketMeta, *, today: date, window: int) -> bool:
+    ed = _event_date_from_slug(meta.slug)
+    if ed is None:
+        return event_date_in_window(
+            (meta.end_date_iso or "")[:10] or None,
+            look_ahead_days=window,
+            today=today,
+        )
+    return today <= ed <= today + timedelta(days=window)
+
+
+def _fresh_watch_markets(
+    store: CatalogStore,
+    *,
+    look_ahead_days: int,
+    today: date | None = None,
+    limit_per_league: int | None = None,
+    pregame_buffer_minutes: float = DEFAULT_PREGAME_BUFFER_MINUTES,
+    now: datetime | None = None,
+) -> list[MarketMeta]:
+    """Moneylines plus the 50¢ consensus spread and total for each pre-game."""
+    today = today or datetime.now(UTC).date()
+    clock = now or datetime.now(UTC)
+    grouped: dict[str, dict[str, list[MarketMeta]]] = {}
+    start_by_game: dict[str, str | None] = {}
+
+    for prefix in WATCH_SLUG_PREFIXES:
+        series = prefix.rstrip("-")
+        window = look_ahead_days_for_series(series, look_ahead_days)
+        for meta in store.by_slug_prefix(prefix, limit=limit_per_league):
+            if not (is_moneyline_slug(meta.slug) or is_spread_slug(meta.slug) or is_total_slug(meta.slug)):
+                continue
+            if not _in_window(meta, today=today, window=window):
+                continue
+            game = game_event_slug(meta.slug)
+            if not game:
+                continue
+            bucket = grouped.setdefault(game, {"ml": [], "spread": [], "total": []})
+            if meta.start_time_iso and not start_by_game.get(game):
+                start_by_game[game] = meta.start_time_iso
+            if is_moneyline_slug(meta.slug):
+                bucket["ml"].append(meta)
+            elif is_spread_slug(meta.slug):
+                bucket["spread"].append(meta)
+            else:
+                bucket["total"].append(meta)
+
+    out: list[MarketMeta] = []
+    seen: set[str] = set()
+    for game, bucket in grouped.items():
+        start = start_by_game.get(game)
+        if not is_pre_game({"startTime": start}, pregame_buffer_minutes, now=clock):
+            continue
+        picked = list(bucket["ml"])
+        spread = pick_consensus_line(bucket["spread"])
+        if spread is not None:
+            picked.append(spread)
+        total = pick_consensus_line(bucket["total"])
+        if total is not None:
+            picked.append(total)
+        for meta in picked:
+            if meta.condition_id in seen:
+                continue
+            seen.add(meta.condition_id)
+            out.append(meta)
+    return out
 
 
 def _fresh_moneylines(
@@ -71,44 +168,19 @@ def _fresh_moneylines(
     *,
     look_ahead_days: int,
     today: date | None = None,
-    limit_per_league: int = 200,
+    limit_per_league: int | None = None,
     pregame_buffer_minutes: float = DEFAULT_PREGAME_BUFFER_MINUTES,
     now: datetime | None = None,
 ) -> list[MarketMeta]:
-    today = today or datetime.now(UTC).date()
-    clock = now or datetime.now(UTC)
-    out: list[MarketMeta] = []
-    seen: set[str] = set()
-    for prefix in WATCH_SLUG_PREFIXES:
-        series = prefix.rstrip("-")
-        window = look_ahead_days_for_series(series, look_ahead_days)
-        for meta in store.by_slug_prefix(prefix, limit=limit_per_league):
-            if not is_moneyline_slug(meta.slug):
-                continue
-            ed = _event_date_from_slug(meta.slug)
-            if ed is None:
-                # fall back to end_date window if slug date missing
-                if not event_date_in_window(
-                    (meta.end_date_iso or "")[:10] or None,
-                    look_ahead_days=window,
-                    today=today,
-                ):
-                    continue
-            else:
-                end = today + timedelta(days=window)
-                if not (today <= ed <= end):
-                    continue
-            if not is_pre_game(
-                {"startTime": meta.start_time_iso},
-                pregame_buffer_minutes,
-                now=clock,
-            ):
-                continue
-            if meta.condition_id in seen:
-                continue
-            seen.add(meta.condition_id)
-            out.append(meta)
-    return out
+    """Back-compat alias used by tests."""
+    return _fresh_watch_markets(
+        store,
+        look_ahead_days=look_ahead_days,
+        today=today,
+        limit_per_league=limit_per_league,
+        pregame_buffer_minutes=pregame_buffer_minutes,
+        now=now,
+    )
 
 
 def _sharp_annotation_map(
@@ -232,7 +304,7 @@ def export_watch_list(
 
     store = CatalogStore(cfg.paths.db)
     try:
-        markets = _fresh_moneylines(
+        markets = _fresh_watch_markets(
             store,
             look_ahead_days=cfg.catalog.look_ahead_days,
             pregame_buffer_minutes=cfg.catalog.pregame_buffer_minutes,
