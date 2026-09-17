@@ -1,5 +1,5 @@
 """
-Export today's MLB/WNBA Polymarket moneylines into watch_list.json.
+Export today's MLB/WNBA/NFL Polymarket moneylines into watch_list.json.
 
 Uses the parent polymaker catalog (optionally refreshes via sports scan) and
 merges optional sharp-money annotations from data-aggregation JSON.
@@ -31,6 +31,7 @@ from polymaker.catalog.sports import (  # noqa: E402
     event_date_in_window,
     is_moneyline_slug,
     is_pre_game,
+    look_ahead_days_for_series,
     parse_event_date,
 )
 from polymaker.catalog.store import CatalogStore  # noqa: E402
@@ -39,8 +40,11 @@ from polymaker.domain import MarketMeta  # noqa: E402
 from polymaker.trading.sharp import SharpPlay, load_sharp_plays  # noqa: E402
 from polymaker.trading.teams import resolve_team  # noqa: E402
 
+# Whale monitor watches moneylines for these slug prefixes.
+WATCH_SLUG_PREFIXES: tuple[str, ...] = ("mlb-", "wnba-", "nfl-")
+
 _SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
+    r"^(?P<league>mlb|wnba|ufc|cfb|nfl)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
 )
 
 
@@ -75,7 +79,9 @@ def _fresh_moneylines(
     clock = now or datetime.now(UTC)
     out: list[MarketMeta] = []
     seen: set[str] = set()
-    for prefix in ("mlb-", "wnba-"):
+    for prefix in WATCH_SLUG_PREFIXES:
+        series = prefix.rstrip("-")
+        window = look_ahead_days_for_series(series, look_ahead_days)
         for meta in store.by_slug_prefix(prefix, limit=limit_per_league):
             if not is_moneyline_slug(meta.slug):
                 continue
@@ -84,12 +90,12 @@ def _fresh_moneylines(
                 # fall back to end_date window if slug date missing
                 if not event_date_in_window(
                     (meta.end_date_iso or "")[:10] or None,
-                    look_ahead_days=look_ahead_days,
+                    look_ahead_days=window,
                     today=today,
                 ):
                     continue
             else:
-                end = today + timedelta(days=look_ahead_days)
+                end = today + timedelta(days=window)
                 if not (today <= ed <= end):
                     continue
             if not is_pre_game(
@@ -241,6 +247,7 @@ def export_watch_list(
             Path(cfg.sharp.wnba_path),
             Path(cfg.sharp.ufc_path),
             Path(cfg.sharp.ncaaf_path),
+            Path(cfg.sharp.nfl_path),
         ]
         existing = [p for p in paths if p.is_file()]
         if existing:

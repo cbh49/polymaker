@@ -108,6 +108,31 @@ def test_format_whale_tweet_wnba_hashtags() -> None:
     assert len(text) <= TWEET_CHAR_LIMIT
 
 
+def test_format_whale_tweet_nfl_hashtags() -> None:
+    market = _market(
+        league="NFL",
+        label="DAL vs NYG ML",
+        yes_outcome="New York Giants",
+        no_outcome="Dallas Cowboys",
+        slug="nfl-dal-nyg-2026-09-20",
+    )
+    sig = _sig(
+        league="NFL",
+        label="DAL vs NYG ML",
+        side="no",
+        detail={"size_usd": 85_000, "price": 0.58},
+    )
+    text = format_whale_tweet(sig, market)
+    assert "🐋 WHALE NFL PLAY" in text
+    assert "Cowboys ML" in text
+    assert "$85,000" in text
+    assert "at 58¢" in text
+    assert "#NFL" in text
+    assert "#MLB" not in text
+    assert "#Polymarket" in text
+    assert len(text) <= TWEET_CHAR_LIMIT
+
+
 def test_maybe_post_skips_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("X_WHALE_POSTS", raising=False)
     called: list[str] = []
