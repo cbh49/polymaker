@@ -1,9 +1,10 @@
 """Sports event discovery helpers for Polymarket Gamma series.
 
-MLB / WNBA / UFC / CFB are discovered via `GET /events?series_slug=…`.
+MLB / WNBA / UFC / CFB / NFL are discovered via `GET /events?series_slug=…`.
 A Gamma sports event slug is the moneyline (`{league}-{away}-{home}-YYYY-MM-DD`);
 spreads and totals are nested markets under that event. Gamma's `startDate` is
 listing time — game day is `eventDate`; tip-off is `startTime`.
+CFB and NFL series slugs are year-tagged (`cfb-2026`, `nfl-2026`).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any
 
 def default_sports_series_slugs(today: date | None = None) -> tuple[str, ...]:
     year = (today or datetime.now(UTC).date()).year
-    return ("mlb", "wnba", "ufc", f"cfb-{year}")
+    return ("mlb", "wnba", "ufc", f"cfb-{year}", f"nfl-{year}")
 
 
 # Supported Polymarket sports series slugs (Gamma `series_slug` query param).
@@ -30,17 +31,18 @@ UFC_LOOK_AHEAD_DAYS = 14
 LINE_MATCH_TOLERANCE = 1.0
 
 # Moneyline / event: mlb-atl-cws-2026-08-20 / wnba-wsh-gsv-2026-07-20
-# / ufc-ant-gre3-2026-08-22 / cfb-hawaii-stan-2026-08-29
+# / ufc-ant-gre3-2026-08-22 / cfb-hawaii-stan-2026-08-29 / nfl-dal-nyg-2026-09-14
+_LEAGUE = r"mlb|wnba|ufc|cfb|nfl"
 _MONEYLINE_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
     r"-(?P<ymd>\d{4}-\d{2}-\d{2})$"
 )
 _SPREAD_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
     r"-(?P<ymd>\d{4}-\d{2}-\d{2})-spread-(?P<favored>home|away)-(?P<pts>\d+(?:pt\d+)?)$"
 )
 _TOTAL_SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
+    rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
     r"-(?P<ymd>\d{4}-\d{2}-\d{2})-(?:total|totals)-(?P<pts>\d+(?:pt\d+)?)$"
 )
 
@@ -54,17 +56,19 @@ def is_sports_series(slug: str | None) -> bool:
     if not slug:
         return False
     s = slug.lower()
-    if s in {"mlb", "wnba", "ufc", "cfb"}:
+    if s in {"mlb", "wnba", "ufc", "cfb", "nfl"}:
         return True
     if s.startswith("cfb-") and s[4:].isdigit():
+        return True
+    if s.startswith("nfl-") and s[4:].isdigit():
         return True
     return s in SPORTS_SERIES_SLUGS
 
 
 def look_ahead_days_for_series(series_slug: str, default: int) -> int:
-    """CFB/UFC weekend slates need a longer window than daily MLB/WNBA boards."""
+    """CFB/NFL/UFC weekend slates need a longer window than daily MLB/WNBA boards."""
     s = (series_slug or "").lower()
-    if s == "cfb" or s.startswith("cfb-"):
+    if s == "cfb" or s.startswith("cfb-") or s == "nfl" or s.startswith("nfl-"):
         return max(default, CFB_LOOK_AHEAD_DAYS)
     if s == "ufc":
         return max(default, UFC_LOOK_AHEAD_DAYS)

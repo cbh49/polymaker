@@ -16,7 +16,7 @@ from typing import List, Optional
 @dataclass
 class WatchedMarket:
     condition_id: str          # identifies the market (e.g. one game's moneyline)
-    league: str                # "MLB" or "WNBA"
+    league: str                # "MLB" / "WNBA" / "NFL"
     label: str                 # human-readable, e.g. "NYY vs BOS ML"
     yes_token_id: str          # token id for tokens[0] / "yes" side
     no_token_id: str           # token id for tokens[1] / "no" side

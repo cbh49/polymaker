@@ -20,7 +20,7 @@ polygon_rpc = "https://polygon-bor-rpc.publicnode.com"
 
 [catalog]
 include_politics = true
-series_slugs = ["mlb", "wnba", "ufc", "cfb-2026"]  # Gamma series_slug values for sports discovery
+series_slugs = ["mlb", "wnba", "ufc", "cfb-2026", "nfl-2026"]  # Gamma series_slug values for sports discovery
 look_ahead_days = 7             # keep games with eventDate today UTC through +N days (CFB weekends)
 skip_live_events = true         # exclude games that are not pre-game (startTime vs UTC)
 pregame_buffer_minutes = 5      # require startTime more than N minutes in the future
