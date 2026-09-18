@@ -43,6 +43,8 @@ usd_tier_a = 25.0               # USDC stake for Tier A/A+ (to-win target for +2
 usd_tier_b = 10.0               # USDC stake for Tier B (same: to-win target when low_volume_dog_flag)
 min_tier = "B"                  # "A" = Tier A only; "B" = A+B
 markets = ["moneyline", "spread", "total"]
+venues = ["polymarket", "kalshi"]
+tie_venue = "polymarket"
 require_rlm = false
 max_ask = 0.60                  # never auto-buy if best ask / last price is above this
 min_moneyline_ask = 0.35        # never auto-buy a moneyline if best ask is below this
@@ -53,3 +55,11 @@ filled_log = "journal/sharp_trades.jsonl"
 db = "state.db"
 journal_dir = "journal"
 log_dir = "logs"
+
+[ev]
+# Cross-venue odds (Polymarket + Kalshi + ProphetX + SX Bet).
+# Venue adapters are stubs until API docs land; `ev-trading run` still writes output/ev/.
+out_dir = "output/ev"
+min_spread = 0.03
+fetch_limit = 400
+venues = ["polymarket", "kalshi", "prophetx", "sxbet"]

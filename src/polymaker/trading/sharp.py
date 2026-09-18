@@ -88,4 +88,6 @@ def _league_from_name(name: str) -> str:
         return "UFC"
     if "ncaaf" in lower or "cfb" in lower:
         return "NCAAF"
+    if "nfl" in lower:
+        return "NFL"
     return "MLB"

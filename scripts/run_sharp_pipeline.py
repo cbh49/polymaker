@@ -128,11 +128,13 @@ def _trade_league(cfg: Config, league: str, *, live: bool) -> list[dict[str, Any
                 "matchup": m.play.matchup,
                 "side": m.token.outcome if m.token else m.play.side,
                 "slug": m.slug,
+                "venue": r.venue,
+                "ticker": r.ticker,
                 "tier": m.play.tier,
                 "detail": r.detail,
             }
         )
-        print(f"  {r.action:8s} ${r.usd:>6.2f} {m.play.tier} {m.play.matchup} {r.detail}")
+        print(f"  {r.action:8s} ${r.usd:>6.2f} {(r.venue or '-'):11s} {m.play.tier} {m.play.matchup} {r.detail}")
     return rows
 
 

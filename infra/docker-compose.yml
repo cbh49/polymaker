@@ -13,6 +13,8 @@ services:
     working_dir: /app
     volumes:
       - /etc/polymaker.env:/app/.env:ro
+      - /etc/kalshi_private_key.pem:/etc/kalshi_private_key.pem:ro
+      - /opt/polymaker/config:/app/config:ro
       - /var/lib/polymaker/journal:/app/journal
       - /var/lib/polymaker/logs:/app/logs
       - /var/lib/polymaker/output:/app/data-aggregation/output
@@ -40,6 +42,8 @@ services:
     working_dir: /app
     volumes:
       - /etc/polymaker.env:/app/.env:ro
+      - /etc/kalshi_private_key.pem:/etc/kalshi_private_key.pem:ro
+      - /opt/polymaker/config:/app/config:ro
       - /var/lib/polymaker/journal:/app/journal
       - /var/lib/polymaker/logs:/app/logs
       - /var/lib/polymaker/output:/app/data-aggregation/output
@@ -56,5 +60,30 @@ services:
         awslogs-region: eu-west-1
         awslogs-group: /polymaker/trading-bot
         awslogs-stream: sharp
+        mode: non-blocking
+        max-buffer-size: 4m
+
+  ev:
+    image: ${POLYMAKER_IMAGE:-polymaker:latest}
+    container_name: polymaker-ev
+    env_file:
+      - /etc/polymaker.env
+    working_dir: /app
+    volumes:
+      - /etc/polymaker.env:/app/.env:ro
+      - /etc/kalshi_private_key.pem:/etc/kalshi_private_key.pem:ro
+      - /opt/polymaker/config:/app/config:ro
+      - /var/lib/polymaker/journal:/app/journal
+      - /var/lib/polymaker/logs:/app/logs
+      - /var/lib/polymaker/ev:/app/output/ev
+    command:
+      - python
+      - scripts/run_ev_pipeline.py
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: eu-west-1
+        awslogs-group: /polymaker/trading-bot
+        awslogs-stream: ev
         mode: non-blocking
         max-buffer-size: 4m

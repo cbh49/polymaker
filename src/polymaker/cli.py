@@ -389,6 +389,7 @@ def trade_sharp(
     table.add_column("usd", justify="right")
     table.add_column("tier")
     table.add_column("matchup")
+    table.add_column("venue")
     table.add_column("outcome")
     table.add_column("slug")
     table.add_column("detail")
@@ -399,9 +400,10 @@ def trade_sharp(
             f"{r.usd:.2f}" if r.usd else "",
             m.play.tier,
             m.play.matchup,
+            r.venue or "",
             m.token.outcome if m.token else m.play.side,
-            (m.slug or "")[:36],
-            (r.detail or m.detail)[:48],
+            (m.slug or r.ticker or "")[:36],
+            (r.detail or m.detail)[:72],
         )
     console.print(table)
     if trade_cfg.dry_run:
@@ -471,6 +473,8 @@ def _sharp_trade_cfg(
         usd_tier_b=usd_b if usd_b is not None else s.usd_tier_b,
         min_tier=(tier or s.min_tier).upper(),
         markets=frozenset(m.lower() for m in s.markets),
+        venues=frozenset(v.lower() for v in getattr(s, "venues", ["polymarket", "kalshi"])),
+        tie_venue=(getattr(s, "tie_venue", None) or "polymarket").strip().lower(),
         require_rlm=s.require_rlm,
         max_ask=s.max_ask,
         min_moneyline_ask=s.min_moneyline_ask,

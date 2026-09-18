@@ -480,5 +480,6 @@ journal/
 logs/
 positions/
 data/
-*.whl
-session/
+kalshi_private_key.txt
+src/ev_trading/supporting-lines/*.json
+src/ev_trading/venues/kalshi/nfl_week_markets.json

@@ -426,7 +426,7 @@ async def _find_event(
         )
     if league == "ncaaf":
         events = await _series_events_for_slugs(
-            gamma, _cfb_series_slugs(event_dates), series_cache
+            gamma, _year_tagged_series_slugs("cfb", event_dates), series_cache
         )
         return _find_ncaaf_event(
             events,
@@ -434,6 +434,17 @@ async def _find_event(
             home_name=home.full_name,
             away_code=away.poly_code,
             home_code=home.poly_code,
+            event_dates=event_dates,
+        )
+    if league == "nfl":
+        events = await _series_events_for_slugs(
+            gamma, _year_tagged_series_slugs("nfl", event_dates), series_cache
+        )
+        return _find_coded_event(
+            events,
+            league="nfl",
+            away=away.poly_code,
+            home=home.poly_code,
             event_dates=event_dates,
         )
     events = await _series_events(gamma, league, series_cache)
@@ -730,13 +741,18 @@ async def _series_events_for_slugs(
     return events
 
 
-def _cfb_series_slugs(event_dates: list[date]) -> tuple[str, ...]:
+def _year_tagged_series_slugs(prefix: str, event_dates: list[date]) -> tuple[str, ...]:
+    """Gamma sports series for CFB/NFL are `{prefix}-{year}`, not `{prefix}`."""
     years = {d.year for d in event_dates} or {datetime.now(UTC).year}
     slugs: list[str] = []
     for year in sorted(years):
-        slugs.extend([f"cfb-{year}", f"cfb-{year - 1}", f"cfb-{year + 1}"])
-    slugs.append("cfb")
+        slugs.extend([f"{prefix}-{year}", f"{prefix}-{year - 1}", f"{prefix}-{year + 1}"])
+    slugs.append(prefix)
     return tuple(dict.fromkeys(slugs))
+
+
+def _cfb_series_slugs(event_dates: list[date]) -> tuple[str, ...]:
+    return _year_tagged_series_slugs("cfb", event_dates)
 
 
 def _cfb_names_match(a: str, b: str) -> bool:

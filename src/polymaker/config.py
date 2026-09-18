@@ -64,6 +64,8 @@ class SharpConfig(BaseModel):
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # "A" = Tier A only; "B" = A+B
     markets: list[str] = Field(default_factory=lambda: ["moneyline", "spread", "total"])
+    venues: list[str] = Field(default_factory=lambda: ["polymarket", "kalshi"])
+    tie_venue: str = "polymarket"
     require_rlm: bool = False
     max_ask: float = 0.60  # skip if best ask / last price is above this
     min_moneyline_ask: float = 0.35  # skip moneyline if best ask is cheaper than this

@@ -1,8 +1,8 @@
 """Map betting-site team abbreviations to Polymarket sports slug codes + names.
 
 Polymarket moneyline slugs look like `mlb-ari-atl-YYYY-MM-DD` /
-`wnba-phx-la-YYYY-MM-DD` (away-home). Betting splits / sharp-money JSON often
-use different abbreviations (AZ vs ari, LV vs las, GS vs gsv).
+`wnba-phx-la-YYYY-MM-DD` / `nfl-dal-nyg-YYYY-MM-DD` (away-home). Betting splits /
+sharp-money JSON often use different abbreviations (AZ vs ari, LAR vs la).
 """
 
 from __future__ import annotations
@@ -134,6 +134,87 @@ WNBA_POLY_TO_NAME: dict[str, str] = {
     "wsh": "Washington Mystics",
 }
 
+# Polymarket NFL tokens: Rams=`la`, Chargers=`lac`, Commanders=`was`, Jaguars=`jax`.
+NFL_BETTING_TO_POLY: dict[str, str] = {
+    "ARI": "ari",
+    "ATL": "atl",
+    "BAL": "bal",
+    "BUF": "buf",
+    "CAR": "car",
+    "CHI": "chi",
+    "CIN": "cin",
+    "CLE": "cle",
+    "DAL": "dal",
+    "DEN": "den",
+    "DET": "det",
+    "GB": "gb",
+    "GBP": "gb",
+    "HOU": "hou",
+    "IND": "ind",
+    "JAC": "jax",
+    "JAX": "jax",
+    "KC": "kc",
+    "KCC": "kc",
+    "LA": "la",  # Rams; Chargers are LAC
+    "LAR": "la",
+    "LAC": "lac",
+    "LV": "lv",
+    "LVR": "lv",
+    "MIA": "mia",
+    "MIN": "min",
+    "NE": "ne",
+    "NEP": "ne",
+    "NO": "no",
+    "NOS": "no",
+    "NYG": "nyg",
+    "NYJ": "nyj",
+    "PHI": "phi",
+    "PIT": "pit",
+    "SEA": "sea",
+    "SF": "sf",
+    "SFO": "sf",
+    "TB": "tb",
+    "TBB": "tb",
+    "TEN": "ten",
+    "WAS": "was",
+    "WSH": "was",
+}
+
+NFL_POLY_TO_NAME: dict[str, str] = {
+    "ari": "Arizona Cardinals",
+    "atl": "Atlanta Falcons",
+    "bal": "Baltimore Ravens",
+    "buf": "Buffalo Bills",
+    "car": "Carolina Panthers",
+    "chi": "Chicago Bears",
+    "cin": "Cincinnati Bengals",
+    "cle": "Cleveland Browns",
+    "dal": "Dallas Cowboys",
+    "den": "Denver Broncos",
+    "det": "Detroit Lions",
+    "gb": "Green Bay Packers",
+    "hou": "Houston Texans",
+    "ind": "Indianapolis Colts",
+    "jax": "Jacksonville Jaguars",
+    "kc": "Kansas City Chiefs",
+    "la": "Los Angeles Rams",
+    "lac": "Los Angeles Chargers",
+    "lv": "Las Vegas Raiders",
+    "mia": "Miami Dolphins",
+    "min": "Minnesota Vikings",
+    "ne": "New England Patriots",
+    "no": "New Orleans Saints",
+    "nyg": "New York Giants",
+    "nyj": "New York Jets",
+    "phi": "Philadelphia Eagles",
+    "pit": "Pittsburgh Steelers",
+    "sea": "Seattle Seahawks",
+    "sf": "San Francisco 49ers",
+    "tb": "Tampa Bay Buccaneers",
+    "ten": "Tennessee Titans",
+    "was": "Washington Commanders",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class TeamRef:
@@ -199,6 +280,14 @@ def resolve_team(league: str, abbr_or_name: str) -> TeamRef | None:
         abbr = cfb.canonical_abbr(raw) or upper
         code = cfb.poly_code(raw) or str(abbr).lower()
         return TeamRef(str(abbr), code, name)
+
+    if league_l == "nfl":
+        code = NFL_BETTING_TO_POLY.get(upper)
+        if code is None:
+            code = _name_to_poly(raw, NFL_POLY_TO_NAME)
+        if code is None:
+            return None
+        return TeamRef(upper if upper in NFL_BETTING_TO_POLY else raw, code, NFL_POLY_TO_NAME[code])
 
     return None
 

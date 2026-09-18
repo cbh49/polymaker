@@ -1,8 +1,8 @@
 """Convex trade ledger: claim before a live buy, record the fill, fail closed.
 
-Canonical tradeKey is `{slug}|{outcome}` (lowercase outcome), matching
-`polymaker.trading.execute._fill_key` so the sharp pipeline and
-poly-sharp-finder cannot both buy the same market.
+Sharp-money canonical tradeKey is `sharp|{league}|{ymd}|{away}|{home}|{market}|{side}`.
+The Polymarket slug key `{slug}|{outcome}` is still claimed as a lockOnly row so
+poly-sharp-finder cannot buy the same CLOB token.
 """
 
 from __future__ import annotations
@@ -90,24 +90,25 @@ class ConvexTradeClient:
         prediction_date: str,
         slug: str | None = None,
         condition_id: str | None = None,
+        venue: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> ClaimResult:
+        body: dict[str, Any] = {
+            "tradeKey": trade_key_value,
+            "league": league,
+            "source": source,
+            "matchup": matchup,
+            "side": side,
+            "usd": usd,
+            "predictionDate": prediction_date,
+            "slug": slug,
+            "conditionId": condition_id,
+            "payload": payload or {},
+        }
+        if venue:
+            body["venue"] = venue
         try:
-            raw = self._post(
-                "/trades/claim",
-                {
-                    "tradeKey": trade_key_value,
-                    "league": league,
-                    "source": source,
-                    "matchup": matchup,
-                    "side": side,
-                    "usd": usd,
-                    "predictionDate": prediction_date,
-                    "slug": slug,
-                    "conditionId": condition_id,
-                    "payload": payload or {},
-                },
-            )
+            raw = self._post("/trades/claim", body)
         except Exception as exc:  # noqa: BLE001 — fail closed
             return ClaimResult(claimed=False, detail=f"convex claim failed: {exc}")
         if raw.get("claimed") is True:

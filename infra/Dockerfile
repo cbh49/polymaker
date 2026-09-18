@@ -38,7 +38,7 @@ COPY . /app
 
 RUN uv sync --frozen --no-dev \
     && uv run playwright install chromium \
-    && mkdir -p journal logs data-aggregation/output poly-sharp-finder/signals poly-sharp-finder/intents
+    && mkdir -p journal logs data-aggregation/output output/ev poly-sharp-finder/signals poly-sharp-finder/intents
 
 ENV PATH="/app/.venv/bin:$PATH"
 

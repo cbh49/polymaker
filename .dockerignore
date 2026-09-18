@@ -16,3 +16,6 @@ data-aggregation/output/
 poly-sharp-finder/signals/
 poly-sharp-finder/intents/
 infra/terraform/.terraform
+kalshi_private_key.txt
+src/ev_trading/supporting-lines/*.json
+src/ev_trading/venues/kalshi/nfl_week_markets.json
