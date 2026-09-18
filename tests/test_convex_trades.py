@@ -105,3 +105,14 @@ def test_complete_sends_clv_fields() -> None:
     assert body["startTime"] == 1_700_000_000_000
     assert body["buyPrice"] == 0.44
     assert body["shares"] == 56.8
+
+
+def test_complete_sends_venue() -> None:
+    import json
+
+    client = ConvexTradeClient(http_url="https://example.convex.site", token="secret")
+    with patch("polymaker.trading.convex_trades.requests.post") as post:
+        post.return_value = MagicMock(status_code=200, json=lambda: {"ok": True})
+        client.complete("nfl-ev|kalshi|T|over", {"ask": 0.57}, venue="kalshi")
+    body = json.loads(post.call_args.kwargs["data"])
+    assert body["venue"] == "kalshi"

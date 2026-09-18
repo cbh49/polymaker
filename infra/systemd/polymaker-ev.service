@@ -1,0 +1,12 @@
+[Unit]
+Description=Polymaker NFL fair-value EV scrape + trade (oneshot)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/polymaker
+EnvironmentFile=/etc/polymaker.env
+TimeoutStartSec=20min
+ExecStart=/usr/bin/docker compose -f /opt/polymaker/infra/docker-compose.yml run --rm ev
+Nice=5

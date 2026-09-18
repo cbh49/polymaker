@@ -18,6 +18,7 @@ from ev_trading.fair_value.kalshi_execute import (
 )
 from ev_trading.fair_value.models import PricedOpportunity
 from ev_trading.fair_value.report import FairValueReport
+from polymaker.trading.convex_trades import ClaimResult
 
 
 def _opp(
@@ -28,6 +29,7 @@ def _opp(
     price: float = 0.57,
     ticker: str | None = "KXNFLRECYDS-TEST-15",
     market: str = "Jonathan Taylor receiving_yards",
+    fee_adjusted_edge: float = 0.06,
 ) -> PricedOpportunity:
     return PricedOpportunity(
         market=market,
@@ -41,7 +43,7 @@ def _opp(
         market_line=14.5,
         market_price=price,
         raw_edge=0.08,
-        fee_adjusted_edge=0.06,
+        fee_adjusted_edge=fee_adjusted_edge,
         expected_value_per_contract=0.06,
         confidence=confidence,
         volume=2000.0,
@@ -67,6 +69,18 @@ def test_selects_only_liquid_kalshi_above_confidence() -> None:
     ]
     picked = select_tradable_kalshi(rows, min_confidence=0.80)
     assert [r["ticker"] for r in picked] == ["KXNFLRECYDS-TEST-15"]
+
+
+def test_selects_drops_rows_below_five_point_edge() -> None:
+    picked = select_tradable_kalshi(
+        [
+            _opp(ticker="KEEP", fee_adjusted_edge=0.06),
+            _opp(ticker="THIN-EDGE", fee_adjusted_edge=0.049),
+        ],
+        min_confidence=0.80,
+        min_edge_pct=5.0,
+    )
+    assert [r["ticker"] for r in picked] == ["KEEP"]
 
 
 def test_side_maps_to_yes_no_and_v2_book() -> None:
@@ -118,7 +132,12 @@ def test_live_ioc_buy_yes_and_no(tmp_path: Path) -> None:
     )
     results = run_kalshi_trades(
         report,
-        KalshiTradeConfig(dry_run=False, filled_log=log, refresh_quote=False),
+        KalshiTradeConfig(
+            dry_run=False,
+            filled_log=log,
+            refresh_quote=False,
+            convex=_FakeConvex(),
+        ),
         client=client,
     )
     assert [r.action for r in results] == ["bought", "bought"]
@@ -135,7 +154,12 @@ def test_live_ioc_buy_yes_and_no(tmp_path: Path) -> None:
 
     again = run_kalshi_trades(
         report,
-        KalshiTradeConfig(dry_run=False, filled_log=log, refresh_quote=False),
+        KalshiTradeConfig(
+            dry_run=False,
+            filled_log=log,
+            refresh_quote=False,
+            convex=_FakeConvex(),
+        ),
         client=client,
     )
     assert all(r.action == "skipped" for r in again)
@@ -147,7 +171,12 @@ def test_live_skips_when_ask_moves(tmp_path: Path) -> None:
     client = _FakeClient(market={"yes_ask": 0.70, "yes_bid": 0.68})
     results = run_kalshi_trades(
         FairValueReport(tradable=[_opp(price=0.57)]),
-        KalshiTradeConfig(dry_run=False, filled_log=tmp_path / "fills.jsonl", refresh_quote=True),
+        KalshiTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            refresh_quote=True,
+            convex=_FakeConvex(),
+        ),
         client=client,
     )
     assert results[0].action == "skipped"
@@ -169,7 +198,12 @@ def test_live_reads_ask_dollars_from_get_market(tmp_path: Path) -> None:
     )
     results = run_kalshi_trades(
         FairValueReport(tradable=[_opp(price=0.57)]),
-        KalshiTradeConfig(dry_run=False, filled_log=tmp_path / "fills.jsonl", refresh_quote=True),
+        KalshiTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            refresh_quote=True,
+            convex=_FakeConvex(),
+        ),
         client=client,
     )
     assert results[0].action == "bought"
@@ -188,7 +222,12 @@ def test_live_under_uses_no_ask_dollars(tmp_path: Path) -> None:
     )
     results = run_kalshi_trades(
         FairValueReport(tradable=[_opp(side="under", price=0.87, ticker="NO-TICK")]),
-        KalshiTradeConfig(dry_run=False, filled_log=tmp_path / "fills.jsonl", refresh_quote=True),
+        KalshiTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            refresh_quote=True,
+            convex=_FakeConvex(),
+        ),
         client=client,
     )
     assert results[0].action == "bought"
@@ -199,14 +238,54 @@ def test_live_under_uses_no_ask_dollars(tmp_path: Path) -> None:
 def test_ioc_no_fill_is_not_deduped(tmp_path: Path) -> None:
     client = _FakeClient(fill_count="0.00")
     log = tmp_path / "fills.jsonl"
-    cfg = KalshiTradeConfig(dry_run=False, filled_log=log, refresh_quote=False)
+    convex = _FakeConvex()
+    cfg = KalshiTradeConfig(
+        dry_run=False, filled_log=log, refresh_quote=False, convex=convex
+    )
     report = FairValueReport(tradable=[_opp()])
     first = run_kalshi_trades(report, cfg, client=client)
     assert first[0].action == "skipped"
     assert first[0].detail == "IOC no fill"
     assert not log.exists()
+    assert convex.completes == []
+    assert convex.releases
     run_kalshi_trades(report, cfg, client=client)
     assert len(client.orders) == 2
+
+
+def test_live_skips_when_convex_already_claimed(tmp_path: Path) -> None:
+    client = _FakeClient(fill_count="17.00")
+    convex = _FakeConvex(claimed=False, detail="already traded (convex ledger)")
+    results = run_kalshi_trades(
+        FairValueReport(tradable=[_opp()]),
+        KalshiTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            refresh_quote=False,
+            convex=convex,
+        ),
+        client=client,
+    )
+    assert results[0].action == "skipped"
+    assert "already traded" in results[0].detail
+    assert client.orders == []
+
+
+def test_live_skips_when_convex_unconfigured(tmp_path: Path) -> None:
+    client = _FakeClient(fill_count="17.00")
+    results = run_kalshi_trades(
+        FairValueReport(tradable=[_opp()]),
+        KalshiTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            refresh_quote=False,
+            convex=_FakeConvex(configured=False),
+        ),
+        client=client,
+    )
+    assert results[0].action == "skipped"
+    assert "convex unavailable" in results[0].detail
+    assert client.orders == []
 
 
 def test_json_report_only_uses_tradable_bucket(tmp_path: Path) -> None:
@@ -246,3 +325,23 @@ class _FakeClient:
             "fill_count": self.fill_count,
             "remaining_count": "0.00",
         }
+
+
+class _FakeConvex:
+    def __init__(self, *, configured: bool = True, claimed: bool = True, detail: str = "claimed") -> None:
+        self.configured = configured
+        self._claimed = claimed
+        self._detail = detail
+        self.claims: list[dict] = []
+        self.completes: list[tuple] = []
+        self.releases: list[str] = []
+
+    def claim(self, **kwargs):
+        self.claims.append(kwargs)
+        return ClaimResult(claimed=self._claimed, detail=self._detail)
+
+    def complete(self, trade_key_value: str, payload: dict, **kwargs) -> None:
+        self.completes.append((trade_key_value, payload, kwargs))
+
+    def release(self, trade_key_value: str) -> None:
+        self.releases.append(trade_key_value)

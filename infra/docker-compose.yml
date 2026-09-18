@@ -69,16 +69,22 @@ services:
     env_file:
       - /etc/polymaker.env
     working_dir: /app
+    command:
+      - python
+      - scripts/run_nfl_ev_pipeline.py
+      - --trade
+      - both
+      - --min-edge-pct
+      - "5"
+      - --quiet
     volumes:
       - /etc/polymaker.env:/app/.env:ro
       - /etc/kalshi_private_key.pem:/etc/kalshi_private_key.pem:ro
       - /opt/polymaker/config:/app/config:ro
       - /var/lib/polymaker/journal:/app/journal
       - /var/lib/polymaker/logs:/app/logs
+      - /var/lib/polymaker/output:/app/data-aggregation/output
       - /var/lib/polymaker/ev:/app/output/ev
-    command:
-      - python
-      - scripts/run_ev_pipeline.py
     logging:
       driver: awslogs
       options:

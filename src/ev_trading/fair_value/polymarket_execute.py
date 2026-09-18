@@ -1,8 +1,9 @@
 """Place Polymarket FAK buys for high-confidence tradable NFL fair-value rows.
 
 Only the `tradable` bucket is eligible (not low-liquidity or TD yes/no lists).
-A row must be `venue=polymarket` with `confidence >= min_confidence`. Stake is
-a fixed USD amount per side (default $10) via a CLOB market buy.
+A row must be `venue=polymarket` with `confidence >= min_confidence` and
+`fee_adjusted_edge >= min_edge_pct`. Stake is a fixed USD amount per side
+(default $10) via a CLOB market buy.
 """
 
 from __future__ import annotations
@@ -13,6 +14,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ev_trading.fair_value.ev_ledger import (
+    DEFAULT_MIN_EDGE_PCT,
+    TradeLedger,
+    claim_nfl_ev,
+    live_ledger_block,
+    meets_min_edge,
+    nfl_ev_trade_key,
+    poly_slug_lock_key,
+    release_keys,
+    resolve_ledger,
+)
 from ev_trading.fair_value.kalshi_execute import (
     DEFAULT_MIN_CONFIDENCE,
     DEFAULT_USD,
@@ -23,7 +35,7 @@ from ev_trading.fair_value.report import FairValueReport
 from polymaker.catalog.gamma import parse_market
 from polymaker.catalog.sports import DEFAULT_PREGAME_BUFFER_MINUTES, is_pre_game
 from polymaker.domain import MarketMeta, Side, TokenMeta
-from polymaker.trading.fill import parse_buy_fill
+from polymaker.trading.fill import iso_to_unix_ms, parse_buy_fill
 from polymaker.trading.match import resolve_outcome_token, resolve_total_outcome_token
 from polymaker.trading.teams import parse_matchup, resolve_team
 
@@ -60,12 +72,14 @@ class PolyExecutionGateway(Protocol):
 class PolyTradeConfig:
     usd: float = DEFAULT_USD
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
+    min_edge_pct: float = DEFAULT_MIN_EDGE_PCT
     dry_run: bool = True
     filled_log: Path = DEFAULT_FILLED_LOG
     max_ask_slippage: float = DEFAULT_MAX_ASK_SLIPPAGE
     refresh_quote: bool = True
     pregame_buffer_minutes: float = DEFAULT_PREGAME_BUFFER_MINUTES
     config_dir: str = "config"
+    convex: TradeLedger | None = None
 
 
 @dataclass(slots=True)
@@ -137,8 +151,9 @@ def select_tradable_polymarket(
     rows: list[PricedOpportunity] | list[dict[str, Any]],
     *,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    min_edge_pct: float = DEFAULT_MIN_EDGE_PCT,
 ) -> list[dict[str, Any]]:
-    """Keep `tradable` Polymarket rows at or above the confidence floor."""
+    """Keep `tradable` Polymarket rows at or above the confidence and edge floors."""
     picked: list[dict[str, Any]] = []
     for raw in rows:
         row = raw.to_dict() if isinstance(raw, PricedOpportunity) else dict(raw)
@@ -149,6 +164,8 @@ def select_tradable_polymarket(
         except (TypeError, ValueError):
             continue
         if conf < min_confidence:
+            continue
+        if not meets_min_edge(row, min_edge_pct):
             continue
         market_id = str(row.get("market_id") or row.get("ticker") or "").strip()
         if not market_id:
@@ -185,8 +202,10 @@ async def run_polymarket_trades_async(
     rows = select_tradable_polymarket(
         load_tradable_rows(source),
         min_confidence=cfg.min_confidence,
+        min_edge_pct=cfg.min_edge_pct,
     )
     already = _load_filled_keys(cfg.filled_log)
+    ledger = resolve_ledger(cfg.convex, dry_run=cfg.dry_run)
     owns_gamma = False
     owns_gw = False
     source_client = gamma
@@ -207,7 +226,7 @@ async def run_polymarket_trades_async(
     results: list[PolyTradeResult] = []
     try:
         for row in rows:
-            results.append(await _trade_one(row, cfg, already, source_client, gw))
+            results.append(await _trade_one(row, cfg, already, source_client, gw, ledger))
     finally:
         if owns_gamma and source_client is not None:
             await source_client.aclose()
@@ -236,6 +255,7 @@ async def _trade_one(
     already: set[str],
     gamma: GammaMarketSource | None,
     gateway: PolyExecutionGateway | None,
+    ledger: TradeLedger | None,
 ) -> PolyTradeResult:
     market_id = str(row.get("market_id") or row.get("ticker") or "").strip()
     side = poly_trade_side(row)
@@ -265,6 +285,11 @@ async def _trade_one(
             usd=usd,
             limit_price=ask,
         )
+
+    blocked = live_ledger_block(ledger)
+    if blocked:
+        base.detail = blocked
+        return base
 
     if gamma is None or gateway is None:
         base.action = "failed"
@@ -313,15 +338,44 @@ async def _trade_one(
         base.detail = f"${usd:.2f} below min order ${min_notional:.2f}"
         return base
 
+    assert ledger is not None
+    claimed, claim_err = claim_nfl_ev(
+        ledger,
+        venue="polymarket",
+        market_id=market_id,
+        side=side,
+        matchup=str(row.get("matchup") or market),
+        usd=usd,
+        slug=meta.slug,
+        condition_id=meta.condition_id,
+        slug_lock_key=poly_slug_lock_key(meta.slug, token.outcome),
+        payload={
+            "market_id": market_id,
+            "side": side,
+            "ask": live_ask,
+            "slug": meta.slug,
+            "token_id": token.token_id,
+            "outcome": token.outcome,
+            "fee_adjusted_edge": row.get("fee_adjusted_edge"),
+            "confidence": row.get("confidence"),
+            "venue": "polymarket",
+        },
+    )
+    if claim_err:
+        base.detail = claim_err
+        return base
+
     try:
         resp = await gateway.market_order(token.token_id, Side.BUY, usd, meta, fak=True)
     except Exception as exc:  # noqa: BLE001
+        release_keys(ledger, claimed)
         base.action = "failed"
         base.detail = f"order error: {exc}"
         return base
 
     status = str((resp or {}).get("status", (resp or {}).get("error", ""))).lower()
     if (resp or {}).get("error") or "error" in status or "fail" in status:
+        release_keys(ledger, claimed)
         base.action = "failed"
         base.detail = status or "sent"
         base.token_id = token.token_id
@@ -331,8 +385,9 @@ async def _trade_one(
         base.response = resp if isinstance(resp, dict) else {"raw": resp}
         return base
 
-    _buy_price, shares = parse_buy_fill(resp if isinstance(resp, dict) else None, live_ask)
+    buy_price, shares = parse_buy_fill(resp if isinstance(resp, dict) else None, live_ask)
     if shares is not None and shares <= 0:
+        release_keys(ledger, claimed)
         base.detail = "FAK no fill"
         base.token_id = token.token_id
         base.outcome = token.outcome
@@ -341,19 +396,35 @@ async def _trade_one(
         base.response = resp if isinstance(resp, dict) else {"raw": resp}
         return base
 
-    _append_filled(
-        cfg.filled_log,
-        {
-            "key": key,
-            "market_id": market_id,
-            "side": side,
-            "outcome": token.outcome,
-            "token_id": token.token_id,
-            "usd": usd,
-            "ask": live_ask,
-            "slug": meta.slug,
-        },
-    )
+    start_ms = iso_to_unix_ms(meta.start_time_iso)
+    fill_payload = {
+        "key": key,
+        "trade_key": nfl_ev_trade_key("polymarket", market_id, side),
+        "market_id": market_id,
+        "side": side,
+        "outcome": token.outcome,
+        "token_id": token.token_id,
+        "usd": usd,
+        "ask": live_ask,
+        "slug": meta.slug,
+        "venue": "polymarket",
+        "buy_price": buy_price,
+        "shares": shares,
+        "start_time_ms": start_ms,
+    }
+    try:
+        ledger.complete(
+            claimed[0],
+            fill_payload,
+            token_id=token.token_id,
+            start_time=start_ms,
+            buy_price=buy_price,
+            shares=shares,
+            venue="polymarket",
+        )
+    except Exception as exc:  # noqa: BLE001
+        fill_payload["convex_complete_error"] = str(exc)
+    _append_filled(cfg.filled_log, fill_payload)
     already.add(key)
     return PolyTradeResult(
         market=market,

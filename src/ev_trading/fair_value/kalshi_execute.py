@@ -1,9 +1,9 @@
 """Place Kalshi IOC buys for high-confidence tradable NFL fair-value rows.
 
 Only the `tradable` bucket is eligible (not low-liquidity or TD yes/no lists).
-A row must be `venue=kalshi` with `confidence >= min_confidence`. Stake is a
-fixed USD amount per contract side (default $10), converted to whole contracts
-at the ask.
+A row must be `venue=kalshi` with `confidence >= min_confidence` and
+`fee_adjusted_edge >= min_edge_pct`. Stake is a fixed USD amount per contract
+side (default $10), converted to whole contracts at the ask.
 """
 
 from __future__ import annotations
@@ -15,6 +15,16 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Protocol
 
+from ev_trading.fair_value.ev_ledger import (
+    DEFAULT_MIN_EDGE_PCT,
+    TradeLedger,
+    claim_nfl_ev,
+    live_ledger_block,
+    meets_min_edge,
+    nfl_ev_trade_key,
+    release_keys,
+    resolve_ledger,
+)
 from ev_trading.fair_value.models import PricedOpportunity
 from ev_trading.fair_value.report import FairValueReport
 from ev_trading.fair_value.tradable_pricer import kalshi_no_ask, kalshi_yes_ask
@@ -49,11 +59,13 @@ class KalshiTradingClient(Protocol):
 class KalshiTradeConfig:
     usd: float = DEFAULT_USD
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
+    min_edge_pct: float = DEFAULT_MIN_EDGE_PCT
     dry_run: bool = True
     filled_log: Path = DEFAULT_FILLED_LOG
     time_in_force: str = "immediate_or_cancel"
     max_ask_slippage: float = DEFAULT_MAX_ASK_SLIPPAGE
     refresh_quote: bool = True
+    convex: TradeLedger | None = None
 
 
 @dataclass(slots=True)
@@ -162,8 +174,9 @@ def select_tradable_kalshi(
     rows: list[PricedOpportunity] | list[dict[str, Any]],
     *,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    min_edge_pct: float = DEFAULT_MIN_EDGE_PCT,
 ) -> list[dict[str, Any]]:
-    """Keep `tradable` Kalshi rows at or above the confidence floor."""
+    """Keep `tradable` Kalshi rows at or above the confidence and edge floors."""
     picked: list[dict[str, Any]] = []
     for raw in rows:
         row = _as_row(raw)
@@ -174,6 +187,8 @@ def select_tradable_kalshi(
         except (TypeError, ValueError):
             continue
         if conf < min_confidence:
+            continue
+        if not meets_min_edge(row, min_edge_pct):
             continue
         ticker = str(row.get("ticker") or row.get("market_id") or "").strip()
         if not ticker:
@@ -212,8 +227,10 @@ def run_kalshi_trades(
     rows = select_tradable_kalshi(
         load_tradable_rows(source),
         min_confidence=cfg.min_confidence,
+        min_edge_pct=cfg.min_edge_pct,
     )
     already = _load_filled_keys(cfg.filled_log)
+    ledger = resolve_ledger(cfg.convex, dry_run=cfg.dry_run)
     results: list[KalshiTradeResult] = []
     owns_client = False
     trader = client
@@ -224,7 +241,7 @@ def run_kalshi_trades(
         owns_client = True
     try:
         for row in rows:
-            results.append(_trade_one(row, cfg, already, trader))
+            results.append(_trade_one(row, cfg, already, trader, ledger))
     finally:
         if owns_client and trader is not None:
             close = getattr(trader, "close", None)
@@ -251,6 +268,7 @@ def _trade_one(
     cfg: KalshiTradeConfig,
     already: set[str],
     client: KalshiTradingClient | None,
+    ledger: TradeLedger | None,
 ) -> KalshiTradeResult:
     ticker = str(row.get("ticker") or row.get("market_id") or "").strip()
     side = str(row.get("side") or "")
@@ -308,9 +326,36 @@ def _trade_one(
     )
     if cfg.dry_run:
         return planned
+    blocked = live_ledger_block(ledger)
+    if blocked:
+        planned.action = "skipped"
+        planned.detail = blocked
+        return planned
     if client is None:
         planned.action = "failed"
         planned.detail = "no Kalshi client"
+        return planned
+    assert ledger is not None
+    claimed, claim_err = claim_nfl_ev(
+        ledger,
+        venue="kalshi",
+        market_id=ticker,
+        side=side,
+        matchup=str(row.get("matchup") or market),
+        usd=planned.usd,
+        payload={
+            "ticker": ticker,
+            "side": side,
+            "ask": ask,
+            "contracts": contracts,
+            "fee_adjusted_edge": row.get("fee_adjusted_edge"),
+            "confidence": row.get("confidence"),
+            "venue": "kalshi",
+        },
+    )
+    if claim_err:
+        planned.action = "skipped"
+        planned.detail = claim_err
         return planned
     try:
         resp = client.create_event_order(
@@ -322,31 +367,45 @@ def _trade_one(
             client_order_id=client_order_id,
         )
     except Exception as exc:  # noqa: BLE001
+        release_keys(ledger, claimed)
         planned.action = "failed"
         planned.detail = str(exc)
         return planned
     planned.response = resp if isinstance(resp, dict) else {"raw": resp}
     fill_count = _as_decimal((resp or {}).get("fill_count") or 0)
     if fill_count <= 0:
+        release_keys(ledger, claimed)
         planned.action = "skipped"
         planned.detail = "IOC no fill"
         return planned
     planned.action = "bought"
     planned.detail = f"filled {fill_count}"
-    _append_filled(
-        cfg.filled_log,
-        {
-            "key": key,
-            "ticker": ticker,
-            "side": side,
-            "usd": planned.usd,
-            "contracts": contracts,
-            "limit_price": planned.limit_price,
-            "client_order_id": client_order_id,
-            "order_id": (resp or {}).get("order_id"),
-            "fill_count": str(fill_count),
-        },
-    )
+    fill_payload = {
+        "key": key,
+        "trade_key": nfl_ev_trade_key("kalshi", ticker, side),
+        "ticker": ticker,
+        "side": side,
+        "usd": planned.usd,
+        "contracts": contracts,
+        "limit_price": planned.limit_price,
+        "client_order_id": client_order_id,
+        "order_id": (resp or {}).get("order_id"),
+        "fill_count": str(fill_count),
+        "venue": "kalshi",
+        "buy_price": planned.limit_price,
+        "shares": float(fill_count),
+    }
+    try:
+        ledger.complete(
+            claimed[0],
+            fill_payload,
+            buy_price=planned.limit_price,
+            shares=float(fill_count),
+            venue="kalshi",
+        )
+    except Exception as exc:  # noqa: BLE001
+        fill_payload["convex_complete_error"] = str(exc)
+    _append_filled(cfg.filled_log, fill_payload)
     already.add(key)
     return planned
 

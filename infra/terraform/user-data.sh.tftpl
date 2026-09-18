@@ -24,7 +24,7 @@ ECR_URL="${ecr_url}"
 APP_ROOT=/opt/polymaker
 
 mkdir -p "$APP_ROOT" /var/lib/polymaker/journal /var/lib/polymaker/logs /var/lib/polymaker/output \
-  /var/lib/polymaker/signals /var/lib/polymaker/intents
+  /var/lib/polymaker/signals /var/lib/polymaker/intents /var/lib/polymaker/ev
 touch /var/lib/polymaker/watch_list.json /var/lib/polymaker/state.db
 echo '[]' > /var/lib/polymaker/watch_list.json
 
@@ -78,5 +78,6 @@ fi
 systemctl daemon-reload
 systemctl enable --now polymaker-monitor.service
 systemctl enable --now polymaker-sharp.timer
+systemctl enable --now polymaker-ev.timer
 # Kick the first scrape shortly after boot.
 systemctl start polymaker-sharp.service || true

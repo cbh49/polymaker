@@ -128,6 +128,7 @@ class ConvexTradeClient:
         start_time: int | None = None,
         buy_price: float | None = None,
         shares: float | None = None,
+        venue: str | None = None,
     ) -> None:
         body: dict[str, Any] = {"tradeKey": trade_key_value, "payload": payload}
         token_id = token_id or _optional_str(payload.get("token_id"))
@@ -136,6 +137,7 @@ class ConvexTradeClient:
         )
         buy_price = buy_price if buy_price is not None else _optional_float(payload.get("buy_price"))
         shares = shares if shares is not None else _optional_float(payload.get("shares"))
+        venue = venue or _optional_str(payload.get("venue"))
         if token_id is not None:
             body["tokenId"] = token_id
         if start_time is not None:
@@ -144,6 +146,8 @@ class ConvexTradeClient:
             body["buyPrice"] = buy_price
         if shares is not None:
             body["shares"] = shares
+        if venue is not None:
+            body["venue"] = venue
         self._post("/trades/complete", body)
 
     def release(self, trade_key_value: str) -> None:

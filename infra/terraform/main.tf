@@ -141,6 +141,11 @@ resource "aws_cloudwatch_log_stream" "sharp" {
   log_group_name = aws_cloudwatch_log_group.polymaker.name
 }
 
+resource "aws_cloudwatch_log_stream" "ev" {
+  name           = "ev"
+  log_group_name = aws_cloudwatch_log_group.polymaker.name
+}
+
 resource "aws_iam_instance_profile" "instance" {
   name = "polymaker-ec2"
   role = aws_iam_role.instance.name

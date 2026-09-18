@@ -18,6 +18,7 @@ from ev_trading.fair_value.polymarket_execute import (
 )
 from ev_trading.fair_value.report import FairValueReport
 from polymaker.domain import MarketMeta, Side, TokenMeta
+from polymaker.trading.convex_trades import ClaimResult
 
 
 def _opp(
@@ -31,6 +32,7 @@ def _opp(
     matchup: str = "DAL @ NYG",
     player: str | None = None,
     stat: str = "spread",
+    fee_adjusted_edge: float = 0.06,
 ) -> PricedOpportunity:
     return PricedOpportunity(
         market=market,
@@ -44,8 +46,8 @@ def _opp(
         market_line=3.0,
         market_price=price,
         raw_edge=0.04,
-        fee_adjusted_edge=0.04,
-        expected_value_per_contract=0.04,
+        fee_adjusted_edge=fee_adjusted_edge,
+        expected_value_per_contract=fee_adjusted_edge,
         confidence=confidence,
         volume=None,
         liquidity=10000.0,
@@ -94,6 +96,18 @@ def test_selects_only_liquid_polymarket_above_confidence() -> None:
     ]
     picked = select_tradable_polymarket(rows, min_confidence=0.80)
     assert [r["market_id"] for r in picked] == ["3340142"]
+
+
+def test_selects_drops_rows_below_five_point_edge() -> None:
+    picked = select_tradable_polymarket(
+        [
+            _opp(market_id="KEEP", fee_adjusted_edge=0.06),
+            _opp(market_id="THIN-EDGE", fee_adjusted_edge=0.049),
+        ],
+        min_confidence=0.80,
+        min_edge_pct=5.0,
+    )
+    assert [r["market_id"] for r in picked] == ["KEEP"]
 
 
 def test_ml_yes_side_is_home_or_away_from_market_name() -> None:
@@ -155,8 +169,11 @@ async def test_live_fak_buy_and_dedupe(tmp_path: Path) -> None:
     log = tmp_path / "fills.jsonl"
     gamma = _FakeGamma(raw=_gamma_spread())
     gw = _FakeGateway()
+    convex = _FakeConvex()
     report = FairValueReport(tradable=[_opp()])
-    cfg = PolyTradeConfig(dry_run=False, filled_log=log, refresh_quote=True)
+    cfg = PolyTradeConfig(
+        dry_run=False, filled_log=log, refresh_quote=True, convex=convex
+    )
     results = await run_polymarket_trades_async(report, cfg, gamma=gamma, gateway=gw)
     assert results[0].action == "bought"
     assert results[0].outcome == "New York Giants"
@@ -164,6 +181,10 @@ async def test_live_fak_buy_and_dedupe(tmp_path: Path) -> None:
     assert gw.orders[0]["amount"] == 10.0
     assert gw.orders[0]["side"] is Side.BUY
     assert log.is_file()
+    assert len(convex.claims) == 2
+    assert convex.claims[0]["trade_key_value"].startswith("nfl-ev|polymarket|")
+    assert convex.claims[1]["payload"]["lockOnly"] is True
+    assert len(convex.completes) == 1
 
     again = await run_polymarket_trades_async(report, cfg, gamma=gamma, gateway=gw)
     assert again[0].action == "skipped"
@@ -176,7 +197,11 @@ async def test_live_skips_when_ask_moves(tmp_path: Path) -> None:
     gw = _FakeGateway(book={"best_bid": 0.60, "best_ask": 0.61})
     results = await run_polymarket_trades_async(
         FairValueReport(tradable=[_opp(price=0.46)]),
-        PolyTradeConfig(dry_run=False, filled_log=tmp_path / "fills.jsonl"),
+        PolyTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            convex=_FakeConvex(),
+        ),
         gamma=_FakeGamma(raw=_gamma_spread()),
         gateway=gw,
     )
@@ -201,6 +226,42 @@ async def test_json_report_only_uses_tradable_bucket(tmp_path: Path) -> None:
         gateway=_FakeGateway(),
     )
     assert [r.market_id for r in results] == ["KEEP"]
+
+
+@pytest.mark.asyncio
+async def test_live_skips_when_convex_already_claimed(tmp_path: Path) -> None:
+    gw = _FakeGateway()
+    results = await run_polymarket_trades_async(
+        FairValueReport(tradable=[_opp()]),
+        PolyTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            convex=_FakeConvex(claimed=False, detail="already traded (convex ledger)"),
+        ),
+        gamma=_FakeGamma(raw=_gamma_spread()),
+        gateway=gw,
+    )
+    assert results[0].action == "skipped"
+    assert "already traded" in results[0].detail
+    assert gw.orders == []
+
+
+@pytest.mark.asyncio
+async def test_live_skips_when_convex_unconfigured(tmp_path: Path) -> None:
+    gw = _FakeGateway()
+    results = await run_polymarket_trades_async(
+        FairValueReport(tradable=[_opp()]),
+        PolyTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            convex=_FakeConvex(configured=False),
+        ),
+        gamma=_FakeGamma(raw=_gamma_spread()),
+        gateway=gw,
+    )
+    assert results[0].action == "skipped"
+    assert "convex unavailable" in results[0].detail
+    assert gw.orders == []
 
 
 def _gamma_spread() -> dict[str, Any]:
@@ -259,3 +320,23 @@ class _FakeGateway:
             {"token_id": token_id, "side": side, "amount": amount, "fak": fak, "slug": meta.slug}
         )
         return {"status": "matched", "takingAmount": "21.74", "makingAmount": "10"}
+
+
+class _FakeConvex:
+    def __init__(self, *, configured: bool = True, claimed: bool = True, detail: str = "claimed") -> None:
+        self.configured = configured
+        self._claimed = claimed
+        self._detail = detail
+        self.claims: list[dict] = []
+        self.completes: list[tuple] = []
+        self.releases: list[str] = []
+
+    def claim(self, **kwargs):
+        self.claims.append(kwargs)
+        return ClaimResult(claimed=self._claimed, detail=self._detail)
+
+    def complete(self, trade_key_value: str, payload: dict, **kwargs) -> None:
+        self.completes.append((trade_key_value, payload, kwargs))
+
+    def release(self, trade_key_value: str) -> None:
+        self.releases.append(trade_key_value)

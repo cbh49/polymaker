@@ -19,7 +19,7 @@ GIT_REF=main
 APP_ROOT=/opt/polymaker
 
 mkdir -p "$APP_ROOT" /var/lib/polymaker/journal /var/lib/polymaker/logs /var/lib/polymaker/output \
-  /var/lib/polymaker/signals /var/lib/polymaker/intents
+  /var/lib/polymaker/signals /var/lib/polymaker/intents /var/lib/polymaker/ev
 echo '[]' > /var/lib/polymaker/watch_list.json
 touch /var/lib/polymaker/state.db
 
@@ -59,6 +59,7 @@ cp "$APP_ROOT/infra/systemd/"*.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now polymaker-monitor.service
 systemctl enable --now polymaker-sharp.timer
+systemctl enable --now polymaker-ev.timer
 systemctl start polymaker-sharp.service || true
 echo BOOTSTRAP_OK
 systemctl is-active polymaker-monitor || true

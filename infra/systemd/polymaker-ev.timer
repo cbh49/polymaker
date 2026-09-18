@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Polymaker NFL EV pipeline every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*:15/30
+Persistent=true
+Unit=polymaker-ev.service
+
+[Install]
+WantedBy=timers.target

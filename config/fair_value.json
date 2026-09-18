@@ -1,0 +1,120 @@
+{
+  "devig_method": "multiplicative",
+  "book_weights": {
+    "circasports": 1.5,
+    "circa": 1.5,
+    "pinnacle": 2.0,
+    "draftkings": 1.0,
+    "fanduel": 1.0,
+    "mgm": 1.0,
+    "caesars": 1.0,
+    "betrivers": 1.0,
+    "betr": 1.0,
+    "fanatics": 1.0,
+    "hardrock": 1.0,
+    "thescore": 1.0,
+    "default": 1.0
+  },
+  "stat_distributions": {
+    "default": "normal",
+    "moneyline": "same_strike",
+    "anytime_td": "same_strike",
+    "first_td": "same_strike",
+    "2plus_td": "same_strike",
+    "spread": "normal",
+    "total": "normal",
+    "passing_yards": "normal",
+    "rushing_yards": "normal",
+    "receiving_yards": "normal",
+    "rushing_receiving_yards": "normal",
+    "receptions": "nbinom",
+    "interceptions": "poisson",
+    "passing_tds": "poisson",
+    "rushing_tds": "poisson",
+    "receiving_tds": "poisson"
+  },
+  "default_sigma": {
+    "default": 20.0,
+    "spread": 13.5,
+    "total": 13.5,
+    "passing_yards": 62.0,
+    "rushing_yards": 32.0,
+    "receiving_yards": 28.0,
+    "rushing_receiving_yards": 38.0,
+    "receptions": 2.2,
+    "interceptions": 1.1,
+    "passing_tds": 1.1,
+    "rushing_tds": 0.8,
+    "receiving_tds": 0.8
+  },
+  "min_r2_for_fitted_sigma": 0.4,
+  "max_fallback_extrapolation_ratio": 0.4,
+  "min_books_hard_floor": 3,
+  "role_buckets": {
+    "receiving_yards": {
+      "low_target_share": { "line_lt": 20, "sigma": 10, "sigma_bounds": [4.0, 16.0] },
+      "moderate": { "line_lt": 50, "sigma": 18, "sigma_bounds": [8.0, 28.0] },
+      "high_target_share": { "line_lt": 999, "sigma": 28, "sigma_bounds": [12.0, 50.0] }
+    },
+    "rushing_yards": {
+      "low_volume": { "line_lt": 5, "sigma": 6, "sigma_bounds": [2.0, 10.0] },
+      "committee": { "line_lt": 40, "sigma": 18, "sigma_bounds": [8.0, 28.0] },
+      "workhorse": { "line_lt": 999, "sigma": 32, "sigma_bounds": [15.0, 55.0] }
+    },
+    "passing_yards": {
+      "backup": { "line_lt": 150, "sigma": 40, "sigma_bounds": [20.0, 55.0] },
+      "starter": { "line_lt": 260, "sigma": 55, "sigma_bounds": [35.0, 80.0] },
+      "high_volume": { "line_lt": 999, "sigma": 62, "sigma_bounds": [35.0, 90.0] }
+    },
+    "rushing_receiving_yards": {
+      "low_volume": { "line_lt": 20, "sigma": 12, "sigma_bounds": [5.0, 20.0] },
+      "committee": { "line_lt": 70, "sigma": 24, "sigma_bounds": [12.0, 40.0] },
+      "workhorse": { "line_lt": 999, "sigma": 38, "sigma_bounds": [18.0, 60.0] }
+    },
+    "receptions": {
+      "low_volume": { "line_lt": 2.5, "sigma": 1.0, "sigma_bounds": [0.5, 1.8] },
+      "moderate": { "line_lt": 6.0, "sigma": 1.6, "sigma_bounds": [0.8, 3.0] },
+      "high_volume": { "line_lt": 999, "sigma": 2.2, "sigma_bounds": [1.0, 6.0] }
+    }
+  },
+  "unfitted_max_rel_delta": 1.0,
+  "sigma_bounds": {
+    "default": [5.0, 120.0],
+    "spread": [8.0, 20.0],
+    "total": [8.0, 22.0],
+    "passing_yards": [35.0, 90.0],
+    "rushing_yards": [15.0, 55.0],
+    "receiving_yards": [12.0, 50.0],
+    "rushing_receiving_yards": [18.0, 60.0],
+    "receptions": [1.0, 6.0]
+  },
+  "min_books_for_fit": 4,
+  "min_r2": 0.75,
+  "min_z_variance": 0.02,
+  "same_strike_line_tolerance": 0.26,
+  "one_sided_overround": 1.05,
+  "prob_clip": 0.001,
+  "kalshi_fee": {
+    "taker_rate": 0.07,
+    "multiplier": 1.0,
+    "contracts": 1
+  },
+  "polymarket_fee": {
+    "taker_bps": 0,
+    "gas_usd": 0.02,
+    "assumed_contracts": 10
+  },
+  "min_liquidity": 100.0,
+  "min_volume": 50.0,
+  "liquidity_full_scale": 5000.0,
+  "min_edge_pct": 1.0,
+  "line_delta_scale": 15.0,
+  "stale_delta": 8.0,
+  "target_book_count": 8,
+  "confidence_weights": {
+    "n_books": 0.3,
+    "fit_quality": 0.25,
+    "liquidity": 0.3,
+    "line_delta": 0.15
+  }
+}
