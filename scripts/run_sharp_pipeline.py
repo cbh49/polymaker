@@ -72,6 +72,8 @@ def _write_sharp(
     discord: bool = True,
     discord_dry_run: bool = False,
     discord_force: bool = False,
+    convex: bool = True,
+    convex_dry_run: bool = False,
 ) -> dict[str, Any]:
     payload = json.loads(splits_path.read_text(encoding="utf-8"))
     markets = _markets_from_arg(market)
@@ -89,6 +91,13 @@ def _write_sharp(
             post_sharp_alerts(output, dry_run=discord_dry_run, force=discord_force)
         except Exception as exc:  # noqa: BLE001
             print(f"Discord alerts failed: {exc}", file=sys.stderr)
+    if convex:
+        try:
+            from convex_sharp_alerts import post_sharp_plays
+
+            post_sharp_plays(output, dry_run=convex_dry_run)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Convex sharp plays failed: {exc}", file=sys.stderr)
     return output
 
 
@@ -164,6 +173,8 @@ def main() -> int:
     parser.add_argument("--no-discord", action="store_true", help="Skip Discord A/A+ alerts")
     parser.add_argument("--discord-dry-run", action="store_true", help="Print Discord payloads, do not POST")
     parser.add_argument("--discord-force", action="store_true", help="Ignore the sent-play cache")
+    parser.add_argument("--no-convex", action="store_true", help="Skip posting plays to Convex")
+    parser.add_argument("--convex-dry-run", action="store_true", help="Print Convex payloads, do not POST")
     parser.add_argument("--no-x", action="store_true", help="Skip X (Twitter) sharp-money tweets")
     parser.add_argument("--x-dry-run", action="store_true", help="Print X payloads, do not tweet")
     args = parser.parse_args()
@@ -247,6 +258,8 @@ def main() -> int:
             discord=not args.no_discord,
             discord_dry_run=args.discord_dry_run,
             discord_force=args.discord_force,
+            convex=not args.no_convex,
+            convex_dry_run=args.convex_dry_run,
         )
         sharp_outputs.append(out)
         trade_rows.extend(_trade_league(cfg, league, live=live))

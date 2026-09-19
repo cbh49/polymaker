@@ -425,7 +425,19 @@ def post_sharp_alerts(
     cache_path: Path | None = None,
     post_fn: PostFn | None = None,
 ) -> dict[str, Any]:
-    """Filter A/A+, skip already-sent keys, POST embeds. Never raises to caller."""
+    """Filter A/A+, skip already-sent keys, POST embeds. Never raises to caller.
+
+    Every finder payload is also upserted to Convex (`sharpMoneyPlays`) unless a
+    custom Discord `post_fn` is injected (tests).
+    """
+    if post_fn is None:
+        try:
+            from convex_sharp_alerts import post_sharp_plays
+
+            post_sharp_plays(output, dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Convex sharp plays failed: {exc}", flush=True)
+
     league = str(output.get("league") or "").strip().upper()
     if league == "CFB":
         league = "NCAAF"

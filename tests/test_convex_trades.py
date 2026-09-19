@@ -116,3 +116,43 @@ def test_complete_sends_venue() -> None:
         client.complete("nfl-ev|kalshi|T|over", {"ask": 0.57}, venue="kalshi")
     body = json.loads(post.call_args.kwargs["data"])
     assert body["venue"] == "kalshi"
+
+
+def test_upsert_ev_opportunity() -> None:
+    import json
+
+    client = ConvexTradeClient(http_url="https://example.convex.site", token="secret")
+    with patch("polymaker.trading.convex_trades.requests.post") as post:
+        post.return_value = MagicMock(
+            status_code=200, json=lambda: {"ok": True, "inserted": True}
+        )
+        raw = client.upsert_ev_opportunity(
+            {
+                "alertKey": "2026-09-19|pit @ ne|kaelon black|rushing_yards|over|29.5|mgm",
+                "title": "Kaelon Black 30+ Rush Yards",
+                "matchup": "PIT @ NE",
+            }
+        )
+    assert raw["inserted"] is True
+    post.assert_called_once()
+    assert post.call_args.args[0].endswith("/ev-opportunities")
+    body = json.loads(post.call_args.kwargs["data"])
+    assert body["title"] == "Kaelon Black 30+ Rush Yards"
+
+
+def test_upsert_sharp_plays() -> None:
+    import json
+
+    client = ConvexTradeClient(http_url="https://example.convex.site", token="secret")
+    with patch("polymaker.trading.convex_trades.requests.post") as post:
+        post.return_value = MagicMock(
+            status_code=200, json=lambda: {"ok": True, "count": 1, "inserted": 1}
+        )
+        raw = client.upsert_sharp_plays(
+            [{"playKey": "NFL|2026-09-20|x|moneyline|NYJ|A+", "league": "NFL"}]
+        )
+    assert raw["count"] == 1
+    post.assert_called_once()
+    assert post.call_args.args[0].endswith("/sharp-money-plays")
+    body = json.loads(post.call_args.kwargs["data"])
+    assert body["plays"][0]["league"] == "NFL"

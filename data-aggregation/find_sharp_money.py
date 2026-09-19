@@ -1391,6 +1391,8 @@ def main() -> None:
     parser.add_argument("--discord-force", action="store_true", help="Ignore the sent-play cache")
     parser.add_argument("--no-x", action="store_true", help="Skip X (Twitter) sharp-money tweets")
     parser.add_argument("--x-dry-run", action="store_true", help="Print X payloads, do not tweet")
+    parser.add_argument("--no-convex", action="store_true", help="Skip posting plays to Convex")
+    parser.add_argument("--convex-dry-run", action="store_true", help="Print Convex payloads, do not POST")
     args = parser.parse_args()
     args.input = _resolve_cli_path(args.input)
     args.out = _resolve_cli_path(args.out)
@@ -1417,6 +1419,10 @@ def main() -> None:
         from sharp_tweets import post_sharp_tweets
 
         post_sharp_tweets(output, dry_run=args.x_dry_run)
+    if not args.no_convex:
+        from convex_sharp_alerts import post_sharp_plays
+
+        post_sharp_plays(output, dry_run=args.convex_dry_run)
 
 
 if __name__ == "__main__":

@@ -172,6 +172,14 @@ class ConvexTradeClient:
             },
         )
 
+    def upsert_ev_opportunity(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST a posted +EV alert. Raises if Convex is unconfigured or HTTP fails."""
+        return self._post("/ev-opportunities", body)
+
+    def upsert_sharp_plays(self, plays: list[dict[str, Any]]) -> dict[str, Any]:
+        """POST a slate of sharp-money plays. Raises if Convex is unconfigured or HTTP fails."""
+        return self._post("/sharp-money-plays", {"plays": plays})
+
 
 def prediction_date_today() -> str:
     return date.today().isoformat()
