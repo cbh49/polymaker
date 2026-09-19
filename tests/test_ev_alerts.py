@@ -8,6 +8,7 @@ from ev_trading.fair_value.config import FairValueConfig
 from ev_trading.fair_value.devig import american_to_prob, prob_to_american
 from ev_trading.fair_value.discord_ev_alerts import build_embed
 from ev_trading.fair_value.ev_alerts import (
+    CARD_BOOKS,
     BookQuote,
     SportsbookEvAlert,
     build_alert,
@@ -355,11 +356,65 @@ def test_build_alert_includes_venue_quotes() -> None:
     )
     alert = build_alert(row, payload)
     assert alert is not None
-    books = {q.book for q in alert.quotes}
-    assert {"draftkings", "kalshi", "polymarket"} <= books
+    assert [q.book for q in alert.quotes] == list(CARD_BOOKS)
+    by_book = {q.book: q for q in alert.quotes}
+    assert by_book["draftkings"].odds == -110
+    assert by_book["kalshi"].odds == 150
+    assert by_book["polymarket"].odds is not None
     tweet = format_ev_tweet(alert)
     assert "Book: Kalshi" in tweet
     assert len(tweet) <= 280
+
+
+def test_card_grid_keeps_books_when_kalshi_line_differs() -> None:
+    payload = {
+        "games": [
+            {
+                "matchup": "GB @ NYJ",
+                "markets": {},
+                "player_props": [
+                    {
+                        "player": "Breece Hall",
+                        "type": "receiving_yards",
+                        "books": {
+                            "draftkings": _ou_book(-110, -110, line=15.5),
+                            "fanduel": _ou_book(-115, -105, line=15.5),
+                            "mgm": _ou_book(-108, -112, line=15.5),
+                            "hardrock": _ou_book(-110, -110, line=14.5),
+                            "caesars": _ou_book(-120, -110, line=15.5),
+                            "betrivers": _ou_book(-105, -115, line=15.5),
+                            "betr": _ou_book(-130, -110, line=15.5),
+                        },
+                        "kalshi": {"line": 14.5, "yes_ask": 0.61, "no_ask": 0.41},
+                        "polymarket": {"line": 15.5, "over_ask": 0.54, "under_ask": 0.48},
+                    }
+                ],
+            }
+        ]
+    }
+    row = InformationalRow(
+        market="Breece Hall receiving_yards",
+        matchup="GB @ NYJ",
+        player="Breece Hall",
+        stat="receiving_yards",
+        book="kalshi",
+        book_line=14.5,
+        book_prob=0.61,
+        fair_prob=0.66,
+        raw_edge=0.05,
+        n_books=6,
+        side="over",
+        book_odds=-156,
+    )
+    alert = build_alert(row, payload)
+    assert alert is not None
+    assert [q.book for q in alert.quotes] == list(CARD_BOOKS)
+    by_book = {q.book: q for q in alert.quotes}
+    assert by_book["kalshi"].odds is not None
+    assert by_book["polymarket"].odds is not None
+    assert by_book["draftkings"].odds == -110
+    assert by_book["betrivers"].odds == -105
+    assert sum(1 for q in alert.quotes if q.book == "betrivers") == 1
 
 
 def test_render_alert_card(tmp_path: Path) -> None:
@@ -383,6 +438,8 @@ def test_render_alert_card(tmp_path: Path) -> None:
             BookQuote(book="fanduel", odds=-115, line=29.5),
             BookQuote(book="mgm", odds=-105, line=29.5),
             BookQuote(book="hardrock", odds=100, line=29.5),
+            BookQuote(book="caesars", odds=-112, line=29.5),
+            BookQuote(book="betrivers", odds=-108, line=29.5),
             BookQuote(book="kalshi", odds=150, line=29.5),
             BookQuote(book="polymarket", odds=144, line=29.5),
         ),

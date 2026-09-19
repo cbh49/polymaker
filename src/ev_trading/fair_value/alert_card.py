@@ -10,9 +10,12 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont
 
 from ev_trading.fair_value.ev_alerts import (
+    CARD_BOOKS,
     PUBLIC_DIR,
+    BookQuote,
     SportsbookEvAlert,
     book_logo_path,
+    canonical_book,
     format_american,
     parse_matchup_abbrs,
     team_full_name,
@@ -68,6 +71,21 @@ def _load_font(size: int, *, bold: bool = True) -> Any:
 def _text_size(font: Any, text: str) -> tuple[int, int]:
     bbox = font.getbbox(text)
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def _draw_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[float, float],
+    text: str,
+    *,
+    font: Any,
+    fill: tuple[int, int, int],
+    anchor: str = "lt",
+) -> None:
+    try:
+        draw.text(xy, text, font=font, fill=fill, anchor=anchor)
+    except TypeError:
+        draw.text((int(xy[0]), int(xy[1])), text, font=font, fill=fill)
 
 
 def _fit_font(text: str, max_width: int, size: int, *, min_size: int = 28) -> Any:
@@ -171,9 +189,11 @@ def render_alert_card(
     draw = ImageDraw.Draw(img)
     inner = W - MARGIN * 2
 
-    quotes = [q for q in alert.quotes if book_logo_path(q.book, public_dir=logos_dir)]
-    if not quotes:
-        quotes = list(alert.quotes)
+    quotes_by_book = {canonical_book(q.book): q for q in alert.quotes}
+    quotes = [
+        quotes_by_book.get(name) or BookQuote(book=name, odds=None)
+        for name in CARD_BOOKS
+    ]
 
     title_font = _fit_font(alert.title, inner - 32, 56, min_size=30)
     tw, th = _text_size(title_font, alert.title)
@@ -243,12 +263,13 @@ def render_alert_card(
             _paste(img, chip, (cx + 14, cy + (cell_h - 10 - logo_h) // 2))
             draw = ImageDraw.Draw(img)
         odds_text = quote.american
-        ow, oh = _text_size(odds_font, odds_text)
-        draw.text(
-            (cx + cell_w - 28 - ow, cy + (cell_h - 10 - oh) // 2),
+        _draw_text(
+            draw,
+            (cx + cell_w - 28, cy + (cell_h - 10) / 2),
             odds_text,
             font=odds_font,
             fill=WHITE,
+            anchor="rm",
         )
 
     fy = y + grid_h + 16
@@ -261,29 +282,24 @@ def render_alert_card(
     )
 
     pill_w = (inner - 36) // 2
-    pill_h = 72
+    pill_h = 88
     px = MARGIN + 18
-    py = fy + 28
+    py = fy + 24
     fair_txt = format_american(float(alert.fair_american))
     play_txt = format_american(alert.book_odds)
     _rounded(draw, (px, py, px + pill_w, py + pill_h), 16, PILL_FAIR)
     _rounded(draw, (px + pill_w + 16, py, px + pill_w * 2 + 16, py + pill_h), 16, PILL_PLAY)
 
     label_font = _load_font(18, bold=True)
-    value_font = _load_font(34, bold=True)
+    value_font = _load_font(36, bold=True)
     for label, value, left in (
         ("FAIR IMPLIED", fair_txt, px),
         ("PLAY IMPLIED", play_txt, px + pill_w + 16),
     ):
-        lw, _ = _text_size(label_font, label)
-        vw, vh = _text_size(value_font, value)
-        draw.text((left + (pill_w - lw) // 2, py + 8), label, font=label_font, fill=MUTED)
-        draw.text(
-            (left + (pill_w - vw) // 2, py + pill_h - vh - 8),
-            value,
-            font=value_font,
-            fill=WHITE,
-        )
+        cx = left + pill_w / 2
+        mid = py + pill_h / 2
+        _draw_text(draw, (cx, mid - 16), label, font=label_font, fill=MUTED, anchor="mm")
+        _draw_text(draw, (cx, mid + 14), value, font=value_font, fill=WHITE, anchor="mm")
 
     ev_font = _fit_font("+EV Play", inner - 40, 64, min_size=40)
     ev_w, ev_h = _text_size(ev_font, "+EV Play")
@@ -293,7 +309,7 @@ def render_alert_card(
     winner_logo = book_logo_path(alert.book, public_dir=logos_dir)
     win_odds = format_american(alert.book_odds)
     win_font = _load_font(52, bold=True)
-    ww, wh = _text_size(win_font, win_odds)
+    ww, _wh = _text_size(win_font, win_odds)
     win_logo_w, win_logo_h = 200, 96
     row_w = (win_logo_w + 28 + ww) if winner_logo is not None else ww
     rx = (W - row_w) // 2
@@ -302,9 +318,16 @@ def render_alert_card(
         chip = _logo_chip(Image.open(winner_logo), win_logo_w, win_logo_h, pad=12)
         _paste(img, chip, (rx, ry))
         draw = ImageDraw.Draw(img)
-        draw.text((rx + win_logo_w + 28, ry + (win_logo_h - wh) // 2), win_odds, font=win_font, fill=WHITE)
+        _draw_text(
+            draw,
+            (rx + win_logo_w + 28, ry + win_logo_h / 2),
+            win_odds,
+            font=win_font,
+            fill=WHITE,
+            anchor="lm",
+        )
     else:
-        draw.text((rx, ry), win_odds, font=win_font, fill=WHITE)
+        _draw_text(draw, (rx, ry + win_logo_h / 2), win_odds, font=win_font, fill=WHITE, anchor="lm")
 
     bottom = fy + footer_h + MARGIN
     cropped = img.crop((0, 0, W, min(H, max(bottom, 900))))

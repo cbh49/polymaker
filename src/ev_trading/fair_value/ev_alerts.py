@@ -67,20 +67,24 @@ BOOK_LABELS: dict[str, str] = {
     "polymarket": "Polymarket",
 }
 
-BOOK_ORDER: tuple[str, ...] = (
+BOOK_ALIASES: dict[str, str] = {
+    "betr": "betrivers",
+    "circa": "circasports",
+    "betmgm": "mgm",
+    "hardrockbet": "hardrock",
+}
+
+CARD_SPORTSBOOKS: tuple[str, ...] = (
     "draftkings",
     "fanduel",
     "mgm",
     "hardrock",
     "caesars",
     "betrivers",
-    "betr",
-    "circasports",
-    "circa",
-    "thescore",
-    "kalshi",
-    "polymarket",
 )
+CARD_BOOKS: tuple[str, ...] = CARD_SPORTSBOOKS + ("kalshi", "polymarket")
+
+BOOK_ORDER: tuple[str, ...] = CARD_BOOKS
 
 STAT_SHORT: dict[str, str] = {
     "rushing_yards": "Rush Yards",
@@ -125,13 +129,18 @@ def implied_american(prob: float) -> int:
     return prob_to_american(prob)
 
 
-def book_label(book: str) -> str:
+def canonical_book(book: str) -> str:
     key = (book or "").strip().lower()
+    return BOOK_ALIASES.get(key, key)
+
+
+def book_label(book: str) -> str:
+    key = canonical_book(book)
     return BOOK_LABELS.get(key, key.replace("_", " ").title() or "Book")
 
 
 def book_logo_path(book: str, *, public_dir: Path | None = None) -> Path | None:
-    key = (book or "").strip().lower()
+    key = canonical_book(book)
     filename = BOOK_LOGOS.get(key)
     if not filename:
         return None
@@ -216,7 +225,7 @@ def format_bet_title(
 @dataclass(frozen=True, slots=True)
 class BookQuote:
     book: str
-    odds: float
+    odds: float | None
     line: float | None = None
 
     @property
@@ -415,35 +424,33 @@ def _quote_from_entry(
     entry: dict[str, Any],
     *,
     side: str,
-    target_line: float | None,
-    tolerance: float,
 ) -> BookQuote | None:
     side_key = (side or "").strip().lower()
     if side_key in {"over", "under"}:
         odds = _american(entry.get(f"{side_key}_odds"))
+        if odds is None:
+            odds = _prob_odds(entry.get(f"{side_key}_implied_prob"))
         line = _f(entry.get("line"))
     elif side_key in {"home", "away"}:
         blob = entry.get(side_key)
         if not isinstance(blob, dict):
             return None
         odds = _american(blob.get("odds"))
+        if odds is None:
+            odds = _prob_odds(blob.get("implied_prob"))
         line = _f(blob.get("line"))
         if line is None:
             line = _f(entry.get("line"))
     elif side_key == "yes":
         odds = _american(entry.get("odds"))
+        if odds is None:
+            odds = _prob_odds(entry.get("implied_prob"))
         line = _f(entry.get("line"))
     else:
         return None
     if odds is None:
         return None
-    if (
-        target_line is not None
-        and line is not None
-        and abs(line - target_line) > tolerance
-    ):
-        return None
-    return BookQuote(book=str(book), odds=odds, line=line)
+    return BookQuote(book=canonical_book(book), odds=odds, line=line)
 
 
 def _venue_line(blob: dict[str, Any]) -> float | None:
@@ -472,31 +479,50 @@ def _quote_from_venue(
     blob: dict[str, Any] | None,
     *,
     side: str,
-    target_line: float | None,
-    tolerance: float,
 ) -> BookQuote | None:
     if not isinstance(blob, dict):
         return None
-    ask = (
-        _kalshi_side_ask(blob, side)
-        if book == "kalshi"
-        else polymarket_side_ask(blob, side)
-    )
+    key = (side or "").strip().lower()
+    if book == "kalshi":
+        ask = _kalshi_side_ask(blob, key)
+        if ask is None and key == "yes":
+            ask = _kalshi_side_ask(blob, "over")
+    else:
+        ask = polymarket_side_ask(blob, key)
+        if ask is None and key == "yes":
+            ask = polymarket_side_ask(blob, "over")
     if ask is None:
         return None
     line = _venue_line(blob)
-    nested = blob.get((side or "").strip().lower())
+    nested = blob.get(key)
     if line is None and isinstance(nested, dict):
         line = _venue_line(nested)
-    if target_line is not None and line is None:
-        return None
-    if (
-        target_line is not None
-        and line is not None
-        and abs(line - target_line) > tolerance
-    ):
-        return None
     return BookQuote(book=book, odds=float(prob_to_american(ask)), line=line)
+
+
+def _prob_odds(value: Any) -> float | None:
+    prob = _f(value)
+    if prob is None or prob <= 0.0 or prob >= 1.0:
+        return None
+    return float(prob_to_american(prob))
+
+
+def _pick_closest(quotes: list[BookQuote], target: float | None) -> BookQuote | None:
+    if not quotes:
+        return None
+    if target is None:
+        return quotes[0]
+    same = [
+        q
+        for q in quotes
+        if q.line is not None and abs(q.line - target) <= 0.26
+    ]
+    if same:
+        return same[0]
+    with_line = [q for q in quotes if q.line is not None]
+    if with_line:
+        return min(with_line, key=lambda q: abs(float(q.line) - target))
+    return quotes[0]
 
 
 def collect_book_quotes(
@@ -505,53 +531,45 @@ def collect_book_quotes(
     *,
     tolerance: float = 0.26,
 ) -> list[BookQuote]:
+    """Always return the 8-slot card grid: 6 sportsbooks + Kalshi + Polymarket."""
+    del tolerance
     game = _find_game(payload, row.matchup)
     if game is None:
-        return []
+        return [BookQuote(book=name, odds=None) for name in CARD_BOOKS]
     blob = _market_blob(game, row)
     if blob is None:
-        return []
+        return [BookQuote(book=name, odds=None) for name in CARD_BOOKS]
+
     raw_books = blob.get("books")
     books = raw_books if isinstance(raw_books, dict) else {}
-    quotes: list[BookQuote] = []
-    seen: set[str] = set()
+    by_book: dict[str, list[BookQuote]] = {name: [] for name in CARD_BOOKS}
+
     for book, entry in books.items():
         if not isinstance(entry, dict):
             continue
-        quote = _quote_from_entry(
-            str(book),
-            entry,
-            side=row.side,
-            target_line=row.book_line if row.stat != "moneyline" else None,
-            tolerance=tolerance,
-        )
+        quote = _quote_from_entry(str(book), entry, side=row.side)
         if quote is None:
             continue
-        if quote.book in seen:
+        slot = quote.book if quote.book in by_book else None
+        if slot is None:
             continue
-        if book_logo_path(quote.book) is None:
-            continue
-        seen.add(quote.book)
-        quotes.append(quote)
+        by_book[slot].append(quote)
 
     for venue in PREDICTION_VENUES:
-        if venue in seen:
-            continue
         quote = _quote_from_venue(
             venue,
             blob.get(venue) if isinstance(blob.get(venue), dict) else None,
             side=row.side,
-            target_line=row.book_line if row.stat != "moneyline" else None,
-            tolerance=tolerance,
         )
-        if quote is None:
-            continue
-        seen.add(quote.book)
-        quotes.append(quote)
+        if quote is not None:
+            by_book[venue].append(quote)
 
-    order = {name: i for i, name in enumerate(BOOK_ORDER)}
-    quotes.sort(key=lambda q: (order.get(q.book, 99), q.book))
-    return quotes
+    target = None if row.stat == "moneyline" else row.book_line
+    grid: list[BookQuote] = []
+    for name in CARD_BOOKS:
+        picked = _pick_closest(by_book[name], target)
+        grid.append(picked if picked is not None else BookQuote(book=name, odds=None))
+    return grid
 
 
 def build_alert(
@@ -564,10 +582,14 @@ def build_alert(
     if odds is None:
         return None
     quotes = collect_book_quotes(payload, row, tolerance=tolerance)
-    if not any(q.book == row.book for q in quotes):
-        quotes = list(quotes) + [
-            BookQuote(book=row.book, odds=odds, line=row.book_line)
-        ]
+    canon = canonical_book(row.book)
+    filled: list[BookQuote] = []
+    for quote in quotes:
+        if quote.book == canon and quote.odds is None:
+            filled.append(BookQuote(book=canon, odds=odds, line=row.book_line))
+        else:
+            filled.append(quote)
+    quotes = filled
     return SportsbookEvAlert(
         market=row.market,
         matchup=row.matchup,
