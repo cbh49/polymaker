@@ -1,4 +1,4 @@
-"""Select sportsbook +EV rows (>= 5pp vs consensus) and post Discord + X cards."""
+"""Select sportsbook + Kalshi/Polymarket +EV rows (>= 5pp vs consensus) and post Discord + X cards."""
 
 from __future__ import annotations
 
@@ -15,7 +15,10 @@ from ev_trading.fair_value.devig import prob_to_american
 from ev_trading.fair_value.ev_ledger import DEFAULT_MIN_EDGE_PCT
 from ev_trading.fair_value.models import InformationalRow
 from ev_trading.fair_value.report import FairValueReport
+from ev_trading.fair_value.tradable_pricer import kalshi_no_ask, kalshi_yes_ask, polymarket_side_ask
 from ev_trading.nfl_odds import TEAM_ABBR_TO_NAME, canonical_abbr
+
+PREDICTION_VENUES = frozenset({"kalshi", "polymarket"})
 
 
 def _bot_root() -> Path:
@@ -43,6 +46,8 @@ BOOK_LOGOS: dict[str, str] = {
     "thescore": "TheScore.png",
     "circasports": "Circa.png",
     "circa": "Circa.png",
+    "kalshi": "kalshi.png",
+    "polymarket": "polymarket.png",
 }
 
 BOOK_LABELS: dict[str, str] = {
@@ -58,6 +63,8 @@ BOOK_LABELS: dict[str, str] = {
     "circa": "Circa",
     "fanatics": "Fanatics",
     "pinnacle": "Pinnacle",
+    "kalshi": "Kalshi",
+    "polymarket": "Polymarket",
 }
 
 BOOK_ORDER: tuple[str, ...] = (
@@ -71,6 +78,8 @@ BOOK_ORDER: tuple[str, ...] = (
     "circasports",
     "circa",
     "thescore",
+    "kalshi",
+    "polymarket",
 )
 
 STAT_SHORT: dict[str, str] = {
@@ -256,8 +265,9 @@ class SportsbookEvAlert:
     def alert_key(self, *, day: str) -> str:
         line = f"{self.book_line:g}" if self.book_line is not None else ""
         player = (self.player or "").strip().lower()
+        book = (self.book or "").strip().lower()
         return (
-            f"{day}|{self.matchup}|{player}|{self.stat}|{self.side}|{line}"
+            f"{day}|{self.matchup}|{player}|{self.stat}|{self.side}|{line}|{book}"
         ).lower()
 
 
@@ -320,14 +330,17 @@ def _american(value: Any) -> float | None:
     return num
 
 
-def _group_key(row: InformationalRow) -> tuple[str, str, str, str, str]:
+def _group_key(row: InformationalRow) -> tuple[str, str, str, str, str, str]:
     line = f"{row.book_line:g}" if row.book_line is not None else ""
+    book = (row.book or "").strip().lower()
+    lane = book if book in PREDICTION_VENUES else "sportsbook"
     return (
         (row.matchup or "").strip().lower(),
         (row.player or "").strip().lower(),
         (row.stat or "").strip().lower(),
         (row.side or "").strip().lower(),
         line,
+        lane,
     )
 
 
@@ -345,9 +358,9 @@ def select_sportsbook_alerts(
     min_edge_pct: float = DEFAULT_MIN_EDGE_PCT,
     min_books: int = 3,
 ) -> list[InformationalRow]:
-    """Best book per (matchup, player, stat, side, line) with edge >= cutoff."""
+    """Best sportsbook plus Kalshi/Polymarket per market/side/line if edge >= cutoff."""
     floor = min_edge_pct / 100.0
-    grouped: dict[tuple[str, str, str, str, str], list[InformationalRow]] = {}
+    grouped: dict[tuple[str, str, str, str, str, str], list[InformationalRow]] = {}
     for row in rows:
         if row.n_books < min_books:
             continue
@@ -433,6 +446,59 @@ def _quote_from_entry(
     return BookQuote(book=str(book), odds=odds, line=line)
 
 
+def _venue_line(blob: dict[str, Any]) -> float | None:
+    line = _f(blob.get("line"))
+    if line is not None and abs(line) >= 100:
+        return None
+    return line
+
+
+def _kalshi_side_ask(blob: dict[str, Any], side: str) -> float | None:
+    key = (side or "").strip().lower()
+    nested = blob.get(key)
+    if isinstance(nested, dict):
+        yes = kalshi_yes_ask(nested)
+        if yes is not None:
+            return yes
+    if key in {"over", "yes", "home"}:
+        return kalshi_yes_ask(blob)
+    if key in {"under", "no", "away"}:
+        return kalshi_no_ask(blob)
+    return None
+
+
+def _quote_from_venue(
+    book: str,
+    blob: dict[str, Any] | None,
+    *,
+    side: str,
+    target_line: float | None,
+    tolerance: float,
+) -> BookQuote | None:
+    if not isinstance(blob, dict):
+        return None
+    ask = (
+        _kalshi_side_ask(blob, side)
+        if book == "kalshi"
+        else polymarket_side_ask(blob, side)
+    )
+    if ask is None:
+        return None
+    line = _venue_line(blob)
+    nested = blob.get((side or "").strip().lower())
+    if line is None and isinstance(nested, dict):
+        line = _venue_line(nested)
+    if target_line is not None and line is None:
+        return None
+    if (
+        target_line is not None
+        and line is not None
+        and abs(line - target_line) > tolerance
+    ):
+        return None
+    return BookQuote(book=book, odds=float(prob_to_american(ask)), line=line)
+
+
 def collect_book_quotes(
     payload: dict[str, Any],
     row: InformationalRow,
@@ -464,6 +530,21 @@ def collect_book_quotes(
         if quote.book in seen:
             continue
         if book_logo_path(quote.book) is None:
+            continue
+        seen.add(quote.book)
+        quotes.append(quote)
+
+    for venue in PREDICTION_VENUES:
+        if venue in seen:
+            continue
+        quote = _quote_from_venue(
+            venue,
+            blob.get(venue) if isinstance(blob.get(venue), dict) else None,
+            side=row.side,
+            target_line=row.book_line if row.stat != "moneyline" else None,
+            tolerance=tolerance,
+        )
+        if quote is None:
             continue
         seen.add(quote.book)
         quotes.append(quote)

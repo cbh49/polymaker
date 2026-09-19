@@ -10,6 +10,7 @@ from ev_trading.fair_value.discord_ev_alerts import build_embed
 from ev_trading.fair_value.ev_alerts import (
     BookQuote,
     SportsbookEvAlert,
+    build_alert,
     format_american,
     format_bet_title,
     format_ev_tweet,
@@ -164,6 +165,56 @@ def test_select_best_book_per_market() -> None:
     assert picked[0].raw_edge == 0.10
 
 
+def test_select_posts_kalshi_and_polymarket_separately() -> None:
+    rows = [
+        InformationalRow(
+            market="Kaelon Black rushing_yards",
+            matchup="PIT @ NE",
+            player="Kaelon Black",
+            stat="rushing_yards",
+            book="mgm",
+            book_line=29.5,
+            book_prob=0.48,
+            fair_prob=0.58,
+            raw_edge=0.10,
+            n_books=4,
+            side="over",
+            book_odds=108,
+        ),
+        InformationalRow(
+            market="Kaelon Black rushing_yards",
+            matchup="PIT @ NE",
+            player="Kaelon Black",
+            stat="rushing_yards",
+            book="kalshi",
+            book_line=29.5,
+            book_prob=0.40,
+            fair_prob=0.58,
+            raw_edge=0.18,
+            n_books=4,
+            side="over",
+            book_odds=150,
+        ),
+        InformationalRow(
+            market="Kaelon Black rushing_yards",
+            matchup="PIT @ NE",
+            player="Kaelon Black",
+            stat="rushing_yards",
+            book="polymarket",
+            book_line=29.5,
+            book_prob=0.42,
+            fair_prob=0.58,
+            raw_edge=0.16,
+            n_books=4,
+            side="over",
+            book_odds=138,
+        ),
+    ]
+    picked = select_sportsbook_alerts(rows, min_edge_pct=5.0, min_books=3)
+    books = {r.book for r in picked}
+    assert books == {"mgm", "kalshi", "polymarket"}
+
+
 def test_process_slate_both_sides_and_alert_threshold() -> None:
     payload = {
         "games": [
@@ -180,6 +231,16 @@ def test_process_slate_both_sides_and_alert_threshold() -> None:
                             "mgm": _ou_book(150, -180),
                             "hardrock": _ou_book(-110, -110),
                         },
+                        "kalshi": {
+                            "line": 29.5,
+                            "yes_ask": 0.40,
+                            "no_ask": 0.62,
+                        },
+                        "polymarket": {
+                            "line": 29.5,
+                            "over_ask": 0.41,
+                            "under_ask": 0.61,
+                        },
                     }
                 ],
             }
@@ -190,10 +251,14 @@ def test_process_slate_both_sides_and_alert_threshold() -> None:
     assert ("mgm", "over") in sides
     assert ("mgm", "under") in sides
     picked = select_sportsbook_alerts(report.informational, min_edge_pct=5.0, min_books=3)
-    assert picked
-    assert picked[0].book == "mgm"
-    assert picked[0].side == "over"
-    assert picked[0].raw_edge >= 0.05
+    books = {r.book for r in picked}
+    assert "mgm" in books
+    assert "kalshi" in books
+    assert "polymarket" in books
+    assert picked[0].side == "over" or any(r.side == "over" for r in picked)
+    over = [r for r in picked if r.side == "over"]
+    assert over
+    assert all(r.raw_edge >= 0.05 for r in over)
 
 
 def test_discord_embed_and_tweet_copy() -> None:
@@ -228,6 +293,75 @@ def test_discord_embed_and_tweet_copy() -> None:
     assert len(tweet) <= 280
 
 
+def test_kalshi_tweet_uses_american_odds() -> None:
+    alert = SportsbookEvAlert(
+        market="Kaelon Black rushing_yards",
+        matchup="PIT @ NE",
+        player="Kaelon Black",
+        stat="rushing_yards",
+        side="over",
+        book="kalshi",
+        book_line=29.5,
+        book_odds=150,
+        book_prob=0.40,
+        fair_prob=0.58,
+        raw_edge=0.18,
+        n_books=4,
+        quotes=(BookQuote(book="kalshi", odds=150, line=29.5),),
+    )
+    tweet = format_ev_tweet(alert)
+    assert "Book: Kalshi" in tweet
+    assert "Odds: +150" in tweet
+    embed = build_embed(alert)
+    assert embed["fields"][2]["value"] == "Kalshi"
+
+
+def test_build_alert_includes_venue_quotes() -> None:
+    payload = {
+        "games": [
+            {
+                "matchup": "PIT @ NE",
+                "markets": {},
+                "player_props": [
+                    {
+                        "player": "Kaelon Black",
+                        "type": "rushing_yards",
+                        "books": {
+                            "draftkings": _ou_book(-110, -110),
+                            "fanduel": _ou_book(-110, -110),
+                            "mgm": _ou_book(150, -180),
+                            "hardrock": _ou_book(-110, -110),
+                        },
+                        "kalshi": {"line": 29.5, "yes_ask": 0.40, "no_ask": 0.62},
+                        "polymarket": {"line": 29.5, "over_ask": 0.41, "under_ask": 0.61},
+                    }
+                ],
+            }
+        ]
+    }
+    row = InformationalRow(
+        market="Kaelon Black rushing_yards",
+        matchup="PIT @ NE",
+        player="Kaelon Black",
+        stat="rushing_yards",
+        book="kalshi",
+        book_line=29.5,
+        book_prob=0.40,
+        fair_prob=0.58,
+        raw_edge=0.18,
+        n_books=4,
+        side="over",
+        book_odds=150,
+    )
+    alert = build_alert(row, payload)
+    assert alert is not None
+    books = {q.book for q in alert.quotes}
+    assert {"draftkings", "kalshi", "polymarket"} <= books
+    tweet = format_ev_tweet(alert)
+    assert "Book: Kalshi" in tweet
+    assert len(tweet) <= 280
+
+
 def test_render_alert_card(tmp_path: Path) -> None:
     from ev_trading.fair_value.alert_card import render_alert_card
 
@@ -249,6 +383,8 @@ def test_render_alert_card(tmp_path: Path) -> None:
             BookQuote(book="fanduel", odds=-115, line=29.5),
             BookQuote(book="mgm", odds=-105, line=29.5),
             BookQuote(book="hardrock", odds=100, line=29.5),
+            BookQuote(book="kalshi", odds=150, line=29.5),
+            BookQuote(book="polymarket", odds=144, line=29.5),
         ),
     )
     out = tmp_path / "ev.png"

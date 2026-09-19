@@ -17,7 +17,7 @@ from ev_trading.fair_value.consensus import (
     same_strike_consensus,
     strike_range,
 )
-from ev_trading.fair_value.devig import devig_one_sided, devig_two_way
+from ev_trading.fair_value.devig import devig_one_sided, devig_two_way, prob_to_american
 from ev_trading.fair_value.models import (
     BookPoint,
     FittedDistribution,
@@ -419,6 +419,43 @@ def _conf(
     return score, low
 
 
+def _append_venue_info(
+    informational: list[InformationalRow] | None,
+    *,
+    market: str,
+    matchup: str,
+    player: str | None,
+    stat: str,
+    book: str,
+    line: float | None,
+    ask: float | None,
+    fair: float,
+    n_books: int,
+    side: str | None,
+) -> None:
+    """Sportsbook-style +EV row for Kalshi/Polymarket (fair minus ask)."""
+    if informational is None or not side or ask is None:
+        return
+    if ask <= 0.0 or ask >= 1.0:
+        return
+    informational.append(
+        InformationalRow(
+            market=market,
+            matchup=matchup,
+            player=player,
+            stat=stat,
+            book=book,
+            book_line=line,
+            book_prob=ask,
+            fair_prob=fair,
+            raw_edge=fair - ask,
+            n_books=n_books,
+            side=side,
+            book_odds=float(prob_to_american(ask)),
+        )
+    )
+
+
 def _emit_binary_venue(
     *,
     tradable: list[PricedOpportunity],
@@ -440,7 +477,14 @@ def _emit_binary_venue(
     yes_side: str = "yes",
     no_side: str = "no",
     points: list[BookPoint] | None = None,
+    informational: list[InformationalRow] | None = None,
+    info_yes_side: str | None = None,
+    info_no_side: str | None = None,
 ) -> None:
+    if info_yes_side is None and info_no_side is None:
+        alert_yes, alert_no = yes_side, no_side
+    else:
+        alert_yes, alert_no = info_yes_side, info_no_side
     if isinstance(kalshi, dict) and "yes_ask" not in kalshi and "yes_bid" not in kalshi:
         # Nested home/away moneyline handled elsewhere.
         kalshi = None
@@ -507,6 +551,19 @@ def _emit_binary_venue(
             cfg=cfg,
         ):
             _emit_side(common, yes_side, fair_yes, yes_ask)
+            _append_venue_info(
+                informational,
+                market=market,
+                matchup=matchup,
+                player=player,
+                stat=stat,
+                book="kalshi",
+                line=k_line,
+                ask=yes_ask,
+                fair=fair_yes,
+                n_books=n_books,
+                side=alert_yes,
+            )
         if no_ask is not None and _allow_ou_side(
             no_side,
             market_line=common["market_line"],
@@ -515,6 +572,19 @@ def _emit_binary_venue(
             cfg=cfg,
         ):
             _emit_side(common, no_side, 1.0 - fair_yes, no_ask)
+            _append_venue_info(
+                informational,
+                market=market,
+                matchup=matchup,
+                player=player,
+                stat=stat,
+                book="kalshi",
+                line=k_line,
+                ask=no_ask,
+                fair=1.0 - fair_yes,
+                n_books=n_books,
+                side=alert_no,
+            )
 
     if isinstance(polymarket, dict):
         over = polymarket_side_ask(polymarket, "over")
@@ -572,6 +642,19 @@ def _emit_binary_venue(
             cfg=cfg,
         ):
             _emit_side(common, yes_side, fair_yes, over)
+            _append_venue_info(
+                informational,
+                market=market,
+                matchup=matchup,
+                player=player,
+                stat=stat,
+                book="polymarket",
+                line=p_line,
+                ask=over,
+                fair=fair_yes,
+                n_books=n_books,
+                side=alert_yes,
+            )
         if under is not None and _allow_ou_side(
             no_side,
             market_line=common["market_line"],
@@ -580,6 +663,19 @@ def _emit_binary_venue(
             cfg=cfg,
         ):
             _emit_side(common, no_side, 1.0 - fair_yes, under)
+            _append_venue_info(
+                informational,
+                market=market,
+                matchup=matchup,
+                player=player,
+                stat=stat,
+                book="polymarket",
+                line=p_line,
+                ask=under,
+                fair=1.0 - fair_yes,
+                n_books=n_books,
+                side=alert_no,
+            )
 
 
 def _info_rows(
@@ -727,6 +823,7 @@ def _process_ou(
             yes_side="over",
             no_side="under",
             points=points,
+            informational=informational,
         )
 
 
@@ -832,6 +929,7 @@ def _process_spread(
             yes_side="home",
             no_side="away",
             points=points,
+            informational=informational,
         )
     if poly:
         fair, fit, cons = fair_home_at(consensus_line)
@@ -886,6 +984,19 @@ def _process_spread(
                 points=points,
                 cfg=cfg,
             )
+            _append_venue_info(
+                informational,
+                market=f"{matchup} spread",
+                matchup=matchup,
+                player=None,
+                stat="spread",
+                book="polymarket",
+                line=consensus_line,
+                ask=home_px,
+                fair=fair,
+                n_books=len(points),
+                side="home",
+            )
         if away_px is not None:
             _route_opp(
                 _make_opp(
@@ -896,6 +1007,19 @@ def _process_spread(
                 fit=fit,
                 points=points,
                 cfg=cfg,
+            )
+            _append_venue_info(
+                informational,
+                market=f"{matchup} spread",
+                matchup=matchup,
+                player=None,
+                stat="spread",
+                book="polymarket",
+                line=consensus_line,
+                ask=away_px,
+                fair=1.0 - fair,
+                n_books=len(points),
+                side="away",
             )
 
 
@@ -952,6 +1076,9 @@ def _process_moneyline(
                 polymarket=None,
                 yes_side="yes",
                 no_side="no",
+                informational=informational,
+                info_yes_side=side,
+                info_no_side=None,
             )
     if isinstance(poly, dict):
         vol, liq, v24 = _depth(poly)
@@ -996,6 +1123,19 @@ def _process_moneyline(
                     market_id=str(mid["market_id"]) if mid.get("market_id") else None,
                     confidence=conf,
                 )
+            )
+            _append_venue_info(
+                informational,
+                market=f"{matchup} ML {side}",
+                matchup=matchup,
+                player=None,
+                stat="moneyline",
+                book="polymarket",
+                line=None,
+                ask=px,
+                fair=fair,
+                n_books=len(points),
+                side=side,
             )
 
 
@@ -1049,6 +1189,9 @@ def _process_yes_prop(
         polymarket=poly,
         yes_side="yes",
         no_side="no",
+        informational=informational,
+        info_yes_side="yes",
+        info_no_side=None,
     )
 
 

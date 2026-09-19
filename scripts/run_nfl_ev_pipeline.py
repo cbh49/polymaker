@@ -20,7 +20,7 @@ Steps:
   4. Polymarket NFL odds → data-aggregation/output/polymarket_nfl_odds.json
   5. Join               → supporting-lines/nfl_aggregated_odds.json
   6. Fair-value report  → output/ev/nfl_fair_value.json
-  7. Sportsbook +EV >= 5pp → Discord + X graphic (DISCORD_EV_WEBHOOK_URL)
+  7. Sportsbook/Kalshi/Polymarket +EV >= 5pp → Discord + X graphic (DISCORD_EV_WEBHOOK_URL)
   8. Optional: buy `tradable` rows on Kalshi and/or Polymarket ($10 each)
 
 1–4 run in parallel. Pass --sequential to run them one at a time.
@@ -108,7 +108,7 @@ def main() -> int:
     parser.add_argument(
         "--no-alerts",
         action="store_true",
-        help="skip Discord/X sportsbook +EV cards",
+        help="skip Discord/X +EV cards (sportsbooks, Kalshi, Polymarket)",
     )
     parser.add_argument(
         "--alerts-dry-run",
