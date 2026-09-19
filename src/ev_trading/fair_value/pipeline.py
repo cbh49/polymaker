@@ -59,6 +59,14 @@ def _f(value: Any) -> float | None:
         return None
 
 
+def _american(value: Any) -> float | None:
+    """Keep posted American odds; ignore implied probabilities in (0, 1]."""
+    num = _f(value)
+    if num is None or abs(num) <= 1.0:
+        return None
+    return num
+
+
 def _depth(raw: dict[str, Any] | None) -> tuple[float | None, float | None, float | None]:
     if not isinstance(raw, dict):
         return None, None, None
@@ -123,6 +131,8 @@ def _ou_points(books: dict[str, Any], cfg: FairValueConfig) -> list[BookPoint]:
                 weight=cfg.book_weight(str(book)),
                 raw_over=_f(entry.get("over_implied_prob")) or over_p,
                 raw_under=_f(entry.get("under_implied_prob")) or under_p,
+                over_odds=_american(entry.get("over_odds")),
+                under_odds=_american(entry.get("under_odds")),
             )
         )
     return points
@@ -156,6 +166,8 @@ def _spread_points(books: dict[str, Any], cfg: FairValueConfig) -> list[BookPoin
                 weight=cfg.book_weight(str(book)),
                 raw_over=_f(home.get("implied_prob")) or hp,
                 raw_under=_f(away.get("implied_prob")) or ap,
+                over_odds=_american(home.get("odds")),
+                under_odds=_american(away.get("odds")),
             )
         )
     return points
@@ -184,6 +196,8 @@ def _ml_points(books: dict[str, Any], cfg: FairValueConfig) -> list[BookPoint]:
                 weight=cfg.book_weight(str(book)),
                 raw_over=_f(home.get("implied_prob")) or hp,
                 raw_under=_f(away.get("implied_prob")) or ap,
+                over_odds=_american(home.get("odds")),
+                under_odds=_american(away.get("odds")),
             )
         )
     return points
@@ -206,6 +220,7 @@ def _yes_points(books: dict[str, Any], cfg: FairValueConfig) -> list[BookPoint]:
                 fair_over=fair,
                 weight=cfg.book_weight(str(book)),
                 raw_over=_f(entry.get("implied_prob")) or p,
+                over_odds=_american(entry.get("odds")),
             )
         )
     return points
@@ -221,6 +236,8 @@ def _threshold_points(points: list[BookPoint]) -> list[BookPoint]:
             weight=p.weight,
             raw_over=p.raw_over,
             raw_under=p.raw_under,
+            over_odds=p.over_odds,
+            under_odds=p.under_odds,
         )
         for p in points
     ]
@@ -574,31 +591,52 @@ def _info_rows(
     player: str | None,
     fair_at: float | None = None,
     fit: FittedDistribution | None = None,
+    yes_side: str = "over",
+    no_side: str | None = "under",
 ) -> list[InformationalRow]:
     rows: list[InformationalRow] = []
     for p in points:
-        if p.raw_over is None:
-            continue
         if fit is not None:
             fair = fair_over_from_fit(fit, p.line)
         elif fair_at is not None:
             fair = fair_at
         else:
             continue
-        rows.append(
-            InformationalRow(
-                market=market,
-                matchup=matchup,
-                player=player,
-                stat=stat,
-                book=p.book,
-                book_line=p.line,
-                book_prob=p.raw_over,
-                fair_prob=fair,
-                raw_edge=fair - p.raw_over,
-                n_books=len(points),
+        if p.raw_over is not None:
+            rows.append(
+                InformationalRow(
+                    market=market,
+                    matchup=matchup,
+                    player=player,
+                    stat=stat,
+                    book=p.book,
+                    book_line=p.line,
+                    book_prob=p.raw_over,
+                    fair_prob=fair,
+                    raw_edge=fair - p.raw_over,
+                    n_books=len(points),
+                    side=yes_side,
+                    book_odds=p.over_odds,
+                )
             )
-        )
+        if no_side and p.raw_under is not None:
+            fair_no = 1.0 - fair
+            rows.append(
+                InformationalRow(
+                    market=market,
+                    matchup=matchup,
+                    player=player,
+                    stat=stat,
+                    book=p.book,
+                    book_line=p.line,
+                    book_prob=p.raw_under,
+                    fair_prob=fair_no,
+                    raw_edge=fair_no - p.raw_under,
+                    n_books=len(points),
+                    side=no_side,
+                    book_odds=p.under_odds,
+                )
+            )
     return rows
 
 
@@ -735,23 +773,42 @@ def _process_spread(
         return fair_over_from_fit(fit, -home_line), fit, None
 
     for point in points:
-        if point.raw_over is None:
-            continue
         fair_book, _, _ = fair_home_at(point.line)
-        informational.append(
-            InformationalRow(
-                market=f"{matchup} spread",
-                matchup=matchup,
-                player=None,
-                stat="spread",
-                book=point.book,
-                book_line=point.line,
-                book_prob=point.raw_over,
-                fair_prob=fair_book,
-                raw_edge=fair_book - point.raw_over,
-                n_books=len(points),
+        if point.raw_over is not None:
+            informational.append(
+                InformationalRow(
+                    market=f"{matchup} spread",
+                    matchup=matchup,
+                    player=None,
+                    stat="spread",
+                    book=point.book,
+                    book_line=point.line,
+                    book_prob=point.raw_over,
+                    fair_prob=fair_book,
+                    raw_edge=fair_book - point.raw_over,
+                    n_books=len(points),
+                    side="home",
+                    book_odds=point.over_odds,
+                )
             )
-        )
+        if point.raw_under is not None:
+            fair_away = 1.0 - fair_book
+            informational.append(
+                InformationalRow(
+                    market=f"{matchup} spread",
+                    matchup=matchup,
+                    player=None,
+                    stat="spread",
+                    book=point.book,
+                    book_line=point.line,
+                    book_prob=point.raw_under,
+                    fair_prob=fair_away,
+                    raw_edge=fair_away - point.raw_under,
+                    n_books=len(points),
+                    side="away",
+                    book_odds=point.under_odds,
+                )
+            )
 
     if kalshi:
         fair, fit, cons = fair_home_at(kalshi_home)
@@ -865,6 +922,8 @@ def _process_moneyline(
             stat="moneyline",
             player=None,
             fair_at=fair_home,
+            yes_side="home",
+            no_side="away",
         )
     )
     kalshi = _obj(blob, "kalshi")
@@ -965,6 +1024,8 @@ def _process_yes_prop(
             stat=stat,
             player=player,
             fair_at=cons.fair_prob,
+            yes_side="yes",
+            no_side=None,
         )
     )
     kalshi = _obj(blob, "kalshi")

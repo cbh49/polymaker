@@ -27,6 +27,8 @@ class BookPoint:
     weight: float
     raw_over: float | None = None
     raw_under: float | None = None
+    over_odds: float | None = None
+    under_odds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +119,8 @@ class InformationalRow:
     fair_prob: float
     raw_edge: float
     n_books: int
+    side: str = "over"
+    book_odds: float | None = None
     actionable: bool = False
 
     @property

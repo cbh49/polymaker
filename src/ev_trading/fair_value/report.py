@@ -181,13 +181,14 @@ def _print_informational(console: Console, rows: list[InformationalRow]) -> None
     )
     table.add_column("Market", overflow="fold", max_width=42)
     table.add_column("Book")
+    table.add_column("Side")
     table.add_column("Book p", justify="right")
     table.add_column("Fair p", justify="right")
     table.add_column("Line", justify="right")
     table.add_column("Δ", justify="right")
     table.add_column("Actionable")
     if not rows:
-        table.add_row("— none —", "", "", "", "", "", "NO")
+        table.add_row("— none —", "", "", "", "", "", "", "NO")
         console.print(table)
         return
     shown = rows[:40]
@@ -195,6 +196,7 @@ def _print_informational(console: Console, rows: list[InformationalRow]) -> None
         table.add_row(
             row.market,
             row.book,
+            row.side,
             _pct(row.book_prob),
             _pct(row.fair_prob),
             _num(row.book_line, 1),

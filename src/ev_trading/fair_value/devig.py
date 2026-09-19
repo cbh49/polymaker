@@ -19,6 +19,14 @@ def american_to_prob(odds: float) -> float:
     return abs(odds) / (abs(odds) + 100.0)
 
 
+def prob_to_american(prob: float) -> int:
+    """Implied probability → American odds (rounded to a whole number)."""
+    p = min(max(float(prob), 1e-6), 1.0 - 1e-6)
+    if p >= 0.5:
+        return int(round(-100.0 * p / (1.0 - p)))
+    return int(round(100.0 * (1.0 - p) / p))
+
+
 def as_implied_prob(value: float) -> float:
     """Treat |x| <= 1 as a probability, otherwise as American odds."""
     if -1.0 <= value <= 1.0:

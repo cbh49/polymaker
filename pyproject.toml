@@ -30,6 +30,8 @@ dependencies = [
     "pandas>=3.0.5",
     "playwright>=1.49",
     "tweepy>=4.14",
+    "pillow>=11.0",
+    "requests-oauthlib>=2.0",
 ]
 
 [project.scripts]
@@ -85,6 +87,8 @@ module = [
     "ddgs.*",
     "bs4.*",
     "tweepy.*",
+    "PIL.*",
+    "requests_oauthlib.*",
 ]
 ignore_missing_imports = true
 

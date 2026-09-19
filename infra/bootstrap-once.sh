@@ -27,7 +27,7 @@ touch /var/lib/polymaker/state.db
   echo "# generated from SSM"
   for name in POLY_PRIVATE_KEY POLY_FUNDER CONVEX_HTTP_URL CONVEX_PUBLISH_TOKEN POLYMAKER_LIVE POLYGON_RPC_URL \
       X_API_KEY X_API_KEY_SECRET X_ACCESS_TOKEN X_ACCESS_TOKEN_SECRET X_WHALE_POSTS DISCORD_SHARP_WEBHOOK_URL \
-      KALSHI_API_KEY_ID; do
+      DISCORD_EV_WEBHOOK_URL X_EV_POSTS KALSHI_API_KEY_ID; do
     val="$(aws ssm get-parameter --name "/polymaker/${name}" --with-decryption --query Parameter.Value --output text --region "$REGION" 2>/dev/null || true)"
     if [ -n "$val" ] && [ "$val" != "CHANGE_ME" ] && [ "$val" != "None" ]; then
       printf '%s=%s\n' "$name" "$val"

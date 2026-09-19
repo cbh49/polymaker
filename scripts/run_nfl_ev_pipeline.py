@@ -20,7 +20,8 @@ Steps:
   4. Polymarket NFL odds → data-aggregation/output/polymarket_nfl_odds.json
   5. Join               → supporting-lines/nfl_aggregated_odds.json
   6. Fair-value report  → output/ev/nfl_fair_value.json
-  7. Optional: buy `tradable` rows on Kalshi and/or Polymarket ($10 each)
+  7. Sportsbook +EV >= 5pp → Discord + X graphic (DISCORD_EV_WEBHOOK_URL)
+  8. Optional: buy `tradable` rows on Kalshi and/or Polymarket ($10 each)
 
 1–4 run in parallel. Pass --sequential to run them one at a time.
 """
@@ -104,6 +105,16 @@ def main() -> int:
         default=None,
         help="JSONL of filled trades used for dedupe (single-venue --trade only)",
     )
+    parser.add_argument(
+        "--no-alerts",
+        action="store_true",
+        help="skip Discord/X sportsbook +EV cards",
+    )
+    parser.add_argument(
+        "--alerts-dry-run",
+        action="store_true",
+        help="render +EV cards and print Discord/X payloads without posting",
+    )
     args = parser.parse_args()
 
     venues = venues_from_trade_arg(args.trade)
@@ -127,6 +138,24 @@ def main() -> int:
         quiet=args.quiet,
     )
     print(f"done in {result.elapsed_s:.1f}s  aggregated={result.aggregated}")
+
+    if not args.no_alerts and result.report is not None:
+        from ev_trading.fair_value.ev_alerts import post_ev_alerts
+
+        try:
+            summary = post_ev_alerts(
+                result.report,
+                result.aggregated,
+                dry_run=args.alerts_dry_run,
+                min_edge_pct=DEFAULT_MIN_EDGE_PCT,
+            )
+            print(
+                f"EV alerts: posted={summary.get('posted', 0)} "
+                f"skipped={summary.get('skipped', 0)} "
+                f"reason={summary.get('reason')}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"EV alerts failed (continuing): {type(exc).__name__}: {exc}", flush=True)
 
     if not venues:
         return 0

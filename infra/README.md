@@ -4,7 +4,7 @@ One Ubuntu 24.04 `t3.medium` in **eu-west-1** runs three processes:
 
 - **Monitor** (`polymaker-monitor.service`) — always-on `poly-sharp-finder` (whale + smart-wallet convergence).
 - **Sharp pipeline** (`polymaker-sharp.timer`) — every 30 minutes at `:00/:30`, scrape MLB + WNBA + NCAAF + NFL splits and trade only when every required source is on **today's Pacific slate** (NCAAF uses a 6-day weekend window; NFL uses 7 days so Monday night is included).
-- **NFL EV pipeline** (`polymaker-ev.timer`) — every 30 minutes at `:15/:45`, scrape RotoWire + Kalshi + Polymarket, then buy `tradable` rows with fee-adjusted edge ≥ 5 points (confidence ≥ 0.80, $10 each). Live orders require `POLYMAKER_LIVE=1` and a Convex claim so the same contract is not bought twice.
+- **NFL EV pipeline** (`polymaker-ev.timer`) — every 30 minutes at `:15/:45`, scrape RotoWire + Kalshi + Polymarket, buy `tradable` rows with fee-adjusted edge ≥ 5 points (confidence ≥ 0.80, $10 each), and post sportsbook quotes that are ≥ 5 points cheap vs consensus to Discord + X. Live orders require `POLYMAKER_LIVE=1` and a Convex claim so the same contract is not bought twice.
 
 ## 1. Put secrets in SSM
 
@@ -21,6 +21,8 @@ aws ssm put-parameter --region $REGION --name /polymaker/X_ACCESS_TOKEN --type S
 aws ssm put-parameter --region $REGION --name /polymaker/X_ACCESS_TOKEN_SECRET --type SecureString --value '...' --overwrite
 aws ssm put-parameter --region $REGION --name /polymaker/X_WHALE_POSTS --type SecureString --value '1' --overwrite
 aws ssm put-parameter --region $REGION --name /polymaker/DISCORD_SHARP_WEBHOOK_URL --type SecureString --value 'https://discord.com/api/webhooks/...' --overwrite
+aws ssm put-parameter --region $REGION --name /polymaker/DISCORD_EV_WEBHOOK_URL --type SecureString --value 'https://discord.com/api/webhooks/...' --overwrite
+aws ssm put-parameter --region $REGION --name /polymaker/X_EV_POSTS --type SecureString --value '1' --overwrite
 ```
 
 `POLYMAKER_LIVE=1` sends real CLOB buys. Leave it unset (or `0`) for dry-run.
@@ -29,12 +31,14 @@ aws ssm put-parameter --region $REGION --name /polymaker/DISCORD_SHARP_WEBHOOK_U
 
 `DISCORD_SHARP_WEBHOOK_URL` posts Tier A / A+ sharp-money cards from the 30-minute `sharp` container (`scripts/run_sharp_pipeline.py`). The sent-play cache lives on the host volume `/var/lib/polymaker/output/.discord_sent.json` so reruns do not spam. Omit the parameter to skip Discord.
 
+`DISCORD_EV_WEBHOOK_URL` posts sportsbook +EV cards (fee-free edge ≥ 5 points vs consensus) from the NFL EV container, with a PNG attached. `X_EV_POSTS` tweets the same graphic using the existing X keys; unset posts whenever those keys are present, `0` disables tweets. Dedup cache: `/var/lib/polymaker/ev/.ev_alerts_sent.json`. Never put webhook URLs in git.
+
 On an **existing** instance (user-data does not re-run), after putting the parameters:
 
 ```bash
-# append X_* / DISCORD_SHARP_WEBHOOK_URL into /etc/polymaker.env, rebuild/pull the image, then:
+# append X_* / DISCORD_* into /etc/polymaker.env, rebuild/pull the image, then:
 systemctl restart polymaker-monitor
-# next polymaker-sharp.timer run picks up /etc/polymaker.env automatically
+# next polymaker-sharp.timer / polymaker-ev.timer run picks up /etc/polymaker.env automatically
 ```
 
 Convex: `npx convex env set PUBLISH_TOKEN <token>` in `dashboard/`, then deploy the `trades` table + HTTP routes.
