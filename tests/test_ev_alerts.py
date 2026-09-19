@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ev_trading.fair_value.config import FairValueConfig
+from ev_trading.fair_value.consensus import shift_over_prob
 from ev_trading.fair_value.devig import american_to_prob, prob_to_american
 from ev_trading.fair_value.discord_ev_alerts import build_embed
 from ev_trading.fair_value.ev_alerts import (
@@ -14,11 +15,13 @@ from ev_trading.fair_value.ev_alerts import (
     build_alert,
     format_american,
     format_bet_title,
+    format_ev_message,
     format_ev_tweet,
+    is_heavy_favorite,
     select_sportsbook_alerts,
 )
 from ev_trading.fair_value.models import BookPoint, InformationalRow
-from ev_trading.fair_value.pipeline import _info_rows, process_slate
+from ev_trading.fair_value.pipeline import _fair_at_line, _info_rows, _ou_points, process_slate
 
 
 def _ou_book(odds_over: int, odds_under: int, line: float = 29.5) -> dict[str, float | int]:
@@ -292,6 +295,64 @@ def test_discord_embed_and_tweet_copy() -> None:
     assert "Follow @BretonPicks" in tweet
     assert "#Gambling𝕏 #SportsBettingX" in tweet
     assert len(tweet) <= 280
+    discord = format_ev_message(alert)
+    assert "Follow @BretonPicks" not in discord
+    assert "#Gambling𝕏" not in discord
+    assert "#SportsBettingX" not in discord
+    assert "footer" not in embed
+
+
+def test_select_skips_heavy_favorites() -> None:
+    heavy_odds = InformationalRow(
+        market="Kaelon Black rushing_yards",
+        matchup="PIT @ NE",
+        player="Kaelon Black",
+        stat="rushing_yards",
+        book="kalshi",
+        book_line=29.5,
+        book_prob=0.58,
+        fair_prob=0.70,
+        raw_edge=0.12,
+        n_books=4,
+        side="over",
+        book_odds=-160,
+    )
+    heavy_prob = InformationalRow(
+        market="Kaelon Black rushing_yards",
+        matchup="PIT @ NE",
+        player="Kaelon Black",
+        stat="rushing_yards",
+        book="polymarket",
+        book_line=29.5,
+        book_prob=0.62,
+        fair_prob=0.70,
+        raw_edge=0.08,
+        n_books=4,
+        side="over",
+        book_odds=-140,
+    )
+    ok = InformationalRow(
+        market="Kaelon Black rushing_yards",
+        matchup="PIT @ NE",
+        player="Kaelon Black",
+        stat="rushing_yards",
+        book="hardrock",
+        book_line=29.5,
+        book_prob=0.50,
+        fair_prob=0.58,
+        raw_edge=0.08,
+        n_books=4,
+        side="over",
+        book_odds=100,
+    )
+    assert is_heavy_favorite(odds=-150, prob=0.58) is True
+    assert is_heavy_favorite(odds=-149, prob=0.58) is False
+    picked = select_sportsbook_alerts(
+        [heavy_odds, heavy_prob, ok],
+        min_edge_pct=5.0,
+        min_books=3,
+    )
+    assert [r.book for r in picked] == ["hardrock"]
 
 
 def test_kalshi_tweet_uses_american_odds() -> None:
@@ -366,7 +427,16 @@ def test_build_alert_includes_venue_quotes() -> None:
     assert len(tweet) <= 280
 
 
-def test_card_grid_keeps_books_when_kalshi_line_differs() -> None:
+def test_card_grid_walks_off_strike_books_to_title_line() -> None:
+    books = {
+        "draftkings": _ou_book(-110, -110, line=15.5),
+        "fanduel": _ou_book(-115, -105, line=15.5),
+        "mgm": _ou_book(-108, -112, line=15.5),
+        "hardrock": _ou_book(-110, -110, line=14.5),
+        "caesars": _ou_book(-120, -110, line=15.5),
+        "betrivers": _ou_book(-105, -115, line=15.5),
+        "betr": _ou_book(-130, -110, line=15.5),
+    }
     payload = {
         "games": [
             {
@@ -376,15 +446,7 @@ def test_card_grid_keeps_books_when_kalshi_line_differs() -> None:
                     {
                         "player": "Breece Hall",
                         "type": "receiving_yards",
-                        "books": {
-                            "draftkings": _ou_book(-110, -110, line=15.5),
-                            "fanduel": _ou_book(-115, -105, line=15.5),
-                            "mgm": _ou_book(-108, -112, line=15.5),
-                            "hardrock": _ou_book(-110, -110, line=14.5),
-                            "caesars": _ou_book(-120, -110, line=15.5),
-                            "betrivers": _ou_book(-105, -115, line=15.5),
-                            "betr": _ou_book(-130, -110, line=15.5),
-                        },
+                        "books": books,
                         "kalshi": {"line": 14.5, "yes_ask": 0.61, "no_ask": 0.41},
                         "polymarket": {"line": 15.5, "over_ask": 0.54, "under_ask": 0.48},
                     }
@@ -410,10 +472,26 @@ def test_card_grid_keeps_books_when_kalshi_line_differs() -> None:
     assert alert is not None
     assert [q.book for q in alert.quotes] == list(CARD_BOOKS)
     by_book = {q.book: q for q in alert.quotes}
-    assert by_book["kalshi"].odds is not None
-    assert by_book["polymarket"].odds is not None
-    assert by_book["draftkings"].odds == -110
-    assert by_book["betrivers"].odds == -105
+    assert by_book["kalshi"].odds == float(prob_to_american(0.61))
+    assert by_book["polymarket"].odds == float(prob_to_american(0.54))
+    assert by_book["hardrock"].odds == -110
+    assert by_book["hardrock"].line == 14.5
+
+    cfg = FairValueConfig.load()
+    points = _ou_points(books, cfg)
+    _, fit, _ = _fair_at_line(points, stat="receiving_yards", target_line=14.5, cfg=cfg)
+    assert fit is not None
+    dk = next(p for p in points if p.book == "draftkings")
+    expected_dk = float(prob_to_american(shift_over_prob(dk.line, dk.fair_over, 14.5, fit)))
+    assert by_book["draftkings"].odds == expected_dk
+    assert by_book["draftkings"].odds != -110
+    assert by_book["draftkings"].line == 14.5
+    rivers = next(p for p in points if p.book == "betrivers")
+    expected_rivers = float(
+        prob_to_american(shift_over_prob(rivers.line, rivers.fair_over, 14.5, fit))
+    )
+    assert by_book["betrivers"].odds == expected_rivers
+    assert by_book["betrivers"].odds != -105
     assert sum(1 for q in alert.quotes if q.book == "betrivers") == 1
 
 

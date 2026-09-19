@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from ev_trading.fair_value.ev_alerts import (
-    CTA,
     SportsbookEvAlert,
     book_label,
     format_american,
@@ -50,7 +49,6 @@ def build_embed(alert: SportsbookEvAlert) -> dict[str, Any]:
         "description": f"**{alert.matchup}**",
         "color": COLOR_EV,
         "fields": fields,
-        "footer": {"text": CTA},
         "image": {"url": "attachment://ev_play.png"},
     }
 

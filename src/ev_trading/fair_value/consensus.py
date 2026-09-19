@@ -53,8 +53,7 @@ def _weighted_linreg(
     intercept = my - slope * mx
     ss_tot = sum(w * (y - my) ** 2 for w, y in zip(weights, ys, strict=True))
     ss_res = sum(
-        w * (y - (intercept + slope * x)) ** 2
-        for w, x, y in zip(weights, xs, ys, strict=True)
+        w * (y - (intercept + slope * x)) ** 2 for w, x, y in zip(weights, xs, ys, strict=True)
     )
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-18 else 1.0
     return intercept, slope, r2
@@ -73,9 +72,7 @@ def strike_range(points: Sequence[BookPoint]) -> tuple[float, float] | None:
     return min(lines), max(lines)
 
 
-def extrapolation_for(
-    market_line: float | None, points: Sequence[BookPoint]
-) -> tuple[bool, float]:
+def extrapolation_for(market_line: float | None, points: Sequence[BookPoint]) -> tuple[bool, float]:
     """Whether `market_line` sits outside the observed book strikes.
 
     Interpolation vs extrapolation is the difference between pricing a
@@ -183,6 +180,37 @@ def _poisson_lambda_from_over(line: float, p_over: float) -> float:
         else:
             lo = mid
     return 0.5 * (lo + hi)
+
+
+def shift_over_prob(
+    line: float,
+    p_over: float,
+    target_line: float,
+    fit: FittedDistribution,
+    *,
+    tolerance: float | None = None,
+) -> float:
+    """Walk one book's de-vigged P(over) from `line` to `target_line`.
+
+    Same-strike (within tolerance) is identity. Normal and nbinom reuse
+    ``fit.sigma`` and keep this book's implied p at its own line. Poisson
+    inverts this book's (line, p_over) to λ, then evaluates at the target.
+    """
+    src = float(line)
+    dst = float(target_line)
+    p = min(max(float(p_over), 0.0), 1.0)
+    tol = FairValueConfig().same_strike_line_tolerance if tolerance is None else float(tolerance)
+    if abs(src - dst) <= tol:
+        return p
+    kind = str(fit.distribution_type)
+    if kind in {"normal", "nbinom"}:
+        z = inverse_cdf_z(1.0 - p)
+        mu = src - fit.sigma * z
+        return fair_prob_at_line(mu, fit.sigma, dst, "normal")
+    if kind == "poisson":
+        lam = _poisson_lambda_from_over(src, p)
+        return fair_prob_at_line(lam, fit.sigma, dst, "poisson")
+    raise ValueError(f"unknown distribution_type: {kind}")
 
 
 def fair_prob_at_line(

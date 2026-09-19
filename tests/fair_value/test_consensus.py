@@ -15,7 +15,9 @@ from ev_trading.fair_value.consensus import (
     fit_poisson,
     poisson_cdf,
     same_strike_consensus,
+    shift_over_prob,
 )
+from ev_trading.fair_value.models import FittedDistribution
 
 
 def _points_from_normal(mu: float, sigma: float, lines: list[float]) -> list[BookPoint]:
@@ -130,6 +132,63 @@ def test_typical_rb_keeps_full_default_sigma() -> None:
     assert (lo, hi) == (4.0, 16.0)
     lo_wr, hi_wr = cfg.sigma_bounds_for("receiving_yards", 85.5)
     assert (lo_wr, hi_wr) == (12.0, 50.0)
+
+
+def test_shift_over_prob_same_strike_is_identity() -> None:
+    fit = FittedDistribution(
+        mu=14.5,
+        sigma=18.0,
+        distribution_type="normal",
+        r2=None,
+        n_books=4,
+        low_confidence=False,
+    )
+    assert shift_over_prob(14.5, 0.50, 14.5, fit) == pytest.approx(0.50)
+    assert shift_over_prob(14.5, 0.50, 14.6, fit) == pytest.approx(0.50)
+
+
+def test_shift_over_prob_normal_hampton_style() -> None:
+    fit = FittedDistribution(
+        mu=14.5,
+        sigma=18.0,
+        distribution_type="normal",
+        r2=None,
+        n_books=4,
+        low_confidence=False,
+    )
+    got = shift_over_prob(14.5, 0.50, 9.5, fit)
+    expected = 1.0 - NormalDist(14.5, 18.0).cdf(9.5)
+    assert got == pytest.approx(expected, rel=1e-9)
+    assert got == pytest.approx(0.6103, abs=0.001)
+
+
+def test_shift_over_prob_nbinom_uses_normal_walk() -> None:
+    fit = FittedDistribution(
+        mu=14.5,
+        sigma=18.0,
+        distribution_type="nbinom",
+        r2=None,
+        n_books=4,
+        low_confidence=False,
+        extra={"r": 8.0},
+    )
+    got = shift_over_prob(14.5, 0.50, 9.5, fit)
+    assert got == pytest.approx(1.0 - NormalDist(14.5, 18.0).cdf(9.5), rel=1e-9)
+
+
+def test_shift_over_prob_poisson_inverts_lambda() -> None:
+    lam = 2.0
+    p_over = 1.0 - poisson_cdf(1, lam)
+    fit = FittedDistribution(
+        mu=lam,
+        sigma=lam**0.5,
+        distribution_type="poisson",
+        r2=None,
+        n_books=4,
+        low_confidence=False,
+    )
+    got = shift_over_prob(1.5, p_over, 0.5, fit)
+    assert got == pytest.approx(1.0 - poisson_cdf(0, lam), abs=0.02)
 
 
 def test_extrapolation_flag_is_outside_observed_book_range() -> None:

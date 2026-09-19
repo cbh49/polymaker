@@ -11,9 +11,17 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ev_trading.fair_value.config import FairValueConfig
+from ev_trading.fair_value.consensus import shift_over_prob
 from ev_trading.fair_value.devig import prob_to_american
 from ev_trading.fair_value.ev_ledger import DEFAULT_MIN_EDGE_PCT
-from ev_trading.fair_value.models import InformationalRow
+from ev_trading.fair_value.models import BookPoint, FittedDistribution, InformationalRow
+from ev_trading.fair_value.pipeline import (
+    _TWO_WAY_STATS,
+    _fair_at_line,
+    _ou_points,
+    _spread_points,
+    _threshold_points,
+)
 from ev_trading.fair_value.report import FairValueReport
 from ev_trading.fair_value.tradable_pricer import kalshi_no_ask, kalshi_yes_ask, polymarket_side_ask
 from ev_trading.nfl_odds import TEAM_ABBR_TO_NAME, canonical_abbr
@@ -275,9 +283,7 @@ class SportsbookEvAlert:
         line = f"{self.book_line:g}" if self.book_line is not None else ""
         player = (self.player or "").strip().lower()
         book = (self.book or "").strip().lower()
-        return (
-            f"{day}|{self.matchup}|{player}|{self.stat}|{self.side}|{line}|{book}"
-        ).lower()
+        return (f"{day}|{self.matchup}|{player}|{self.stat}|{self.side}|{line}|{book}").lower()
 
 
 class SentCache:
@@ -353,12 +359,23 @@ def _group_key(row: InformationalRow) -> tuple[str, str, str, str, str, str]:
     )
 
 
+MAX_POST_AMERICAN = -150
+MAX_POST_PROB = 0.60
+
+
 def _display_odds(row: InformationalRow) -> float | None:
     if row.book_odds is not None:
         return float(row.book_odds)
     if row.book_prob > 0:
         return float(implied_american(row.book_prob))
     return None
+
+
+def is_heavy_favorite(*, odds: float | None, prob: float | None) -> bool:
+    """True when the play is -150 or juicier, or implied p is 60%+."""
+    return (odds is not None and odds <= MAX_POST_AMERICAN) or (
+        prob is not None and prob >= MAX_POST_PROB
+    )
 
 
 def select_sportsbook_alerts(
@@ -375,7 +392,10 @@ def select_sportsbook_alerts(
             continue
         if row.raw_edge < floor:
             continue
-        if _display_odds(row) is None:
+        odds = _display_odds(row)
+        if odds is None:
+            continue
+        if is_heavy_favorite(odds=odds, prob=row.book_prob):
             continue
         grouped.setdefault(_group_key(row), []).append(row)
 
@@ -512,17 +532,133 @@ def _pick_closest(quotes: list[BookQuote], target: float | None) -> BookQuote | 
         return None
     if target is None:
         return quotes[0]
-    same = [
-        q
-        for q in quotes
-        if q.line is not None and abs(q.line - target) <= 0.26
-    ]
+    same = [q for q in quotes if q.line is not None and abs(q.line - target) <= 0.26]
     if same:
         return same[0]
     with_line = [q for q in quotes if q.line is not None]
     if with_line:
-        return min(with_line, key=lambda q: abs(float(q.line) - target))
+        return min(with_line, key=lambda q: abs(float(q.line or 0.0) - target))
     return quotes[0]
+
+
+_UNDER_SIDES = frozenset({"under", "no", "away"})
+_SAME_STRIKE_STATS = frozenset({"moneyline", "anytime_td", "first_td", "2plus_td"})
+
+
+def _quote_points(
+    stat: str,
+    books: dict[str, Any],
+    cfg: FairValueConfig,
+) -> tuple[list[BookPoint], bool]:
+    """BookPoints for card translation. ``True`` means fit on margin thresholds."""
+    key = (stat or "").strip().lower()
+    if key in _SAME_STRIKE_STATS:
+        return [], False
+    if key == "spread":
+        return _spread_points(books, cfg), True
+    if key in _TWO_WAY_STATS:
+        return _ou_points(books, cfg), False
+    return [], False
+
+
+def _fit_for_title_strike(
+    points: list[BookPoint],
+    *,
+    stat: str,
+    target: float,
+    threshold: bool,
+    cfg: FairValueConfig,
+) -> FittedDistribution | None:
+    if threshold:
+        _, fit, _ = _fair_at_line(
+            _threshold_points(points),
+            stat=stat,
+            target_line=-target,
+            cfg=cfg,
+        )
+        return fit
+    _, fit, _ = _fair_at_line(points, stat=stat, target_line=target, cfg=cfg)
+    return fit
+
+
+def _match_book_point(
+    quote: BookQuote,
+    points: list[BookPoint],
+    *,
+    side: str,
+) -> BookPoint | None:
+    if not points:
+        return None
+    candidates = points
+    if quote.line is not None:
+        lined = [p for p in candidates if abs(p.line - quote.line) <= 1e-9]
+        if lined:
+            candidates = lined
+    if quote.odds is not None:
+        attr = "under_odds" if side in _UNDER_SIDES else "over_odds"
+        matched = [
+            p
+            for p in candidates
+            if (raw := getattr(p, attr)) is not None and abs(float(raw) - float(quote.odds)) < 0.51
+        ]
+        if matched:
+            candidates = matched
+    return candidates[0]
+
+
+def _translate_sportsbook_grid(
+    grid: list[BookQuote],
+    *,
+    books: dict[str, Any],
+    row: InformationalRow,
+    target: float | None,
+    cfg: FairValueConfig | None = None,
+) -> list[BookQuote]:
+    """Walk off-strike sportsbook juice to the play line. Venues stay raw asks."""
+    if target is None:
+        return grid
+    cfg = cfg or FairValueConfig.load()
+    points, threshold = _quote_points(row.stat, books, cfg)
+    if not points:
+        return grid
+    fit = _fit_for_title_strike(
+        points,
+        stat=row.stat,
+        target=target,
+        threshold=threshold,
+        cfg=cfg,
+    )
+    if fit is None:
+        return grid
+    by_name: dict[str, list[BookPoint]] = {}
+    for book_point in points:
+        by_name.setdefault(canonical_book(book_point.book), []).append(book_point)
+    side = (row.side or "").strip().lower()
+    tol = cfg.same_strike_line_tolerance
+    out: list[BookQuote] = []
+    for quote in grid:
+        if quote.book in PREDICTION_VENUES or quote.odds is None:
+            out.append(quote)
+            continue
+        point = _match_book_point(quote, by_name.get(quote.book) or [], side=side)
+        if point is None:
+            out.append(quote)
+            continue
+        src = -point.line if threshold else point.line
+        dst = -target if threshold else target
+        if abs(src - dst) <= tol:
+            out.append(quote)
+            continue
+        p_over = shift_over_prob(src, point.fair_over, dst, fit, tolerance=tol)
+        p_side = (1.0 - p_over) if side in _UNDER_SIDES else p_over
+        out.append(
+            BookQuote(
+                book=quote.book,
+                odds=float(prob_to_american(p_side)),
+                line=target,
+            )
+        )
+    return out
 
 
 def collect_book_quotes(
@@ -569,7 +705,12 @@ def collect_book_quotes(
     for name in CARD_BOOKS:
         picked = _pick_closest(by_book[name], target)
         grid.append(picked if picked is not None else BookQuote(book=name, odds=None))
-    return grid
+    return _translate_sportsbook_grid(
+        grid,
+        books=books,
+        row=row,
+        target=target,
+    )
 
 
 def build_alert(
@@ -611,21 +752,22 @@ CTA = "Follow @BretonPicks to get up to date opportunities of +EV plays!"
 HASHTAGS = "#Gambling𝕏 #SportsBettingX"
 
 
-def format_ev_message(alert: SportsbookEvAlert) -> str:
-    """Shared copy for X and Discord."""
-    return (
+def format_ev_message(alert: SportsbookEvAlert, *, promo: bool = False) -> str:
+    """Play copy. Promo CTA/hashtags are X-only."""
+    body = (
         f"+EV Play🚨\n\n"
         f"{alert.title}\n"
         f"Odds: {format_american(alert.book_odds)}\n"
         f"Book: {book_label(alert.book)}\n"
-        f"Implied Fair Price: {format_american(float(alert.fair_american))}\n\n"
-        f"{CTA}\n"
-        f"{HASHTAGS}"
+        f"Implied Fair Price: {format_american(float(alert.fair_american))}"
     )
+    if not promo:
+        return body
+    return f"{body}\n\n{CTA}\n{HASHTAGS}"
 
 
 def format_ev_tweet(alert: SportsbookEvAlert) -> str:
-    return format_ev_message(alert)
+    return format_ev_message(alert, promo=True)
 
 
 def _load_aggregated(path: Path) -> dict[str, Any]:
