@@ -33,6 +33,7 @@ from ev_trading.nfl_odds import (  # noqa: E402
     kalshi_spread_home_line,
     kalshi_ticker_team,
     kalshi_total_line,
+    kickoff_ms,
     match_team_side,
     median_line,
     normalize_player_name,
@@ -710,8 +711,10 @@ def build_game(
     away_name = str(away.get("team") or "")
     home_name = str(home.get("team") or "")
     date = None
+    start_time_ms = None
     if rw and rw.get("gameDate"):
         date = str(rw["gameDate"])[:10]
+        start_time_ms = kickoff_ms(rw.get("gameDate"))
     elif poly and poly.get("date"):
         date = str(poly["date"])[:10]
 
@@ -746,6 +749,7 @@ def build_game(
         "gameID": (rw or {}).get("gameID"),
         "matchup": matchup,
         "date": date,
+        "start_time_ms": start_time_ms,
         "away": _drop_none(away),
         "home": _drop_none(home),
         "markets": markets,

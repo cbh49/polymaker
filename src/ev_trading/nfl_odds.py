@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 TEAM_ABBR_TO_NAME: dict[str, str] = {
     "ARI": "Arizona Cardinals",
@@ -337,3 +339,59 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+KICKOFF_TZ = ZoneInfo("America/New_York")
+_KICKOFF_NAIVE = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M",
+)
+
+
+def kickoff_ms(value: Any) -> int | None:
+    """Parse a RotoWire/ISO kickoff into unix milliseconds (Eastern if naive)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        n = float(value)
+        if n != n or n <= 0:
+            return None
+        if n < 1e11:
+            n *= 1000.0
+        return int(n)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=KICKOFF_TZ)
+        return int(parsed.timestamp() * 1000)
+    except ValueError:
+        pass
+    for fmt in _KICKOFF_NAIVE:
+        try:
+            parsed = datetime.strptime(text, fmt).replace(tzinfo=KICKOFF_TZ)
+            return int(parsed.timestamp() * 1000)
+        except ValueError:
+            continue
+    return None
+
+
+def game_start_ms(game: Mapping[str, Any] | None) -> int | None:
+    """Kickoff from an aggregated or RotoWire game row."""
+    if not game:
+        return None
+    raw = game.get("start_time_ms")
+    parsed = kickoff_ms(raw)
+    if parsed is not None:
+        return parsed
+    for key in ("gameDate", "game_date", "kickoff", "start_time"):
+        parsed = kickoff_ms(game.get(key))
+        if parsed is not None:
+            return parsed
+    return None

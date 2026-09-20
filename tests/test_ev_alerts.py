@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ev_trading.fair_value.config import FairValueConfig
@@ -13,15 +14,19 @@ from ev_trading.fair_value.ev_alerts import (
     BookQuote,
     SportsbookEvAlert,
     build_alert,
+    convex_body_for_alert,
     format_american,
     format_bet_title,
     format_ev_message,
     format_ev_tweet,
     is_heavy_favorite,
+    pick_x_alert,
+    post_ev_alerts,
     select_sportsbook_alerts,
 )
 from ev_trading.fair_value.models import BookPoint, InformationalRow
 from ev_trading.fair_value.pipeline import _fair_at_line, _info_rows, _ou_points, process_slate
+from ev_trading.fair_value.report import FairValueReport
 
 
 def _ou_book(odds_over: int, odds_under: int, line: float = 29.5) -> dict[str, float | int]:
@@ -378,6 +383,58 @@ def test_kalshi_tweet_uses_american_odds() -> None:
     assert embed["fields"][2]["value"] == "Kalshi"
 
 
+def _full_quotes(*, missing: str | None = None) -> tuple[BookQuote, ...]:
+    odds = {
+        "draftkings": -110.0,
+        "fanduel": -115.0,
+        "mgm": 108.0,
+        "hardrock": 100.0,
+        "caesars": -112.0,
+        "betrivers": -108.0,
+        "kalshi": 150.0,
+        "polymarket": 144.0,
+    }
+    return tuple(
+        BookQuote(book=name, odds=None if name == missing else odds[name], line=29.5)
+        for name in CARD_BOOKS
+    )
+
+
+def _alert(*, book: str, edge: float, quotes: tuple[BookQuote, ...]) -> SportsbookEvAlert:
+    return SportsbookEvAlert(
+        market="Kaelon Black rushing_yards",
+        matchup="PIT @ NE",
+        player="Kaelon Black",
+        stat="rushing_yards",
+        side="over",
+        book=book,
+        book_line=29.5,
+        book_odds=100,
+        book_prob=0.5,
+        fair_prob=0.58,
+        raw_edge=edge,
+        n_books=6,
+        quotes=quotes,
+    )
+
+
+def test_full_odds_grid_requires_all_eight() -> None:
+    complete = _alert(book="hardrock", edge=0.08, quotes=_full_quotes())
+    incomplete = _alert(book="hardrock", edge=0.20, quotes=_full_quotes(missing="caesars"))
+    assert complete.has_full_odds_grid() is True
+    assert incomplete.has_full_odds_grid() is False
+    assert _alert(book="hardrock", edge=0.08, quotes=_full_quotes()[:6]).has_full_odds_grid() is False
+
+
+def test_pick_x_alert_takes_highest_edge_complete_card() -> None:
+    incomplete_high = _alert(book="mgm", edge=0.20, quotes=_full_quotes(missing="polymarket"))
+    complete_low = _alert(book="hardrock", edge=0.08, quotes=_full_quotes())
+    complete_high = _alert(book="kalshi", edge=0.12, quotes=_full_quotes())
+    picked = pick_x_alert([incomplete_high, complete_low, complete_high])
+    assert picked is complete_high
+    assert pick_x_alert([incomplete_high]) is None
+
+
 def test_build_alert_includes_venue_quotes() -> None:
     payload = {
         "games": [
@@ -526,3 +583,160 @@ def test_render_alert_card(tmp_path: Path) -> None:
     render_alert_card(alert, out, cache_dir=tmp_path / "logos")
     assert out.is_file()
     assert out.stat().st_size > 1000
+
+
+def test_convex_body_skips_started_games() -> None:
+    from ev_trading.nfl_odds import kickoff_ms
+
+    kickoff = kickoff_ms("2026-09-20 13:00:00")
+    assert kickoff is not None
+    alert = SportsbookEvAlert(
+        market="Kaelon Black rushing_yards",
+        matchup="PIT @ NE",
+        player="Kaelon Black",
+        stat="rushing_yards",
+        side="over",
+        book="hardrock",
+        book_line=29.5,
+        book_odds=100,
+        book_prob=0.5,
+        fair_prob=0.58,
+        raw_edge=0.08,
+        n_books=4,
+        quotes=(BookQuote(book="hardrock", odds=100, line=29.5),),
+    )
+    payload = {
+        "games": [
+            {
+                "matchup": "PIT @ NE",
+                "start_time_ms": kickoff,
+            }
+        ]
+    }
+    body = convex_body_for_alert(alert, payload, posted_at=kickoff - 60_000, day="2026-09-19")
+    assert body is not None
+    assert body["title"] == "Kaelon Black 30+ Rush Yards"
+    assert body["awayAbbr"] == "PIT"
+    assert body["homeAbbr"] == "NE"
+    assert body["evBook"] == "hardrock"
+    assert body["evOdds"] == 100
+    assert body["startTime"] == kickoff
+    assert body["quotes"][0]["book"] == "hardrock"
+    assert convex_body_for_alert(alert, payload, posted_at=kickoff + 1, day="2026-09-19") is None
+    assert convex_body_for_alert(alert, {"games": []}, posted_at=kickoff - 1, day="2026-09-19") is None
+
+
+def test_post_ev_alerts_tweets_only_highest_full_grid(monkeypatch, tmp_path: Path) -> None:
+    payload = {
+        "games": [
+            {
+                "matchup": "PIT @ NE",
+                "markets": {},
+                "player_props": [
+                    {
+                        "player": "Kaelon Black",
+                        "type": "rushing_yards",
+                        "books": {
+                            "draftkings": _ou_book(-110, -110),
+                            "fanduel": _ou_book(-110, -110),
+                            "mgm": _ou_book(108, -130),
+                            "hardrock": _ou_book(100, -120),
+                            "caesars": _ou_book(-112, -108),
+                            "betrivers": _ou_book(-108, -112),
+                        },
+                        "kalshi": {"line": 29.5, "yes_ask": 0.40, "no_ask": 0.62},
+                        "polymarket": {"line": 29.5, "over_ask": 0.41, "under_ask": 0.61},
+                    },
+                    {
+                        "player": "Other Guy",
+                        "type": "rushing_yards",
+                        "books": {
+                            "draftkings": _ou_book(-110, -110),
+                            "fanduel": _ou_book(-110, -110),
+                            "mgm": _ou_book(150, -180),
+                            "hardrock": _ou_book(-110, -110),
+                        },
+                        "kalshi": {"line": 29.5, "yes_ask": 0.35, "no_ask": 0.67},
+                    },
+                ],
+            }
+        ]
+    }
+    odds_path = tmp_path / "odds.json"
+    odds_path.write_text(json.dumps(payload), encoding="utf-8")
+    report = FairValueReport(
+        informational=[
+            InformationalRow(
+                market="Kaelon Black rushing_yards",
+                matchup="PIT @ NE",
+                player="Kaelon Black",
+                stat="rushing_yards",
+                book="hardrock",
+                book_line=29.5,
+                book_prob=0.50,
+                fair_prob=0.58,
+                raw_edge=0.08,
+                n_books=6,
+                side="over",
+                book_odds=100,
+            ),
+            InformationalRow(
+                market="Kaelon Black rushing_yards",
+                matchup="PIT @ NE",
+                player="Kaelon Black",
+                stat="rushing_yards",
+                book="kalshi",
+                book_line=29.5,
+                book_prob=0.40,
+                fair_prob=0.58,
+                raw_edge=0.12,
+                n_books=6,
+                side="over",
+                book_odds=150,
+            ),
+            InformationalRow(
+                market="Other Guy rushing_yards",
+                matchup="PIT @ NE",
+                player="Other Guy",
+                stat="rushing_yards",
+                book="mgm",
+                book_line=29.5,
+                book_prob=0.40,
+                fair_prob=0.60,
+                raw_edge=0.20,
+                n_books=4,
+                side="over",
+                book_odds=150,
+            ),
+        ]
+    )
+    discords: list[str] = []
+    tweets: list[str] = []
+
+    monkeypatch.setattr(
+        "ev_trading.fair_value.alert_card.render_alert_card",
+        lambda alert, png, **kwargs: png,
+    )
+    monkeypatch.setattr(
+        "ev_trading.fair_value.discord_ev_alerts.post_ev_discord",
+        lambda alert, png, **kwargs: discords.append(alert.title) or {"posted": 1, "reason": "ok"},
+    )
+    monkeypatch.setattr(
+        "polymaker.x_client.post_tweet",
+        lambda text, **kwargs: tweets.append(text) or type("Tweet", (), {"url": "https://x.test/1"})(),
+    )
+    monkeypatch.setattr("ev_trading.fair_value.ev_alerts.x_ev_posts_enabled", lambda: True)
+
+    summary = post_ev_alerts(
+        report,
+        odds_path,
+        dry_run=True,
+        cache_path=tmp_path / "sent.json",
+        out_dir=tmp_path / "cards",
+    )
+    assert summary["posted"] == 3
+    assert len(discords) == 3
+    assert len(tweets) == 1
+    assert "Kaelon Black 30+ Rush Yards" in tweets[0]
+    assert "Book: Kalshi" in tweets[0]
+    assert "Other Guy" not in tweets[0]

@@ -9,7 +9,9 @@ from ev_trading.nfl_odds import (
     ROTOWIRE_PROP_TO_CANONICAL,
     canonical_abbr,
     game_key,
+    game_start_ms,
     kalshi_spread_home_line,
+    kickoff_ms,
     match_team_side,
     median_line,
     normalize_player_name,
@@ -30,6 +32,18 @@ if str(_SUPPORT) not in sys.path:
     sys.path.insert(0, str(_SUPPORT))
 
 from aggregate_nfl_odds import aggregate_nfl_slate  # noqa: E402
+
+
+def test_kickoff_ms_naive_eastern() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ms = kickoff_ms("2026-09-20 13:00:00")
+    expected = datetime(2026, 9, 20, 13, 0, tzinfo=ZoneInfo("America/New_York"))
+    assert ms == int(expected.timestamp() * 1000)
+    assert game_start_ms({"gameDate": "2026-09-20 13:00:00"}) == ms
+    assert game_start_ms({"start_time_ms": ms}) == ms
+    assert kickoff_ms(None) is None
 
 
 def test_canonical_abbr_jax_was_rams() -> None:
@@ -321,6 +335,7 @@ def test_aggregate_joins_jac_jax_and_closest_prop_line() -> None:
     game = result["games"][0]
     assert game["away"]["abbr"] == "CLE"
     assert game["home"]["abbr"] == "JAX"
+    assert game["start_time_ms"] == kickoff_ms("2026-09-13 13:00:00")
     assert game["markets"]["spread"]["consensus_line"] == -3.5
     assert game["markets"]["spread"]["kalshi"]["line"] == -3.5
     assert game["markets"]["spread"]["polymarket"]["home_line"] == -3.5

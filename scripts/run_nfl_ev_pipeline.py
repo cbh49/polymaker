@@ -20,7 +20,9 @@ Steps:
   4. Polymarket NFL odds → data-aggregation/output/polymarket_nfl_odds.json
   5. Join               → supporting-lines/nfl_aggregated_odds.json
   6. Fair-value report  → output/ev/nfl_fair_value.json
-  7. Sportsbook/Kalshi/Polymarket +EV >= 5pp → Discord + X graphic (DISCORD_EV_WEBHOOK_URL)
+  7. Sportsbook/Kalshi/Polymarket +EV >= 5pp → Discord cards (all) + at most one
+     X graphic if all 8 odds are filled (DISCORD_EV_WEBHOOK_URL / X_EV_POSTS)
+     and Convex `evOpportunities` (CONVEX_HTTP_URL) for the dashboard board.
   8. Optional: buy `tradable` rows on Kalshi and/or Polymarket ($10 each)
 
 1–4 run in parallel. Pass --sequential to run them one at a time.

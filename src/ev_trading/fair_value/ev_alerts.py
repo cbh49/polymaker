@@ -1,4 +1,9 @@
-"""Select sportsbook + Kalshi/Polymarket +EV rows (>= 5pp vs consensus) and post Discord + X cards."""
+"""Select sportsbook + Kalshi/Polymarket +EV rows (>= 5pp vs consensus) and post Discord + X cards.
+
+Discord gets every new card. X gets at most one per run, and only when all eight
+odds slots (6 sportsbooks + Kalshi + Polymarket) are filled; the highest-edge
+complete card wins.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ from ev_trading.fair_value.pipeline import (
 )
 from ev_trading.fair_value.report import FairValueReport
 from ev_trading.fair_value.tradable_pricer import kalshi_no_ask, kalshi_yes_ask, polymarket_side_ask
-from ev_trading.nfl_odds import TEAM_ABBR_TO_NAME, canonical_abbr
+from ev_trading.nfl_odds import TEAM_ABBR_TO_NAME, canonical_abbr, game_start_ms
 
 PREDICTION_VENUES = frozenset({"kalshi", "polymarket"})
 
@@ -285,6 +290,14 @@ class SportsbookEvAlert:
         book = (self.book or "").strip().lower()
         return (f"{day}|{self.matchup}|{player}|{self.stat}|{self.side}|{line}|{book}").lower()
 
+    def has_full_odds_grid(self) -> bool:
+        """True when every card slot (6 books + Kalshi + Polymarket) has odds."""
+        by_book = {canonical_book(q.book): q for q in self.quotes}
+        return all(
+            (quote := by_book.get(name)) is not None and quote.odds is not None
+            for name in CARD_BOOKS
+        )
+
 
 class SentCache:
     """Persist posted alert keys so the 30-minute timer does not re-spam."""
@@ -407,6 +420,14 @@ def select_sportsbook_alerts(
         winners.append(pool[0])
     winners.sort(key=lambda r: r.raw_edge, reverse=True)
     return winners
+
+
+def pick_x_alert(alerts: list[SportsbookEvAlert]) -> SportsbookEvAlert | None:
+    """At most one tweet per run: full 8-book grid, highest raw edge."""
+    complete = [alert for alert in alerts if alert.has_full_odds_grid()]
+    if not complete:
+        return None
+    return max(complete, key=lambda alert: alert.raw_edge)
 
 
 def _find_game(payload: dict[str, Any], matchup: str) -> dict[str, Any] | None:
@@ -775,6 +796,82 @@ def _load_aggregated(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def convex_quotes(alert: SportsbookEvAlert) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for quote in alert.quotes:
+        row: dict[str, Any] = {"book": canonical_book(quote.book)}
+        if quote.odds is not None:
+            row["odds"] = float(quote.odds)
+        if quote.line is not None:
+            row["line"] = float(quote.line)
+        out.append(row)
+    return out
+
+
+def convex_body_for_alert(
+    alert: SportsbookEvAlert,
+    payload: dict[str, Any],
+    *,
+    posted_at: int,
+    day: str | None = None,
+) -> dict[str, Any] | None:
+    """JSON body for POST /ev-opportunities. None if the game already started."""
+    game = _find_game(payload, alert.matchup)
+    start_time = game_start_ms(game)
+    if start_time is None or start_time <= posted_at:
+        return None
+    abbrs = parse_matchup_abbrs(alert.matchup)
+    away, home = abbrs if abbrs else ("AWAY", "HOME")
+    player = (alert.player or "").strip()
+    body: dict[str, Any] = {
+        "alertKey": alert.alert_key(day=day or pacific_today_iso()),
+        "league": "nfl",
+        "title": alert.title,
+        "matchup": alert.matchup,
+        "awayAbbr": away,
+        "homeAbbr": home,
+        "evBook": canonical_book(alert.book),
+        "evOdds": float(alert.book_odds),
+        "fairProb": float(alert.fair_prob),
+        "edgePct": float(alert.edge_pct),
+        "quotes": convex_quotes(alert),
+        "postedAt": posted_at,
+        "startTime": start_time,
+        "stat": alert.stat,
+        "side": alert.side,
+    }
+    if alert.book_line is not None:
+        body["evLine"] = float(alert.book_line)
+    if player:
+        body["player"] = player
+    return body
+
+
+def publish_ev_opportunity(
+    alert: SportsbookEvAlert,
+    payload: dict[str, Any],
+    *,
+    posted_at: int | None = None,
+    day: str | None = None,
+) -> dict[str, Any]:
+    """Best-effort Convex insert. Missing config or a started game is a skip."""
+    from polymaker.trading.convex_trades import ConvexTradeClient
+
+    posted_at = posted_at if posted_at is not None else int(datetime.now().timestamp() * 1000)
+    body = convex_body_for_alert(alert, payload, posted_at=posted_at, day=day)
+    if body is None:
+        return {"ok": False, "reason": "started_or_no_kickoff"}
+    client = ConvexTradeClient()
+    if not client.configured:
+        return {"ok": False, "reason": "convex_unconfigured"}
+    try:
+        raw = client.upsert_ev_opportunity(body)
+    except Exception as exc:  # noqa: BLE001
+        print(f"EV alert convex failed ({alert.title}): {exc}", flush=True)
+        return {"ok": False, "reason": "error", "error": str(exc)}
+    return {"ok": True, "reason": "ok", "inserted": raw.get("inserted")}
+
+
 def post_ev_alerts(
     report: FairValueReport,
     aggregated_path: str | Path,
@@ -817,6 +914,11 @@ def post_ev_alerts(
         card_dir = out_dir or DEFAULT_CARD_DIR
         card_dir.mkdir(parents=True, exist_ok=True)
         tweet_ok = x_ev_posts_enabled() and (dry_run or credentials_ready())
+        x_alert = pick_x_alert(fresh) if tweet_ok else None
+        if tweet_ok and x_alert is None and fresh:
+            print("EV alerts: X skipped (no card with all 8 odds).")
+        elif not tweet_ok and not dry_run:
+            print("EV alerts: X skipped (X_EV_POSTS off or missing credentials).")
         posted = 0
         for alert in fresh:
             key = alert.alert_key(day=day)
@@ -829,7 +931,7 @@ def post_ev_alerts(
 
             discord = post_ev_discord(alert, png, dry_run=dry_run)
             tweeted = False
-            if tweet_ok:
+            if tweet_ok and alert is x_alert:
                 try:
                     result = post_tweet(
                         format_ev_tweet(alert),
@@ -841,12 +943,22 @@ def post_ev_alerts(
                     print(f"EV alert tweeted: {result.url}")
                 except Exception as exc:  # noqa: BLE001
                     print(f"EV alert tweet failed ({alert.title}): {exc}", flush=True)
-            elif not dry_run:
-                print("EV alerts: X skipped (X_EV_POSTS off or missing credentials).")
 
             if dry_run or discord.get("posted") or tweeted:
                 cache.keys.add(key)
                 posted += 1
+                if not dry_run:
+                    convex = publish_ev_opportunity(alert, payload, day=day)
+                    if convex.get("ok"):
+                        print(
+                            f"EV alert convex: {alert.title} inserted={convex.get('inserted')}"
+                        )
+                    elif convex.get("reason") == "started_or_no_kickoff":
+                        print(f"EV alert convex skipped ({alert.title}): game started or no kickoff")
+                    elif convex.get("reason") == "convex_unconfigured":
+                        print("EV alerts: Convex skipped (CONVEX_HTTP_URL / token missing).")
+                    else:
+                        print(f"EV alert convex skipped ({alert.title}): {convex.get('reason')}")
             print(
                 f"EV alert {alert.title} @ {book_label(alert.book)} "
                 f"{format_american(alert.book_odds)} edge={alert.edge_pct:+.2f}pp "
