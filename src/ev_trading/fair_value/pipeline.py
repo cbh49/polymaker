@@ -909,6 +909,16 @@ def _process_spread(
 
     if kalshi:
         fair, fit, cons = fair_home_at(kalshi_home)
+        # Yes pays the named team ("CAR wins by over 3.5"), not always home.
+        contract_yes = str(kalshi.get("yes_side") or "home").strip().lower()
+        if contract_yes not in {"home", "away"}:
+            contract_yes = "home"
+        if contract_yes == "away":
+            fair_yes = 1.0 - fair
+            info_yes, info_no = "away", "home"
+        else:
+            fair_yes = fair
+            info_yes, info_no = "home", "away"
         _emit_binary_venue(
             tradable=tradable,
             rejected=rejected,
@@ -916,7 +926,7 @@ def _process_spread(
             matchup=matchup,
             stat="spread",
             player=None,
-            fair_yes=fair,
+            fair_yes=fair_yes,
             fair_line=consensus_line,
             venue_line=kalshi_home,
             line_delta=_f(kalshi.get("line_delta")),
@@ -926,10 +936,12 @@ def _process_spread(
             cfg=cfg,
             kalshi=kalshi,
             polymarket=None,
-            yes_side="home",
-            no_side="away",
+            yes_side="yes",
+            no_side="no",
             points=points,
             informational=informational,
+            info_yes_side=info_yes,
+            info_no_side=info_no,
         )
     if poly:
         fair, fit, cons = fair_home_at(consensus_line)

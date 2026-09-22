@@ -717,3 +717,62 @@ def test_first_td_and_2plus_td_go_to_tradable_td() -> None:
     assert "first_td" in stats
     assert "2plus_td" in stats
     assert all(r.stat not in {"first_td", "2plus_td", "anytime_td"} for r in main)
+
+
+def _spread_book(home_line: float, away_line: float) -> dict:
+    return {
+        "away": {"line": away_line, "odds": -110, "implied_prob": 0.5238},
+        "home": {"line": home_line, "odds": -110, "implied_prob": 0.5238},
+    }
+
+
+def test_away_favorite_spread_prices_yes_as_away() -> None:
+    """CAR wins by over 3.5 is Carolina -3.5, not Cleveland +3.5."""
+    books = {
+        name: _spread_book(3.5, -3.5) for name in ("betr", "caesars", "draftkings", "fanduel")
+    }
+    slate = {
+        "games": [
+            {
+                "matchup": "CAR @ CLE",
+                "markets": {
+                    "spread": {
+                        "consensus_line": 3.5,
+                        "books": books,
+                        "kalshi": {
+                            "ticker": "KXNFLSPREAD-26SEP22CARCLE-CAR4",
+                            "yes_sub_title": "Carolina wins by over 3.5 points",
+                            "yes_side": "away",
+                            "yes_bid": 0.42,
+                            "yes_ask": 0.44,
+                            "no_bid": 0.56,
+                            "no_ask": 0.58,
+                            "line": 3.5,
+                            "volume": 20000,
+                        },
+                    }
+                },
+            }
+        ]
+    }
+    report = process_slate(slate, FairValueConfig(min_edge_pct=0.0))
+    kalshi_info = [
+        row
+        for row in report.informational
+        if row.book == "kalshi" and row.stat == "spread"
+    ]
+    by_side = {row.side: row for row in kalshi_info}
+    assert set(by_side) == {"home", "away"}
+    assert by_side["away"].book_prob == pytest.approx(0.44)
+    assert by_side["home"].book_prob == pytest.approx(0.58)
+    assert by_side["away"].fair_prob == pytest.approx(1.0 - by_side["home"].fair_prob)
+
+    priced = [
+        row
+        for row in report.tradable + report.tradable_low_liquidity + report.rejected
+        if row.venue == "kalshi" and row.stat == "spread"
+    ]
+    by_order = {row.side: row for row in priced}
+    assert by_order["yes"].market_price == pytest.approx(0.44)
+    assert by_order["yes"].fair_prob == pytest.approx(by_side["away"].fair_prob)
+    assert "no" not in by_order

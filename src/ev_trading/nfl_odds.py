@@ -291,15 +291,19 @@ def american_to_implied_prob(odds: Any) -> float | None:
     return abs(value) / (abs(value) + 100.0)
 
 
-def kalshi_spread_home_line(
+def kalshi_spread_contract(
     market: Mapping[str, Any],
     *,
     away_abbr: str,
     home_abbr: str,
     away_name: str = "",
     home_name: str = "",
-) -> float | None:
-    """Convert a Kalshi margin contract into a sportsbook-style home spread."""
+) -> tuple[float | None, str | None]:
+    """Return (home spread, yes side) for a Kalshi margin contract.
+
+    Yes pays the team in the subtitle ("CAR wins by over 3.5"). When that team
+    is the away favorite, the home spread is +3.5 and yes_side is "away".
+    """
     margin = _as_float(market.get("line"))
     team = str(market.get("team") or "")
     if margin is None:
@@ -308,7 +312,7 @@ def kalshi_spread_home_line(
             team = parsed_team
         margin = parsed_line
     if margin is None:
-        return None
+        return None, None
     team_abbr = market.get("team_abbr") or kalshi_ticker_team(str(market.get("ticker") or ""))
     side = match_team_side(
         team,
@@ -319,10 +323,29 @@ def kalshi_spread_home_line(
         team_abbr=str(team_abbr) if team_abbr else None,
     )
     if side == "home":
-        return -float(margin)
+        return -float(margin), "home"
     if side == "away":
-        return float(margin)
-    return None
+        return float(margin), "away"
+    return None, None
+
+
+def kalshi_spread_home_line(
+    market: Mapping[str, Any],
+    *,
+    away_abbr: str,
+    home_abbr: str,
+    away_name: str = "",
+    home_name: str = "",
+) -> float | None:
+    """Convert a Kalshi margin contract into a sportsbook-style home spread."""
+    home_line, _yes_side = kalshi_spread_contract(
+        market,
+        away_abbr=away_abbr,
+        home_abbr=home_abbr,
+        away_name=away_name,
+        home_name=home_name,
+    )
+    return home_line
 
 
 def kalshi_total_line(market: Mapping[str, Any]) -> float | None:

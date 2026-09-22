@@ -508,6 +508,12 @@ def _kalshi_side_ask(blob: dict[str, Any], side: str) -> float | None:
         yes = kalshi_yes_ask(nested)
         if yes is not None:
             return yes
+    # Spread contracts name the Yes team. Home is Yes only when that team is home.
+    contract_yes = str(blob.get("yes_side") or "").strip().lower()
+    if contract_yes in {"home", "away"} and key in {"home", "away"}:
+        if key == contract_yes:
+            return kalshi_yes_ask(blob)
+        return kalshi_no_ask(blob)
     if key in {"over", "yes", "home"}:
         return kalshi_yes_ask(blob)
     if key in {"under", "no", "away"}:

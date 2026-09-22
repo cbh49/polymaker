@@ -30,7 +30,7 @@ from ev_trading.nfl_odds import (  # noqa: E402
     game_key,
     is_dst_name,
     kalshi_mid,
-    kalshi_spread_home_line,
+    kalshi_spread_contract,
     kalshi_ticker_team,
     kalshi_total_line,
     kickoff_ms,
@@ -340,16 +340,16 @@ def _build_spread(
     for market in (kalshi or {}).get("game_lines") or []:
         if market.get("type") != "spread":
             continue
-        home_line = kalshi_spread_home_line(
+        home_line, yes_side = kalshi_spread_contract(
             market,
             away_abbr=away_abbr,
             home_abbr=home_abbr,
             away_name=away_name,
             home_name=home_name,
         )
-        if home_line is None:
+        if home_line is None or yes_side not in {"home", "away"}:
             continue
-        kalshi_alts.append({**market, "home_line": home_line})
+        kalshi_alts.append({**market, "home_line": home_line, "yes_side": yes_side})
     kalshi_picked = _select_alt(
         kalshi_alts,
         consensus,
@@ -367,6 +367,7 @@ def _build_spread(
                 "line_delta": _line_delta(home_line, consensus),
                 "team": kalshi_picked.get("team"),
                 "team_abbr": kalshi_picked.get("team_abbr"),
+                "yes_side": kalshi_picked.get("yes_side"),
             },
         )
 

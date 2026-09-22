@@ -10,6 +10,7 @@ from ev_trading.nfl_odds import (
     canonical_abbr,
     game_key,
     game_start_ms,
+    kalshi_spread_contract,
     kalshi_spread_home_line,
     kickoff_ms,
     match_team_side,
@@ -121,6 +122,20 @@ def test_kalshi_spread_parse_and_home_line() -> None:
         home_name="Pittsburgh Steelers",
     )
     assert away_fav == 2.5
+    home_line, yes_side = kalshi_spread_contract(
+        {
+            "yes_sub_title": "Carolina wins by over 3.5 points",
+            "line": 3.5,
+            "team_abbr": "CAR",
+            "ticker": "KXNFLSPREAD-26SEP22CARCLE-CAR4",
+        },
+        away_abbr="CAR",
+        home_abbr="CLE",
+        away_name="Carolina Panthers",
+        home_name="Cleveland Browns",
+    )
+    assert home_line == 3.5
+    assert yes_side == "away"
 
 
 def test_match_team_side_short_kalshi_names() -> None:
@@ -338,6 +353,7 @@ def test_aggregate_joins_jac_jax_and_closest_prop_line() -> None:
     assert game["start_time_ms"] == kickoff_ms("2026-09-13 13:00:00")
     assert game["markets"]["spread"]["consensus_line"] == -3.5
     assert game["markets"]["spread"]["kalshi"]["line"] == -3.5
+    assert game["markets"]["spread"]["kalshi"]["yes_side"] == "home"
     assert game["markets"]["spread"]["polymarket"]["home_line"] == -3.5
     assert game["markets"]["total"]["kalshi"]["line"] == 44.5
     assert game["markets"]["total"]["polymarket"]["points"] == 44.5

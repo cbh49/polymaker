@@ -16,6 +16,7 @@ from ev_trading.fair_value.ev_alerts import (
     build_alert,
     convex_body_for_alert,
     format_american,
+    _kalshi_side_ask,
     format_bet_title,
     format_ev_message,
     format_ev_tweet,
@@ -55,6 +56,15 @@ def test_format_bet_title_player_over() -> None:
         matchup="PIT @ NE",
     )
     assert title == "Kaelon Black 30+ Rush Yards"
+
+
+def test_kalshi_spread_ask_follows_yes_team() -> None:
+    away_favorite = {"yes_side": "away", "yes_ask": 0.44, "no_ask": 0.60, "line": 3.5}
+    assert _kalshi_side_ask(away_favorite, "away") == 0.44
+    assert _kalshi_side_ask(away_favorite, "home") == 0.60
+    home_favorite = {"yes_side": "home", "yes_ask": 0.51, "no_ask": 0.50, "line": -3.5}
+    assert _kalshi_side_ask(home_favorite, "home") == 0.51
+    assert _kalshi_side_ask(home_favorite, "away") == 0.50
 
 
 def test_format_bet_title_under_spread_ml() -> None:
