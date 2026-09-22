@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 _AGG = Path(__file__).resolve().parents[1] / "data-aggregation"
@@ -14,15 +15,107 @@ from find_sharp_money import (  # noqa: E402
     process_game,
     sources_for_league,
 )
-from polymaker.catalog.sports import is_moneyline_slug
+from polymaker.catalog.sports import is_moneyline_slug, look_ahead_days_for_series
 from polymaker.trading.teams import parse_matchup, resolve_team
+from scrape_dk_splits import parse_games
 from ufc_fighter_map import (  # noqa: E402
+    UFC_LOOKAHEAD_DAYS,
     align_game_to,
+    canonical_name,
+    filter_to_next_ufc_card,
     names_match,
+    next_ufc_card_dates,
     pair_key,
     parse_vs_title,
     sides_swapped,
+    ufc_allowed_days,
 )
+
+
+def test_dk_ufc_filters_to_slate_date() -> None:
+    html = """
+    <div class="tb-se">
+      <div class="tb-se-title">
+        <a href="/event/1">Shanelle Dyer vs Elise Reed</a>
+        <span>Sat 8/22 7:00 PM</span>
+      </div>
+    </div>
+    <div class="tb-se">
+      <div class="tb-se-title">
+        <a href="/event/2">Chris Padilla vs Nasrat Haqparast</a>
+        <span>Sat 8/30 7:00 PM</span>
+      </div>
+    </div>
+    <div class="tb-se">
+      <div class="tb-se-title">
+        <a href="/event/3">Anthony Hernandez vs Gregory Rodrigues</a>
+        <span>7:00 PM</span>
+      </div>
+    </div>
+    """
+    games = parse_games(
+        html,
+        [],
+        league="UFC",
+        canonical_name_fn=canonical_name,
+        canonical_abbr_fn=lambda name: name,
+        names_match_fn=names_match,
+        day=date(2026, 8, 22),
+    )
+    assert len(games) == 1
+    assert games[0]["date"] == "2026-08-22"
+    assert games[0]["away"] == "Shanelle Dyer"
+    assert games[0]["home"] == "Elise Reed"
+
+
+def test_dk_ufc_lookahead_keeps_next_card() -> None:
+    html = """
+    <div class="tb-se">
+      <div class="tb-se-title">
+        <a href="/event/1">Shanelle Dyer vs Elise Reed</a>
+        <span>Sat 8/22 7:00 PM</span>
+      </div>
+    </div>
+    <div class="tb-se">
+      <div class="tb-se-title">
+        <a href="/event/2">Chris Padilla vs Nasrat Haqparast</a>
+        <span>Sat 8/30 7:00 PM</span>
+      </div>
+    </div>
+    """
+    as_of = date(2026, 8, 21)
+    games = parse_games(
+        html,
+        [],
+        league="UFC",
+        canonical_name_fn=canonical_name,
+        canonical_abbr_fn=lambda name: name,
+        names_match_fn=names_match,
+        day=as_of,
+        allowed_days=ufc_allowed_days(as_of),
+    )
+    assert {g["date"] for g in games} == {"2026-08-22", "2026-08-30"}
+    kept, card = filter_to_next_ufc_card(games, as_of)
+    assert card == {date(2026, 8, 22)}
+    assert len(kept) == 1
+    assert kept[0]["away"] == "Shanelle Dyer"
+
+
+def test_next_ufc_card_includes_friday_prelims() -> None:
+    games = [
+        {"date": "2026-08-28", "matchup": "prelim"},
+        {"date": "2026-08-29", "matchup": "main"},
+        {"date": "2026-09-05", "matchup": "next week"},
+    ]
+    kept, card = filter_to_next_ufc_card(games, date(2026, 8, 28))
+    assert card == {date(2026, 8, 28), date(2026, 8, 29)}
+    assert {g["matchup"] for g in kept} == {"prelim", "main"}
+    assert next_ufc_card_dates(
+        [date(2026, 8, 29), date(2026, 9, 5)], date(2026, 8, 28)
+    ) == {date(2026, 8, 29)}
+    assert max(ufc_allowed_days(date(2026, 8, 28))) == date(2026, 8, 28) + timedelta(
+        days=UFC_LOOKAHEAD_DAYS
+    )
 
 
 def test_ufc_name_matching() -> None:
@@ -91,7 +184,7 @@ def test_align_game_fixes_flopped_thespread_prices() -> None:
 
 
 def test_ufc_sharp_sources() -> None:
-    assert sources_for_league("UFC") == ("primary", "vsin")
+    assert sources_for_league("UFC") == ("primary",)
     assert primary_source_label("UFC") == "draftkings"
 
 
@@ -133,6 +226,7 @@ def test_ufc_moneyline_slug() -> None:
     assert is_moneyline_slug("ufc-ant-gre3-2026-08-22")
     assert not is_moneyline_slug("ufc-ant-gre3-2026-08-22-totals-1pt5")
     assert not is_moneyline_slug("ufc-ant-gre3-2026-08-22-go-the-distance")
+    assert look_ahead_days_for_series("ufc", 3) == 14
 
 
 def test_resolve_team_ufc() -> None:

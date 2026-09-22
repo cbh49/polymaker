@@ -26,8 +26,6 @@ from scrape_sbd_splits import API_URLS as SBD_API_URLS  # noqa: E402
 from scrape_sbd_splits import PAGE_URLS as SBD_URLS  # noqa: E402
 from scrape_sbd_splits import parse_event  # noqa: E402
 from scrape_thespread_splits import PAGE_URLS as SPREAD_URLS  # noqa: E402
-from scrape_vsin_splits import PAGE_URLS as VSIN_URLS  # noqa: E402
-from scrape_vsin_splits import TEAM_HREF as VSIN_HREF  # noqa: E402
 from slate_alignment import evaluate_payload  # noqa: E402
 
 
@@ -48,7 +46,7 @@ def test_nfl_aliases() -> None:
 
 
 def test_nfl_sharp_sources() -> None:
-    assert sources_for_league("NFL") == ("primary", "vsin", "sbd")
+    assert sources_for_league("NFL") == ("primary", "sbd")
     assert primary_source_label("NFL") == "draftkings"
     assert _markets_from_arg("all") == ("moneyline", "spread", "total")
     cfg = config_snapshot(("moneyline", "spread", "total"), sources_for_league("NFL"), "NFL")
@@ -64,8 +62,6 @@ def test_nfl_source_urls() -> None:
     assert SBD_URLS["NFL"].endswith("/nfl/public-betting-trends/")
     assert SBD_API_URLS["NFL"].endswith("/nfl-odds")
     assert SPREAD_URLS["NFL"].endswith("/nfl-odds/")
-    assert "sport=NFL" in VSIN_URLS["NFL"]
-    assert VSIN_HREF["NFL"] == r"/nfl/teams/"
 
 
 def _side(*, public: int, handle: int, vsin_pub: int, vsin_h: int, sbd_pub: int, sbd_h: int, **extra):

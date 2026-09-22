@@ -78,22 +78,21 @@ def test_aligned_when_all_mlb_sources_share_today() -> None:
     assert result.overlap_count == 1
 
 
-def test_unaligned_when_vsin_still_yesterday() -> None:
+def test_unaligned_when_playerprops_still_yesterday() -> None:
     day = "2026-08-23"
-    game = _mlb_game("TOR @ NYY", day, public=40, vsin=55, sbd=60)
+    game = _mlb_game("TOR @ NYY", day, public=40, sbd=60)
     payload = {
         "league": "MLB",
         "date": day,
         "games": [game],
         "sources": {
-            "playerprops": {"native_dates": [day], "game_count": 1},
-            "vsin": {"native_dates": ["2026-08-22"], "game_count": 4},
+            "playerprops": {"native_dates": ["2026-08-22"], "game_count": 4},
             "sportsbettingdime": {"native_dates": [day], "game_count": 1},
         },
     }
     result = evaluate_payload(payload, slate_day=date(2026, 8, 23))
     assert result.aligned is False
-    assert "vsin" in result.reason
+    assert "primary" in result.reason
 
 
 def test_unaligned_when_sbd_empty_for_today() -> None:
@@ -120,7 +119,7 @@ def test_overlap_requires_all_fields() -> None:
         _mlb_game("TOR @ NYY", "2026-08-22", public=40, vsin=55),
         _mlb_game("BOS @ BAL", "2026-08-22", public=40, vsin=55, sbd=60),
     ]
-    assert len(overlap_games(games, day, ("primary", "vsin", "sbd"))) == 1
+    assert len(overlap_games(games, day, ("primary", "sbd"))) == 1
 
 
 def test_wnba_needs_thespread_open() -> None:

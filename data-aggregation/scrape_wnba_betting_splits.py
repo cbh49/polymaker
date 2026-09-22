@@ -3,14 +3,12 @@
 Aggregate WNBA public betting splits from:
   - DraftKings Network (handle % / bets %; PlayerProps has no WNBA)
   - TheSpread.com (open → current spread movement; SBD has no WNBA)
-  - VSiN
   - EV Analytics (timestamped line-history charts; no public/handle %)
 
 Writes a single combined JSON. DraftKings fields are the defaults; other
 sources are prefixed on each side:
   public_bet_pct / handle_bet_pct / live / live_odds
   open / open_odds / diff                 (TheSpread, spread market)
-  vsin_public_bet_pct / vsin_handle_bet_pct / vsin_line
   eva_line / eva_odds / eva_open / eva_history / eva_win_prob_pct
   covers_odds                              (Covers prediction markets)
   polymarket                               (Gamma share price + American odds + poll history)
@@ -42,8 +40,6 @@ from scrape_polymarket_odds import load_previous_games, merge_polymarket_into_ga
 from scrape_polymarket_odds import scrape as scrape_polymarket
 from scrape_thespread_splits import merge_thespread_into_game
 from scrape_thespread_splits import scrape as scrape_thespread
-from scrape_vsin_splits import merge_vsin_into_game
-from scrape_vsin_splits import scrape as scrape_vsin
 from slate_alignment import game_slate_date as _game_slate_date
 from slate_alignment import native_dates as _native_dates
 from slate_alignment import same_slate as _same_slate
@@ -94,7 +90,7 @@ def _scrape_or_empty(name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, A
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Scrape + merge WNBA betting splits from DraftKings, TheSpread, VSiN, and EV Analytics"
+        description="Scrape + merge WNBA betting splits from DraftKings, TheSpread, and EV Analytics"
     )
     parser.add_argument(
         "--date",
@@ -111,21 +107,17 @@ def main() -> None:
     spread = _scrape_or_empty(
         "TheSpread", lambda: scrape_thespread(day=day, headed=args.headed)
     )
-    vsin = _scrape_or_empty("VSiN", lambda: scrape_vsin(league="WNBA", day=day))
     eva = _scrape_or_empty("EV Analytics", lambda: scrape_eva(league="WNBA"))
     covers = _scrape_or_empty("Covers", lambda: scrape_covers(league="WNBA"))
     dk_native = _native_dates(dk.get("games") or [])
     spread_native = _native_dates(spread.get("games") or [])
-    vsin_native = _native_dates(vsin.get("games") or [])
     dk_count = len(dk.get("games") or [])
 
     spread_by_matchup, spread_by_teams = _index_games(spread.get("games") or [])
-    vsin_by_matchup, vsin_by_teams = _index_games(vsin.get("games") or [])
     eva_by_matchup, eva_by_teams = _index_games(eva.get("games") or [])
     covers_by_matchup, covers_by_teams = _index_games(covers.get("games") or [])
 
     spread_merged = 0
-    vsin_merged = 0
     eva_merged_ids: set[str] = set()
     covers_merged_ids: set[str] = set()
     for game in dk.get("games") or []:
@@ -133,10 +125,6 @@ def main() -> None:
         if spread_game and _same_slate(spread_game, game, day):
             merge_thespread_into_game(game, spread_game)
             spread_merged += 1
-        vsin_game = _find_game(game, vsin_by_matchup, vsin_by_teams)
-        if vsin_game and _same_slate(vsin_game, game, day):
-            merge_vsin_into_game(game, vsin_game)
-            vsin_merged += 1
         eva_game = _find_game(game, eva_by_matchup, eva_by_teams)
         if eva_game:
             merge_eva_into_game(game, eva_game)
@@ -165,14 +153,6 @@ def main() -> None:
         if not key or _already_present(spread_game) or not _on_slate(spread_game, day):
             continue
         extras_by_matchup[key] = dict(spread_game)
-    for vsin_game in vsin.get("games") or []:
-        key = vsin_game.get("matchup")
-        if not key or _already_present(vsin_game) or not _on_slate(vsin_game, day):
-            continue
-        if key in extras_by_matchup:
-            merge_vsin_into_game(extras_by_matchup[key], vsin_game)
-        else:
-            extras_by_matchup[key] = dict(vsin_game)
     for extra in extras_by_matchup.values():
         eva_game = _find_game(extra, eva_by_matchup, eva_by_teams)
         if eva_game:
@@ -265,14 +245,6 @@ def main() -> None:
             "game_count": spread.get("game_count"),
             "merged_into_draftkings_games": spread_merged,
         },
-        "vsin": {
-            "source": vsin.get("source"),
-            "source_page": vsin.get("source_page"),
-            "date": vsin.get("date"),
-            "native_dates": vsin_native,
-            "game_count": vsin.get("game_count"),
-            "merged_into_draftkings_games": vsin_merged,
-        },
         "evanalytics": {
             "source": eva.get("source"),
             "source_page": eva.get("source_page"),
@@ -316,7 +288,7 @@ def main() -> None:
         "merged_into_games": poly_merged,
     }
     dk["source"] = (
-        "dknetwork.draftkings.com + thespread.com + data.vsin.com + "
+        "dknetwork.draftkings.com + thespread.com + "
         "evanalytics.com + covers.com + polymarket"
     )
     dk["league"] = "WNBA"
@@ -328,7 +300,7 @@ def main() -> None:
     args.out.write_text(json.dumps(dk, indent=2) + "\n", encoding="utf-8")
     print(
         f"Wrote {dk['game_count']} WNBA games "
-        f"(TheSpread merged={spread_merged}, VSiN merged={vsin_merged}, "
+        f"(TheSpread merged={spread_merged}, "
         f"EVA merged={len(eva_merged_ids)}, Covers merged={len(covers_merged_ids)}, "
         f"Polymarket merged={poly_merged}, extras={len(extras)}) → {args.out}"
     )

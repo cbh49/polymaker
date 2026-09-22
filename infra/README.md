@@ -152,8 +152,9 @@ This is the production `monitor` service plus a `sharp-loop` container instead o
 
 The pipeline scrapes every 30 minutes even when sources disagree. It **does not trade** a league until every required source is on the same Pacific calendar day with overlapping matchups:
 
-- MLB: PlayerProps, VSiN, SportsBettingDime
-- WNBA: DraftKings, VSiN, TheSpread
-- NCAAF: DraftKings, VSiN, SportsBettingDime (Pinnacle is not published for CFB; TheSpread/EVA supply RLM)
+- MLB: PlayerProps, SportsBettingDime
+- WNBA: DraftKings, TheSpread
+- NCAAF: DraftKings, SportsBettingDime (Pinnacle is not published for CFB; TheSpread/EVA supply RLM)
+- NFL: DraftKings, SportsBettingDime
 
 EVA / Covers are enrichment only and never block trading.

@@ -4,7 +4,6 @@ Aggregate NCAAF / CFB public betting splits from:
   - DraftKings Network (handle % / bets %; PlayerProps has no CFB)
   - SportsBettingDime (handle % / bets % via ncaafb-odds; skip Pinnacle)
   - TheSpread.com (open → current spread movement for RLM)
-  - VSiN
   - EV Analytics (timestamped line-history charts; no public/handle %)
   - Covers prediction markets
   - Polymarket (cfb-YYYY series; moneyline / spread / total)
@@ -14,7 +13,6 @@ sources are prefixed on each side:
   public_bet_pct / handle_bet_pct / live / live_odds
   sbd_public_bet_pct / sbd_handle_bet_pct / sbd_line
   open / open_odds / diff                 (TheSpread)
-  vsin_public_bet_pct / vsin_handle_bet_pct / vsin_line
   eva_line / eva_odds / eva_open / eva_history / eva_win_prob_pct
   covers_odds
   polymarket
@@ -48,8 +46,6 @@ from scrape_sbd_splits import merge_sbd_into_game
 from scrape_sbd_splits import scrape as scrape_sbd
 from scrape_thespread_splits import merge_thespread_into_game
 from scrape_thespread_splits import scrape as scrape_thespread
-from scrape_vsin_splits import merge_vsin_into_game
-from scrape_vsin_splits import scrape as scrape_vsin
 from slate_alignment import NCAAF_SLATE_WINDOW_DAYS
 from slate_alignment import game_slate_date as _game_slate_date
 from slate_alignment import in_slate_window
@@ -128,7 +124,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Scrape + merge NCAAF betting splits from DraftKings, SBD, TheSpread, "
-            "VSiN, EV Analytics, Covers, and Polymarket (no Pinnacle)"
+            "EV Analytics, Covers, and Polymarket (no Pinnacle)"
         )
     )
     parser.add_argument(
@@ -149,24 +145,20 @@ def main() -> None:
     spread = _scrape_or_empty(
         "TheSpread", lambda: scrape_thespread(day=day, headed=args.headed, league="NCAAF")
     )
-    vsin = _scrape_or_empty("VSiN", lambda: scrape_vsin(league="NCAAF", day=day))
     eva = _scrape_or_empty("EV Analytics", lambda: scrape_eva(league="NCAAF"))
     covers = _scrape_or_empty("Covers", lambda: scrape_covers(league="NCAAF"))
     dk_native = _native_dates(dk.get("games") or [])
     sbd_native = _native_dates(sbd.get("games") or [])
     spread_native = _native_dates(spread.get("games") or [])
-    vsin_native = _native_dates(vsin.get("games") or [])
     dk_count = len(dk.get("games") or [])
 
     sbd_by_matchup, sbd_by_teams = _index_games(sbd.get("games") or [])
     spread_by_matchup, spread_by_teams = _index_games(spread.get("games") or [])
-    vsin_by_matchup, vsin_by_teams = _index_games(vsin.get("games") or [])
     eva_by_matchup, eva_by_teams = _index_games(eva.get("games") or [])
     covers_by_matchup, covers_by_teams = _index_games(covers.get("games") or [])
 
     sbd_merged = 0
     spread_merged = 0
-    vsin_merged = 0
     eva_merged_ids: set[str] = set()
     covers_merged_ids: set[str] = set()
     for game in dk.get("games") or []:
@@ -178,10 +170,6 @@ def main() -> None:
         if spread_game and _same(spread_game, game, day):
             merge_thespread_into_game(game, spread_game)
             spread_merged += 1
-        vsin_game = _find_game(game, vsin_by_matchup, vsin_by_teams)
-        if vsin_game and _same(vsin_game, game, day):
-            merge_vsin_into_game(game, vsin_game)
-            vsin_merged += 1
         eva_game = _find_game(game, eva_by_matchup, eva_by_teams)
         if eva_game:
             merge_eva_into_game(game, eva_game)
@@ -214,15 +202,6 @@ def main() -> None:
             merge_thespread_into_game(found, spread_game)
         else:
             extras_by_matchup[key] = dict(spread_game)
-    for vsin_game in vsin.get("games") or []:
-        key = vsin_game.get("matchup")
-        if not key or _already_present(vsin_game) or not _on_slate(vsin_game, day):
-            continue
-        found = _find_game(vsin_game, extras_by_matchup, {})
-        if found:
-            merge_vsin_into_game(found, vsin_game)
-        else:
-            extras_by_matchup[key] = dict(vsin_game)
     for extra in extras_by_matchup.values():
         eva_game = _find_game(extra, eva_by_matchup, eva_by_teams)
         if eva_game:
@@ -276,7 +255,7 @@ def main() -> None:
             "scraped_at": eva.get("scraped_at"),
             "game_count": len(eva_unmerged),
             "note": (
-                "EV Analytics games that did not match a DK/SBD/TheSpread/VSiN game "
+                "EV Analytics games that did not match a DK/SBD/TheSpread game "
                 "by team; timestamped histories are kept here instead of merging."
             ),
             "games": eva_unmerged,
@@ -326,14 +305,6 @@ def main() -> None:
             "game_count": spread.get("game_count"),
             "merged_into_draftkings_games": spread_merged,
         },
-        "vsin": {
-            "source": vsin.get("source"),
-            "source_page": vsin.get("source_page"),
-            "date": vsin.get("date"),
-            "native_dates": vsin_native,
-            "game_count": vsin.get("game_count"),
-            "merged_into_draftkings_games": vsin_merged,
-        },
         "evanalytics": {
             "source": eva.get("source"),
             "source_page": eva.get("source_page"),
@@ -356,7 +327,7 @@ def main() -> None:
         "extras_added": len(extras),
         "pinnacle": {
             "skipped": True,
-            "note": "Pinnacle is not published for CFB; sharp findings use DK, SBD, VSiN, TheSpread, EVA, Covers, and Polymarket.",
+            "note": "Pinnacle is not published for CFB; sharp findings use DK, SBD, TheSpread, EVA, Covers, and Polymarket.",
         },
     }
 
@@ -382,7 +353,7 @@ def main() -> None:
     }
     dk["source"] = (
         "dknetwork.draftkings.com + sportsbettingdime.com + thespread.com + "
-        "data.vsin.com + evanalytics.com + covers.com + polymarket"
+        "evanalytics.com + covers.com + polymarket"
     )
     dk["league"] = "NCAAF"
     dk["date"] = day.isoformat()
@@ -394,7 +365,7 @@ def main() -> None:
     print(
         f"Wrote {dk['game_count']} NCAAF games "
         f"(SBD merged={sbd_merged}, TheSpread merged={spread_merged}, "
-        f"VSiN merged={vsin_merged}, EVA merged={len(eva_merged_ids)}, "
+        f"EVA merged={len(eva_merged_ids)}, "
         f"Covers merged={len(covers_merged_ids)}, Polymarket merged={poly_merged}, "
         f"extras={len(extras)}) → {args.out}"
     )

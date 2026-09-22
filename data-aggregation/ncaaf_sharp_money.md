@@ -16,7 +16,7 @@ output/ncaaf_sharp_money.json
 output/ncaaf_sharp_money.csv
 ```
 
-NCAAF is treated like MLB for splits (three handle/public sources) and like WNBA for the primary book (DraftKings, not PlayerProps). Pinnacle is not published for CFB and is skipped. Markets evaluated: **moneyline, spread, and total**.
+NCAAF is treated like MLB for splits (DraftKings plus SportsBettingDime) and like WNBA for the primary book (DraftKings, not PlayerProps). Pinnacle is not published for CFB and is skipped. VSiN republished DraftKings splits and is no longer scraped. Markets evaluated: **moneyline, spread, and total**.
 
 ```bash
 python scrape_ncaaf_betting_splits.py
@@ -33,27 +33,24 @@ Slate dates are Pacific (`America/Los_Angeles`). NCAAF keeps a **+6 day window**
 
 ## Sources and what they are for
 
-Two groups: **required splits sources** that can qualify a play, and **line / exchange sources** that confirm it. A source with a missing reading is ignored (not a vote against). Opposite-direction votes usually discard the game, except the SBD-override path below.
+Two groups: **required splits sources** that can qualify a play, and **line / exchange sources** that confirm it. A source with a missing reading is ignored (not a vote against). An opposite-direction vote discards the game.
 
 ### Required splits sources (qualify the play)
 
-These three must be on the Pacific slate, and at least one game must have overlapping fields from all three (`slate_alignment.py`: `NCAAF_REQUIRED`). Each source votes for a side when `handle % − public %` is positive on that side.
+These two must be on the Pacific slate, and at least one game must have overlapping fields from both (`slate_alignment.py`: `NCAAF_REQUIRED`). Each source votes for a side when `handle % − public %` is positive on that side.
 
 | Logical name | Site | Weight | Fields on each side | Role |
 |---|---|---|---|---|
 | `primary` | [DraftKings Network](https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football) | **1.0** | `public_bet_pct`, `handle_bet_pct`, `live` / `live_odds` | Default handle/public source. PlayerProps has no CFB, so DK fills that role. Also defines the **public side** for reverse line movement (`public_bet_pct`). |
-| `vsin` | [VSiN CFB splits](https://data.vsin.com/betting-splits/?source=DK&sport=CFB) | **1.5** | `vsin_public_bet_pct`, `vsin_handle_bet_pct`, `vsin_line` | Highest-weighted splits source. Moneyline fair probability prefers `vsin_line` when both sides are present. |
-| `sbd` | [SportsBettingDime](https://www.sportsbettingdime.com/college-football/public-betting-trends/) (`/wp-json/adpt/v1/ncaafb-odds`) | **0.75** | `sbd_public_bet_pct`, `sbd_handle_bet_pct`, `sbd_line` | Third splits source. The HTML page may say splits are unavailable; the `ncaafb-odds` API still returns them. Displayed book line only — no open/live for RLM. |
+| `sbd` | [SportsBettingDime](https://www.sportsbettingdime.com/college-football/public-betting-trends/) (`/wp-json/adpt/v1/ncaafb-odds`) | **0.75** | `sbd_public_bet_pct`, `sbd_handle_bet_pct`, `sbd_line` | Second splits source. The HTML page may say splits are unavailable; the `ncaafb-odds` API still returns them. Displayed book line only — no open/live for RLM. |
 
 Composite gap on the agreeing side:
 
 ```
-composite = 1.5 × vsin_gap + 1.0 × primary_gap + 0.75 × sbd_gap
+composite = 1.0 × primary_gap + 0.75 × sbd_gap
 ```
 
-Missing gaps among the agreeing set are skipped, not treated as zero.
-
-**SBD-only dissent (override):** if VSiN and DraftKings agree on a side *and* both individual gaps are ≥ `STRONG_SOURCE_GAP_THRESHOLD` (15 pp), but SBD votes the other way, the game is **not** discarded. Composite is recomputed from VSiN + DK only (SBD's gap is dropped from the sum, not zeroed). The play is capped at **Tier B** — Tier A still requires genuine 3-source unanimity. Output flags this path with `sbd_override: true` and `sbd_dissent_gap`. If SBD is missing or flat, existing two-source Tier B still applies (`sbd_override` stays false). If VSiN and DK disagree with each other, the game is still discarded.
+Missing gaps among the agreeing set are skipped, not treated as zero. Both sources must agree. SBD voting the other way discards the game.
 
 ### Line-movement sources (reverse line movement)
 
@@ -165,10 +162,9 @@ These live at the top of `find_sharp_money.py` and are copied into the JSON `con
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `W_VSIN` / `W_PRIMARY` / `W_SBD` | 1.5 / 1.0 / 0.75 | Composite weights |
+| `W_PRIMARY` / `W_SBD` | 1.0 / 0.75 | Composite weights |
 | `TIER_A_THRESHOLD` / `TIER_B_THRESHOLD` | 15.0 | Minimum composite gap |
-| `REQUIRE_UNANIMOUS_DIRECTION` | true | Opposite-source vote discards the game, except the SBD-override path |
-| `STRONG_SOURCE_GAP_THRESHOLD` | 15.0 | Per-source gap VSiN and DK must each clear for SBD-only dissent to be overridden (Tier B cap) |
+| `REQUIRE_UNANIMOUS_DIRECTION` | true | An opposite-source vote discards the game |
 | `LOW_PROB_DOG_ODDS_THRESHOLD` | +200 | Moneyline American odds at/beyond this set `low_volume_dog_flag` |
 | `RLM_SOURCE_PRIORITY` | thespread, polymarket, eva | Primary RLM pair order; first complete source wins |
 | `EXCHANGE_RLM_MIN_PP` | 1.0 | Polymarket history move to count as exchange RLM (A+ enrichment, not primary RLM) |

@@ -8,21 +8,21 @@ game.total.over/under) — confirmed against mlb/wnba/ufc/ncaaf/nfl_betting_spli
   primary  public_bet_pct / handle_bet_pct
            (MLB: PlayerProps.ai; WNBA/UFC/NCAAF/NFL: DraftKings Network)
   sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NCAAF + NFL)
-  vsin     vsin_public_bet_pct / vsin_handle_bet_pct
   prices   eva_open / eva_line first when EVA detected a move, else
            TheSpread open / live, else Polymarket history
            (never splice EVA open against DK live)
   juice    open_odds / live_odds  (spread/total vig when the number is flat)
-  vsin ML  vsin_line    (American odds, used for no-vig fair probability)
+  ML fair  live American odds, else EVA (no-vig)
 
 Moneyline is the default market. Spread open/live are point-spread numbers,
 so RLM uses the number first and falls back to juice implied-prob movement.
 Totals use over/under: a rising total confirms Over, a falling total Under.
-WNBA/UFC weight DraftKings (primary) + VSiN only. NCAAF/NFL are three-source
-(DK + VSiN + SBD) like MLB; Pinnacle is skipped. RLM source order:
+WNBA/UFC score DraftKings alone. MLB/NCAAF/NFL need PlayerProps or DraftKings
+plus SportsBettingDime. Pinnacle is skipped. RLM source order:
 EV Analytics (chart history), then TheSpread open→live, then Polymarket.
 SBD is not scraped for WNBA/UFC. Covers is not scraped for UFC;
 Polymarket implied prob is used as the exchange fair in that case.
+VSiN republished the same DraftKings splits and is no longer scraped.
 
 Qualified plays are then enriched (never filtered) with an exchange_confirmation
 block: median de-vig fair from covers_odds books, edge vs sportsbook fair,
@@ -67,7 +67,6 @@ Market = Literal["moneyline", "spread", "total"]
 
 # --- Tunable constants (change these; do not hardcode in logic) ---------------
 
-W_VSIN = 1.5
 W_PRIMARY = 1.0
 W_SBD = 0.75
 
@@ -80,14 +79,8 @@ LOW_LIQUIDITY_THRESHOLD = 10_000.0
 TIER_A_PLUS_EDGE_PCT = 1.5
 
 # If any source with a reading votes the opposite side, discard the game.
-# Neutral/missing sources are not dissent, so Tier B still fires when exactly
-# two sources agree and the third is missing or has a zero gap.
-# Softened for SBD-only dissent: see STRONG_SOURCE_GAP_THRESHOLD.
+# Neutral/missing sources are not dissent. With two sources, both must agree.
 REQUIRE_UNANIMOUS_DIRECTION = True
-
-# Per-source handle−public gap (not composite). When VSiN and DK both clear
-# this and agree, SBD voting the other way does not discard the game.
-STRONG_SOURCE_GAP_THRESHOLD = 15.0
 
 # Moneyline underdog American odds at/beyond this are flagged as lower-volume.
 LOW_PROB_DOG_ODDS_THRESHOLD = 200.0
@@ -96,18 +89,17 @@ LOW_PROB_DOG_ODDS_THRESHOLD = 200.0
 RLM_SOURCE_PRIORITY: tuple[str, ...] = ("eva", "thespread", "polymarket")
 
 SOURCE_WEIGHTS: dict[str, float] = {
-    "vsin": W_VSIN,
     "primary": W_PRIMARY,
     "sbd": W_SBD,
 }
-MLB_SOURCES = ("primary", "vsin", "sbd")
-TWO_SOURCE_LEAGUES = frozenset({"WNBA", "UFC"})
-WNBA_SOURCES = ("primary", "vsin")
+MLB_SOURCES = ("primary", "sbd")
+SINGLE_SOURCE_LEAGUES = frozenset({"WNBA", "UFC"})
+WNBA_SOURCES = ("primary",)
 SIDES = ("away", "home")
 TOTAL_SIDES = ("over", "under")
 ALL_SIDES = SIDES + TOTAL_SIDES
 Side = Literal["away", "home", "over", "under"]
-SourceName = Literal["primary", "vsin", "sbd"]
+SourceName = Literal["primary", "sbd"]
 Tier = Literal["A+", "A", "B"]
 
 
@@ -119,7 +111,7 @@ def _league_key(league: str | None) -> str:
 
 
 def sources_for_league(league: str | None) -> tuple[str, ...]:
-    if _league_key(league) in TWO_SOURCE_LEAGUES:
+    if _league_key(league) in SINGLE_SOURCE_LEAGUES:
         return WNBA_SOURCES
     return MLB_SOURCES
 
@@ -256,43 +248,6 @@ def _source_favors(away_gaps: SourceGaps, home_gaps: SourceGaps, source: str) ->
     return None
 
 
-def _try_sbd_override(
-    away_gaps: SourceGaps,
-    home_gaps: SourceGaps,
-    sources: tuple[str, ...],
-) -> Agreement | None:
-    """Keep the game when VSiN+DK agree strongly and only SBD votes the other way.
-
-    SBD missing/neutral is not handled here (existing two-source Tier B).
-    VSiN vs DK disagreement still discards. Composite later drops SBD.
-    """
-    if not {"primary", "vsin", "sbd"}.issubset(sources):
-        return None
-    primary_vote = _source_favors(away_gaps, home_gaps, "primary")
-    vsin_vote = _source_favors(away_gaps, home_gaps, "vsin")
-    sbd_vote = _source_favors(away_gaps, home_gaps, "sbd")
-    if primary_vote is None or vsin_vote is None or sbd_vote is None:
-        return None
-    if primary_vote != vsin_vote or sbd_vote == primary_vote:
-        return None
-    side_gaps = away_gaps if primary_vote == "away" else home_gaps
-    gaps = side_gaps.as_dict()
-    primary_gap = gaps.get("primary")
-    vsin_gap = gaps.get("vsin")
-    if primary_gap is None or vsin_gap is None:
-        return None
-    if primary_gap < STRONG_SOURCE_GAP_THRESHOLD or vsin_gap < STRONG_SOURCE_GAP_THRESHOLD:
-        return None
-    dissent_gaps = home_gaps if sbd_vote == "home" else away_gaps
-    return Agreement(
-        side=primary_vote,
-        agreeing_sources=("primary", "vsin"),
-        conflict=True,
-        sbd_override=True,
-        sbd_dissent_gap=dissent_gaps.sbd,
-    )
-
-
 def check_agreement(
     away_gaps: SourceGaps,
     home_gaps: SourceGaps,
@@ -300,11 +255,8 @@ def check_agreement(
 ) -> Agreement:
     """Count sources with a positive gap on each side.
 
-    Discards the game (side=None) when:
-      - no side has at least 2 of the active sources, or
-      - sources vote opposite directions (if REQUIRE_UNANIMOUS_DIRECTION),
-        unless the SBD-override path applies (VSiN+DK strong, SBD alone
-        dissenting).
+    A single-source league (WNBA/UFC) qualifies on that one vote. Every other
+    league needs at least two agreeing sources. Opposite votes discard the game.
     """
     votes: dict[Side, list[str]] = {"away": [], "home": []}
     for source in sources:
@@ -315,16 +267,14 @@ def check_agreement(
     away_n = len(votes["away"])
     home_n = len(votes["home"])
     conflict = away_n > 0 and home_n > 0
+    min_agree = 1 if len(sources) <= 1 else 2
 
     if conflict and REQUIRE_UNANIMOUS_DIRECTION:
-        override = _try_sbd_override(away_gaps, home_gaps, sources)
-        if override is not None:
-            return override
         return Agreement(side=None, agreeing_sources=(), conflict=True)
 
-    if away_n >= 2 and away_n >= home_n:
+    if away_n >= min_agree and away_n >= home_n:
         return Agreement(side="away", agreeing_sources=tuple(votes["away"]), conflict=conflict)
-    if home_n >= 2:
+    if home_n >= min_agree:
         return Agreement(side="home", agreeing_sources=tuple(votes["home"]), conflict=conflict)
     return Agreement(side=None, agreeing_sources=(), conflict=conflict)
 
@@ -690,22 +640,17 @@ def assign_tier(
 ) -> Tier | None:
     """Return 'A' or 'B', or None if the play should not be output.
 
-    Tier A = every active source agrees. Tier B = all-but-one, and at
-    least 2 sources. WNBA has two handle/public sources (DK + VSiN), so
-    both agreeing is Tier A; a single source never qualifies.
-    The SBD-override path (VSiN+DK strong, SBD dissenting) is capped at B
-    even if the two-source composite would clear the Tier A threshold.
+    Tier A = every active source agrees and the composite clears the threshold.
+    WNBA/UFC have one handle/public source (DraftKings), so that vote is Tier A.
+    Tier B = all-but-one on a slate with at least three sources.
     """
-    if not rlm_confirmed:
+    if not rlm_confirmed or sbd_override:
         return None
-    if sbd_override:
-        if n_agreeing >= 2 and composite_gap >= TIER_B_THRESHOLD:
-            return "B"
-        return None
-    if n_agreeing == n_sources and n_sources >= 2 and composite_gap >= TIER_A_THRESHOLD:
+    if n_agreeing == n_sources and n_sources >= 1 and composite_gap >= TIER_A_THRESHOLD:
         return "A"
     if (
-        n_agreeing == n_sources - 1
+        n_sources >= 3
+        and n_agreeing == n_sources - 1
         and n_agreeing >= 2
         and composite_gap >= TIER_B_THRESHOLD
     ):
@@ -731,7 +676,7 @@ def _label_side(side: str | None, market: Market) -> str | None:
 def _fair_prob_for_side(
     away: dict[str, Any], home: dict[str, Any], side: Side, market: Market = "moneyline"
 ) -> float | None:
-    """De-vig live American odds. Spread/total use juice; ML prefers VSIN then live."""
+    """De-vig live American odds. Spread/total use juice; ML uses live, then EVA."""
     if market in {"spread", "total"}:
         odds_away = _as_float(away.get("live_odds"))
         odds_home = _as_float(home.get("live_odds"))
@@ -744,20 +689,15 @@ def _fair_prob_for_side(
         if odds_away is None or odds_home is None:
             return None
     else:
-        vsin_away = _as_float(away.get("vsin_line"))
-        vsin_home = _as_float(home.get("vsin_line"))
-        if vsin_away is not None and vsin_home is not None:
-            odds_away, odds_home = vsin_away, vsin_home
-        else:
-            live_away = _as_float(away.get("live"))
-            live_home = _as_float(home.get("live"))
-            if live_away is None:
-                live_away = _as_float(away.get("eva_line"))
-            if live_home is None:
-                live_home = _as_float(home.get("eva_line"))
-            if live_away is None or live_home is None:
-                return None
-            odds_away, odds_home = live_away, live_home
+        live_away = _as_float(away.get("live"))
+        live_home = _as_float(home.get("live"))
+        if live_away is None:
+            live_away = _as_float(away.get("eva_line"))
+        if live_home is None:
+            live_home = _as_float(home.get("eva_line"))
+        if live_away is None or live_home is None:
+            return None
+        odds_away, odds_home = live_away, live_home
     try:
         p_away, p_home = no_vig_fair_probs(odds_away, odds_home)
     except ValueError:
@@ -766,7 +706,7 @@ def _fair_prob_for_side(
 
 
 def _ml_american_odds(side_data: dict[str, Any]) -> float | None:
-    for key in ("live", "vsin_line", "eva_line", "sbd_line"):
+    for key in ("live", "eva_line", "sbd_line"):
         odds = _as_float(side_data.get(key))
         if odds is not None:
             return odds
@@ -1263,7 +1203,6 @@ def config_snapshot(
         "market": list(markets) if len(markets) > 1 else markets[0],
         "sources": list(sources),
         "primary_source": primary_source_label(league),
-        "w_vsin": W_VSIN,
         "w_primary": W_PRIMARY,
     }
     if "sbd" in sources:
@@ -1271,7 +1210,6 @@ def config_snapshot(
     cfg["tier_a_threshold"] = TIER_A_THRESHOLD
     cfg["tier_b_threshold"] = TIER_B_THRESHOLD
     cfg["require_unanimous_direction"] = REQUIRE_UNANIMOUS_DIRECTION
-    cfg["strong_source_gap_threshold"] = STRONG_SOURCE_GAP_THRESHOLD
     cfg["low_prob_dog_odds_threshold"] = LOW_PROB_DOG_ODDS_THRESHOLD
     cfg["rlm_source_priority"] = list(RLM_SOURCE_PRIORITY)
     cfg["exchange_rlm_min_pp"] = EXCHANGE_RLM_MIN_PP

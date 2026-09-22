@@ -67,13 +67,15 @@ def test_cfb_unknown_fcs_abbr_stays_uppercase() -> None:
 
 
 def test_ncaaf_sharp_sources() -> None:
-    assert sources_for_league("NCAAF") == ("primary", "vsin", "sbd")
-    assert sources_for_league("CFB") == ("primary", "vsin", "sbd")
+    assert sources_for_league("NCAAF") == ("primary", "sbd")
+    assert sources_for_league("CFB") == ("primary", "sbd")
     assert primary_source_label("NCAAF") == "draftkings"
     assert primary_source_label("CFB") == "draftkings"
     assert _markets_from_arg("all") == ("moneyline", "spread", "total")
     cfg = config_snapshot(("moneyline", "spread", "total"), sources_for_league("NCAAF"), "NCAAF")
-    assert cfg["strong_source_gap_threshold"] == 15.0
+    assert cfg["w_primary"] == 1.0
+    assert cfg["w_sbd"] == 0.75
+    assert "w_vsin" not in cfg
     assert cfg["low_prob_dog_odds_threshold"] == 200.0
     assert cfg["rlm_source_priority"] == ["eva", "thespread", "polymarket"]
 
@@ -397,8 +399,8 @@ def _poly(*, line_open: int, line_live: int, p_open: float, p_live: float, liqui
     }
 
 
-def test_sbd_override_yields_tier_b_not_a() -> None:
-    """VSiN+DK both ≥ 15 and agree; SBD votes the other way → keep as Tier B."""
+def test_sbd_dissent_discards() -> None:
+    """SBD voting the other way discards the game. VSiN no longer overrides it."""
     game = {
         "matchup": "UNC @ TCU",
         "date": "2026-08-29",
@@ -427,21 +429,11 @@ def test_sbd_override_yields_tier_b_not_a() -> None:
             ),
         },
     }
-    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
-    assert play is not None
-    assert play["side"] == "UNC"
-    assert play["tier"] == "B"
-    assert play["sbd_override"] is True
-    assert play["sbd_dissent_gap"] == 50  # home SBD 70 − 20
-    assert play["agreeing_sources"] == ["primary", "vsin"]
-    assert play["n_sources_agreeing"] == 2
-    # SBD dropped from the sum: 1.0×25 + 1.5×22 = 58, not counted against the play
-    assert play["composite_gap"] == 58.0
-    assert "sbd" not in play["agreeing_sources"]
+    assert process_game(game, market="moneyline", sources=sources_for_league("NCAAF")) is None
 
 
 def test_sbd_dissent_without_strong_gaps_still_discards() -> None:
-    """SBD veto still discards when VSiN's per-source gap is below the strong threshold."""
+    """SBD voting the other side discards even when the DraftKings gap is large."""
     game = {
         "matchup": "UNC @ TCU",
         "date": "2026-08-29",
@@ -474,7 +466,7 @@ def test_sbd_dissent_without_strong_gaps_still_discards() -> None:
     assert process_game(game, market="moneyline", sources=sources_for_league("NCAAF")) is None
 
 
-def test_sbd_missing_is_not_override() -> None:
+def test_sbd_missing_discards() -> None:
     game = {
         "matchup": "UNC @ TCU",
         "date": "2026-08-29",
@@ -483,8 +475,6 @@ def test_sbd_missing_is_not_override() -> None:
                 "selection": "UNC",
                 "public_bet_pct": 20,
                 "handle_bet_pct": 45,
-                "vsin_public_bet_pct": 18,
-                "vsin_handle_bet_pct": 40,
                 "open": 280,
                 "live": 250,
             },
@@ -492,18 +482,12 @@ def test_sbd_missing_is_not_override() -> None:
                 "selection": "TCU",
                 "public_bet_pct": 80,
                 "handle_bet_pct": 55,
-                "vsin_public_bet_pct": 82,
-                "vsin_handle_bet_pct": 60,
                 "open": -355,
                 "live": -320,
             },
         },
     }
-    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
-    assert play is not None
-    assert play["tier"] == "B"
-    assert play["sbd_override"] is False
-    assert play["n_sources_agreeing"] == 2
+    assert process_game(game, market="moneyline", sources=sources_for_league("NCAAF")) is None
 
 
 def test_ml_low_volume_dog_flag_and_spread_divergence() -> None:
@@ -565,11 +549,11 @@ def test_ml_low_volume_dog_flag_and_spread_divergence() -> None:
     assert play["side"] == "UNC"
     assert play["low_volume_dog_flag"] is True
     assert play["ml_spread_divergence"] is True
-    assert play["spread_composite_gap"] == 5.75  # 1.0×2 + 1.5×2 + 0.75×1
+    assert play["spread_composite_gap"] == 2.75  # 1.0×2 + 0.75×1
     assert play["confidence_note"] is not None
     assert "+200" in play["confidence_note"]
-    assert "45.75" in play["confidence_note"]
-    assert "5.75" in play["confidence_note"]
+    assert "33.75" in play["confidence_note"]
+    assert "2.75" in play["confidence_note"]
 
 
 def test_rlm_prefers_eva_over_thespread_when_eva_moved() -> None:

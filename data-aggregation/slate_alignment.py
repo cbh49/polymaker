@@ -15,39 +15,34 @@ from zoneinfo import ZoneInfo
 
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 
-MLB_REQUIRED: tuple[str, ...] = ("primary", "vsin", "sbd")
-WNBA_REQUIRED: tuple[str, ...] = ("primary", "vsin", "thespread")
-NCAAF_REQUIRED: tuple[str, ...] = ("primary", "vsin", "sbd")
-NFL_REQUIRED: tuple[str, ...] = ("primary", "vsin", "sbd")
+MLB_REQUIRED: tuple[str, ...] = ("primary", "sbd")
+WNBA_REQUIRED: tuple[str, ...] = ("primary", "thespread")
+NCAAF_REQUIRED: tuple[str, ...] = ("primary", "sbd")
+NFL_REQUIRED: tuple[str, ...] = ("primary", "sbd")
 NCAAF_SLATE_WINDOW_DAYS = 6
 NFL_SLATE_WINDOW_DAYS = 7
 
 # Combined-file `sources` object keys for each logical source.
 MLB_SOURCE_KEYS: dict[str, str] = {
     "primary": "playerprops",
-    "vsin": "vsin",
     "sbd": "sportsbettingdime",
 }
 WNBA_SOURCE_KEYS: dict[str, str] = {
     "primary": "draftkings",
-    "vsin": "vsin",
     "thespread": "thespread",
 }
 NCAAF_SOURCE_KEYS: dict[str, str] = {
     "primary": "draftkings",
-    "vsin": "vsin",
     "sbd": "sportsbettingdime",
 }
 NFL_SOURCE_KEYS: dict[str, str] = {
     "primary": "draftkings",
-    "vsin": "vsin",
     "sbd": "sportsbettingdime",
 }
 
 # Fields that prove a source merged onto a game (checked on moneyline unless noted).
 _SOURCE_FIELDS: dict[str, tuple[str, str]] = {
     "primary": ("moneyline", "public_bet_pct"),
-    "vsin": ("moneyline", "vsin_handle_bet_pct"),
     "sbd": ("moneyline", "sbd_handle_bet_pct"),
     "thespread": ("spread", "open"),
 }
@@ -173,7 +168,7 @@ def game_has_source(game: dict[str, Any], logical: str) -> bool:
     market, field = spec
     if _side_has_field(game, market, field):
         return True
-    if logical in {"primary", "vsin", "sbd"}:
+    if logical in {"primary", "sbd"}:
         for extra in ("spread", "total", "moneyline"):
             if extra != market and _side_has_field(game, extra, field):
                 return True
