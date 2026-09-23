@@ -27,6 +27,7 @@ from ev_trading.fair_value.ev_alerts import (
 )
 from ev_trading.fair_value.models import BookPoint, InformationalRow
 from ev_trading.fair_value.pipeline import _fair_at_line, _info_rows, _ou_points, process_slate
+from ev_trading.fair_value.tradable_pricer import venue_traded_price
 from ev_trading.fair_value.report import FairValueReport
 
 
@@ -487,8 +488,10 @@ def test_build_alert_includes_venue_quotes() -> None:
     assert [q.book for q in alert.quotes] == list(CARD_BOOKS)
     by_book = {q.book: q for q in alert.quotes}
     assert by_book["draftkings"].odds == -110
-    assert by_book["kalshi"].odds == 150
-    assert by_book["polymarket"].odds is not None
+    assert by_book["kalshi"].odds == float(prob_to_american(venue_traded_price(0.40, "kalshi")))
+    assert by_book["polymarket"].odds == float(
+        prob_to_american(venue_traded_price(0.41, "polymarket"))
+    )
     tweet = format_ev_tweet(alert)
     assert "Book: Kalshi" in tweet
     assert len(tweet) <= 280
@@ -539,8 +542,10 @@ def test_card_grid_walks_off_strike_books_to_title_line() -> None:
     assert alert is not None
     assert [q.book for q in alert.quotes] == list(CARD_BOOKS)
     by_book = {q.book: q for q in alert.quotes}
-    assert by_book["kalshi"].odds == float(prob_to_american(0.61))
-    assert by_book["polymarket"].odds == float(prob_to_american(0.54))
+    assert by_book["kalshi"].odds == float(prob_to_american(venue_traded_price(0.61, "kalshi")))
+    assert by_book["polymarket"].odds == float(
+        prob_to_american(venue_traded_price(0.54, "polymarket"))
+    )
     assert by_book["hardrock"].odds == -110
     assert by_book["hardrock"].line == 14.5
 

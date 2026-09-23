@@ -49,6 +49,39 @@ def polymarket_fee_per_contract(
     return taker + gas
 
 
+# Shown odds use a flat 1% of the contract price. Trading still uses
+# polymarket_fee_per_contract (taker bps + gas).
+POLYMARKET_ODDS_FEE = Decimal("0.01")
+
+
+def venue_traded_price(
+    price: float,
+    venue: str,
+    *,
+    cfg: FairValueConfig | None = None,
+) -> float:
+    """All-in price paid to buy, before that price is turned into American odds.
+
+    Kalshi's taker fee is added, then the cash cost is rounded up to the next
+    cent (a 46¢ ask trades at 48¢). Polymarket adds 1% of the price.
+    """
+    px = Decimal(str(min(max(float(price), 0.0), 1.0)))
+    name = (venue or "").strip().lower()
+    if name == "kalshi":
+        fee_cfg = cfg.kalshi_fee if cfg is not None else None
+        fee = Decimal(str(kalshi_fee_per_contract(float(px), cfg=fee_cfg)))
+        traded = (px + fee).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+    elif name == "polymarket":
+        traded = px * (Decimal("1") + POLYMARKET_ODDS_FEE)
+    else:
+        return float(px)
+    if traded <= 0:
+        return float(px)
+    if traded >= 1:
+        return 0.9999
+    return float(traded)
+
+
 def _edge_block(fair_prob: float, market_price: float, fee: float) -> dict[str, float]:
     raw = fair_prob - market_price
     cost = market_price + fee

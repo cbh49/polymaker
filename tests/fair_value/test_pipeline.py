@@ -8,11 +8,13 @@ from ev_trading.fair_value.config import FairValueConfig
 from ev_trading.fair_value.models import FittedDistribution
 from ev_trading.fair_value.pipeline import _allow_ou_side, process_slate
 from ev_trading.fair_value.report import is_td_yesno
+from ev_trading.fair_value.devig import prob_to_american
 from ev_trading.fair_value.tradable_pricer import (
     kalshi_no_ask,
     kalshi_taker_fee,
     kalshi_yes_ask,
     polymarket_side_ask,
+    venue_traded_price,
 )
 
 SPREAD = {
@@ -166,6 +168,15 @@ def test_kalshi_fee_matches_published_100_contract_table() -> None:
     assert kalshi_taker_fee(0.10, contracts=100) == pytest.approx(0.63)
     assert kalshi_taker_fee(0.40, contracts=100) == pytest.approx(1.68)
     assert kalshi_taker_fee(0.90, contracts=100) == pytest.approx(0.63)
+
+
+def test_traded_price_is_applied_before_american_odds() -> None:
+    """46¢ Kalshi is +117 raw and +108 after the fee rounds the cost to 48¢."""
+    assert venue_traded_price(0.46, "kalshi") == pytest.approx(0.48)
+    assert prob_to_american(0.46) == 117
+    assert prob_to_american(venue_traded_price(0.46, "kalshi")) == 108
+    assert venue_traded_price(0.54, "polymarket") == pytest.approx(0.5454)
+    assert prob_to_american(venue_traded_price(0.54, "polymarket")) == -120
 
 
 def test_kalshi_yes_ask_reads_dollar_fields() -> None:
@@ -765,6 +776,11 @@ def test_away_favorite_spread_prices_yes_as_away() -> None:
     assert set(by_side) == {"home", "away"}
     assert by_side["away"].book_prob == pytest.approx(0.44)
     assert by_side["home"].book_prob == pytest.approx(0.58)
+    assert by_side["away"].book_odds == float(prob_to_american(venue_traded_price(0.44, "kalshi")))
+    assert by_side["home"].book_odds == float(prob_to_american(venue_traded_price(0.58, "kalshi")))
+    assert by_side["away"].raw_edge == pytest.approx(
+        by_side["away"].fair_prob - venue_traded_price(0.44, "kalshi")
+    )
     assert by_side["away"].fair_prob == pytest.approx(1.0 - by_side["home"].fair_prob)
 
     priced = [

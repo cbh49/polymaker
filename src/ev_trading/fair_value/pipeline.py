@@ -31,6 +31,7 @@ from ev_trading.fair_value.tradable_pricer import (
     kalshi_yes_ask,
     opportunity,
     polymarket_side_ask,
+    venue_traded_price,
 )
 
 _TWO_WAY_STATS = frozenset(
@@ -432,11 +433,19 @@ def _append_venue_info(
     fair: float,
     n_books: int,
     side: str | None,
+    cfg: FairValueConfig | None = None,
 ) -> None:
-    """Sportsbook-style +EV row for Kalshi/Polymarket (fair minus ask)."""
+    """Sportsbook-style +EV row for Kalshi/Polymarket.
+
+    Odds and the edge used for cards are vs the fee-inclusive traded price,
+    not the raw ask. ``book_prob`` stays the quoted ask.
+    """
     if informational is None or not side or ask is None:
         return
     if ask <= 0.0 or ask >= 1.0:
+        return
+    traded = venue_traded_price(ask, book, cfg=cfg)
+    if traded <= 0.0 or traded >= 1.0:
         return
     informational.append(
         InformationalRow(
@@ -448,10 +457,10 @@ def _append_venue_info(
             book_line=line,
             book_prob=ask,
             fair_prob=fair,
-            raw_edge=fair - ask,
+            raw_edge=fair - traded,
             n_books=n_books,
             side=side,
-            book_odds=float(prob_to_american(ask)),
+            book_odds=float(prob_to_american(traded)),
         )
     )
 
@@ -563,6 +572,7 @@ def _emit_binary_venue(
                 fair=fair_yes,
                 n_books=n_books,
                 side=alert_yes,
+                cfg=cfg,
             )
         if no_ask is not None and _allow_ou_side(
             no_side,
@@ -584,6 +594,7 @@ def _emit_binary_venue(
                 fair=1.0 - fair_yes,
                 n_books=n_books,
                 side=alert_no,
+                cfg=cfg,
             )
 
     if isinstance(polymarket, dict):
@@ -654,6 +665,7 @@ def _emit_binary_venue(
                 fair=fair_yes,
                 n_books=n_books,
                 side=alert_yes,
+                cfg=cfg,
             )
         if under is not None and _allow_ou_side(
             no_side,
@@ -675,6 +687,7 @@ def _emit_binary_venue(
                 fair=1.0 - fair_yes,
                 n_books=n_books,
                 side=alert_no,
+                cfg=cfg,
             )
 
 
@@ -1008,6 +1021,7 @@ def _process_spread(
                 fair=fair,
                 n_books=len(points),
                 side="home",
+                cfg=cfg,
             )
         if away_px is not None:
             _route_opp(
@@ -1032,6 +1046,7 @@ def _process_spread(
                 fair=1.0 - fair,
                 n_books=len(points),
                 side="away",
+                cfg=cfg,
             )
 
 
@@ -1148,6 +1163,7 @@ def _process_moneyline(
                 fair=fair,
                 n_books=len(points),
                 side=side,
+                cfg=cfg,
             )
 
 

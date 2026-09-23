@@ -28,7 +28,12 @@ from ev_trading.fair_value.pipeline import (
     _threshold_points,
 )
 from ev_trading.fair_value.report import FairValueReport
-from ev_trading.fair_value.tradable_pricer import kalshi_no_ask, kalshi_yes_ask, polymarket_side_ask
+from ev_trading.fair_value.tradable_pricer import (
+    kalshi_no_ask,
+    kalshi_yes_ask,
+    polymarket_side_ask,
+    venue_traded_price,
+)
 from ev_trading.nfl_odds import TEAM_ABBR_TO_NAME, canonical_abbr, game_start_ms
 
 PREDICTION_VENUES = frozenset({"kalshi", "polymarket"})
@@ -526,6 +531,7 @@ def _quote_from_venue(
     blob: dict[str, Any] | None,
     *,
     side: str,
+    cfg: FairValueConfig | None = None,
 ) -> BookQuote | None:
     if not isinstance(blob, dict):
         return None
@@ -540,11 +546,14 @@ def _quote_from_venue(
             ask = polymarket_side_ask(blob, "over")
     if ask is None:
         return None
+    traded = venue_traded_price(ask, book, cfg=cfg)
+    if traded <= 0.0 or traded >= 1.0:
+        return None
     line = _venue_line(blob)
     nested = blob.get(key)
     if line is None and isinstance(nested, dict):
         line = _venue_line(nested)
-    return BookQuote(book=book, odds=float(prob_to_american(ask)), line=line)
+    return BookQuote(book=book, odds=float(prob_to_american(traded)), line=line)
 
 
 def _prob_odds(value: Any) -> float | None:
@@ -641,7 +650,10 @@ def _translate_sportsbook_grid(
     target: float | None,
     cfg: FairValueConfig | None = None,
 ) -> list[BookQuote]:
-    """Walk off-strike sportsbook juice to the play line. Venues stay raw asks."""
+    """Walk off-strike sportsbook juice to the play line.
+
+    Kalshi and Polymarket quotes already include fees and stay on their ask.
+    """
     if target is None:
         return grid
     cfg = cfg or FairValueConfig.load()
@@ -693,6 +705,7 @@ def collect_book_quotes(
     row: InformationalRow,
     *,
     tolerance: float = 0.26,
+    cfg: FairValueConfig | None = None,
 ) -> list[BookQuote]:
     """Always return the 8-slot card grid: 6 sportsbooks + Kalshi + Polymarket."""
     del tolerance
@@ -723,6 +736,7 @@ def collect_book_quotes(
             venue,
             blob.get(venue) if isinstance(blob.get(venue), dict) else None,
             side=row.side,
+            cfg=cfg,
         )
         if quote is not None:
             by_book[venue].append(quote)
@@ -745,11 +759,12 @@ def build_alert(
     payload: dict[str, Any],
     *,
     tolerance: float = 0.26,
+    cfg: FairValueConfig | None = None,
 ) -> SportsbookEvAlert | None:
     odds = _display_odds(row)
     if odds is None:
         return None
-    quotes = collect_book_quotes(payload, row, tolerance=tolerance)
+    quotes = collect_book_quotes(payload, row, tolerance=tolerance, cfg=cfg)
     canon = canonical_book(row.book)
     filled: list[BookQuote] = []
     for quote in quotes:
@@ -902,7 +917,9 @@ def post_ev_alerts(
         )
         alerts: list[SportsbookEvAlert] = []
         for row in winners:
-            alert = build_alert(row, payload, tolerance=cfg.same_strike_line_tolerance)
+            alert = build_alert(
+                row, payload, tolerance=cfg.same_strike_line_tolerance, cfg=cfg
+            )
             if alert is not None:
                 alerts.append(alert)
         cache = SentCache(cache_path or DEFAULT_CACHE)
