@@ -218,11 +218,14 @@ def format_bet_title(
             return f"{team} Spread"
         return f"{team} {_signed_line(shown)}"
     if key == "total":
+        game = ""
+        if abbrs:
+            game = f"{team_full_name(away)} vs {team_full_name(home)} "
         if line is None:
-            return "Total"
+            return f"{game}Total".strip()
         if side_key == "under":
-            return f"Under {line:g} Total"
-        return f"Over {line:g} Total"
+            return f"{game}Under {line:g}".strip()
+        return f"{game}Over {line:g}".strip()
 
     short = _stat_short(key)
     name = (player or "").strip()
