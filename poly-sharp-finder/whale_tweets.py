@@ -33,6 +33,30 @@ def whale_posts_enabled() -> bool:
     return os.environ.get("X_WHALE_POSTS", "").strip().lower() in {"1", "true", "yes"}
 
 
+def _poly_team_name(league: str, code: str) -> str:
+    """Full club name for a Polymarket slug token, else the uppercase code."""
+    from polymaker.trading.teams import MLB_POLY_TO_NAME, NFL_POLY_TO_NAME, WNBA_POLY_TO_NAME
+
+    table = {
+        "mlb": MLB_POLY_TO_NAME,
+        "nfl": NFL_POLY_TO_NAME,
+        "wnba": WNBA_POLY_TO_NAME,
+    }.get((league or "").lower(), {})
+    return table.get((code or "").lower()) or (code or "").upper()
+
+
+def game_matchup(slug: str) -> str:
+    """Away vs home from a spread/total slug, e.g. New York Mets vs New York Yankees."""
+    m = TOTAL_SLUG_RE.match(slug or "") or SPREAD_SLUG_RE.match(slug or "")
+    if not m:
+        return ""
+    away = _poly_team_name(m.group("league"), m.group("away"))
+    home = _poly_team_name(m.group("league"), m.group("home"))
+    if not away or not home:
+        return ""
+    return f"{away} vs {home}"
+
+
 def team_nickname(outcome: str) -> str:
     """Short team nick for tweet copy: 'Chicago Cubs' → 'Cubs'."""
     name = (outcome or "").strip()
@@ -61,10 +85,13 @@ def play_label(market: WatchedMarket | None, sig: Signal) -> str:
         name = (outcome or "").strip()
         lower = name.lower()
         if lower.startswith("over") or lower in {"o", "yes"}:
-            return f"Over {line}".strip()
-        if lower.startswith("under") or lower in {"u", "no"}:
-            return f"Under {line}".strip()
-        return name or (f"O/U {line}".strip() if line else "Total")
+            side_label = f"Over {line}".strip()
+        elif lower.startswith("under") or lower in {"u", "no"}:
+            side_label = f"Under {line}".strip()
+        else:
+            side_label = name or (f"O/U {line}".strip() if line else "Total")
+        matchup = game_matchup(slug)
+        return f"{matchup} {side_label}".strip() if matchup else side_label
 
     if is_spread_slug(slug):
         m = SPREAD_SLUG_RE.match(slug)

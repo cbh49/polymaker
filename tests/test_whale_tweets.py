@@ -164,9 +164,24 @@ def test_format_whale_tweet_nfl_total_under() -> None:
         _sig(league="NFL", side="no", label="O/U 44.5", detail={"size_usd": 90_000, "price": 0.49}),
         market,
     )
-    assert "Under 44.5" in text
+    assert "Miami Dolphins vs San Francisco 49ers Under 44.5" in text
     assert "Over 44.5" not in text
     assert "#NFL" in text
+
+
+def test_format_whale_tweet_mlb_total_includes_matchup() -> None:
+    market = _market(
+        label="O/U 7.5",
+        yes_outcome="Over",
+        no_outcome="Under",
+        slug="mlb-nym-nyy-2026-09-24-total-7pt5",
+    )
+    text = format_whale_tweet(
+        _sig(side="no", label="O/U 7.5", detail={"size_usd": 52_800, "price": 0.48}),
+        market,
+    )
+    assert "New York Mets vs New York Yankees Under 7.5" in text
+    assert "at 48¢" in text
 
 
 def test_maybe_post_skips_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
