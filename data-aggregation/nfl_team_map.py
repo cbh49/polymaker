@@ -1,7 +1,7 @@
 """Canonical NFL team names and abbreviations used by the betting-splits scrapers.
 
-Sources disagree on labels (DK "KC Chiefs", VSiN "Wash Commanders", SBD
-"Kansas City" / KC). Resolve to a stable betting abbr + full name so splits
+Sources disagree on labels (DK "BUF Bills" / "KC Chiefs", VSiN "Wash Commanders",
+SBD "Kansas City" / KC). Resolve to a stable betting abbr + full name so splits
 merge. Rams=`LA`, Chargers=`LAC` to match Polymarket / ev_trading.
 """
 
@@ -205,6 +205,28 @@ def _build_name_to_abbr() -> dict[str, str]:
 NAME_TO_ABBR = _build_name_to_abbr()
 
 
+def _abbr_plus_nickname(text: str) -> str | None:
+    """Resolve 'BUF Bills' to BUF when the nickname belongs to that abbr.
+
+    DraftKings titles mix a betting abbr with the nickname ('SEA Seahawks',
+    'PIT Steelers'). The first token alone is not enough: 'MIN Lynx' and
+    'IND Fever' share NFL abbrs but are not those NFL teams.
+    """
+    parts = _norm_key(text).split()
+    if len(parts) < 2:
+        return None
+    token = re.sub(r"[^A-Za-z0-9]", "", parts[0]).upper()
+    abbr = ABBR_ALIASES.get(token)
+    if abbr is None and token in ABBR_TO_NAME:
+        abbr = token
+    if abbr is None:
+        return None
+    nickname = _norm_key(ABBR_TO_NAME[abbr]).rsplit(" ", 1)[-1]
+    if " ".join(parts[1:]) == nickname:
+        return abbr
+    return None
+
+
 def canonical_name(text: str) -> str | None:
     """Resolve a DK/VSiN/TheSpread/SBD/EVA label to the canonical full team name."""
     raw = (text or "").strip()
@@ -218,7 +240,7 @@ def canonical_name(text: str) -> str | None:
         return ABBR_TO_NAME[ABBR_ALIASES[upper]]
     if upper in ABBR_TO_NAME:
         return ABBR_TO_NAME[upper]
-    abbr = NAME_TO_ABBR.get(key)
+    abbr = _abbr_plus_nickname(raw) or NAME_TO_ABBR.get(key)
     if abbr:
         return ABBR_TO_NAME[abbr]
     return raw
@@ -233,7 +255,7 @@ def canonical_abbr(text: str) -> str | None:
         return ABBR_ALIASES[upper]
     if upper in ABBR_TO_NAME:
         return upper
-    return NAME_TO_ABBR.get(_norm_key(raw))
+    return _abbr_plus_nickname(raw) or NAME_TO_ABBR.get(_norm_key(raw))
 
 
 def names_match(a: str | None, b: str | None) -> bool:

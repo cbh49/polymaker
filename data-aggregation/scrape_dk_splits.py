@@ -409,8 +409,14 @@ def parse_games(
             day=day,
             allowed_days=allowed_days,
         )
-        if parsed:
-            games.append(parsed)
+        if not parsed:
+            continue
+        if league == "NFL":
+            from nfl_team_map import ABBR_TO_NAME
+
+            if parsed.get("away_abbr") not in ABBR_TO_NAME or parsed.get("home_abbr") not in ABBR_TO_NAME:
+                continue
+        games.append(parsed)
     return games
 
 

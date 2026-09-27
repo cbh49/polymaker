@@ -43,6 +43,20 @@ def test_nfl_aliases() -> None:
     assert names_match("Rams", "LAR")
     assert not names_match("LA Rams", "LAC")
     assert not names_match("NY Giants", "NYJ")
+    # DraftKings titles are "ABBR Nickname" (BUF Bills), not the full city name.
+    assert canonical_abbr("BUF Bills") == "BUF"
+    assert canonical_name("BUF Bills") == "Buffalo Bills"
+    assert canonical_name("SEA Seahawks") == "Seattle Seahawks"
+    assert canonical_abbr("PIT Steelers") == "PIT"
+    assert canonical_abbr("TB Buccaneers") == "TB"
+    assert names_match("BUF Bills", "BUF")
+    assert names_match("WAS Commanders", "Washington Commanders")
+    assert canonical_abbr("LA Chargers") == "LAC"
+    # Same abbr token, different sport — do not attach these to NFL teams.
+    assert canonical_abbr("MIN Lynx") is None
+    assert canonical_abbr("IND Fever") is None
+    assert not names_match("MIN Lynx", "MIN")
+    assert not names_match("NY Liberty", "NYJ")
 
 
 def test_nfl_sharp_sources() -> None:
@@ -219,6 +233,27 @@ def test_dk_nfl_parses_monday_night() -> None:
     assert games[0]["away_abbr"] == "DEN"
     assert games[0]["home_abbr"] == "KC"
     assert games[0]["date"] == "2026-09-14"
+
+
+def test_dk_nfl_abbr_nickname_and_drops_other_sports() -> None:
+    html = _dk_card("LAC @ BUF Bills", "Sun 9/27 1:00 PM", "11") + _dk_card(
+        "NY Liberty @ MIN Lynx", "Sun 9/27 2:00 PM", "12"
+    )
+    games = parse_games(
+        html,
+        [],
+        league="NFL",
+        canonical_name_fn=canonical_name,
+        canonical_abbr_fn=canonical_abbr,
+        names_match_fn=names_match,
+        match_matchup_fn=lambda *_args, **_kw: None,
+        day=date(2026, 9, 27),
+    )
+    assert len(games) == 1
+    assert games[0]["matchup"] == "LAC @ BUF"
+    assert games[0]["away_abbr"] == "LAC"
+    assert games[0]["home_abbr"] == "BUF"
+    assert games[0]["home"] == "Buffalo Bills"
 
 
 def test_resolve_team_nfl() -> None:
