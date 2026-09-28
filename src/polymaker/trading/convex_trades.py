@@ -92,6 +92,7 @@ class ConvexTradeClient:
         condition_id: str | None = None,
         venue: str | None = None,
         payload: dict[str, Any] | None = None,
+        trade_data: dict[str, Any] | None = None,
     ) -> ClaimResult:
         body: dict[str, Any] = {
             "tradeKey": trade_key_value,
@@ -107,6 +108,8 @@ class ConvexTradeClient:
         }
         if venue:
             body["venue"] = venue
+        if trade_data:
+            body["tradeData"] = trade_data
         try:
             raw = self._post("/trades/claim", body)
         except Exception as exc:  # noqa: BLE001 — fail closed

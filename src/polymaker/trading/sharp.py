@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,47 @@ class SharpPlay:
     source_path: str
     raw: dict[str, Any]
     low_volume_dog_flag: bool = False
+
+
+def qualifying_trade_data(play: SharpPlay) -> dict[str, Any]:
+    """Finder snapshot that qualified this play, stored on the trade row.
+
+    The raw play is the record of tier, gaps, splits, and reverse-line-move.
+    Normalized fields the bot traded on are written over the raw copy.
+    """
+    raw = play.raw if isinstance(play.raw, dict) else {}
+    data = _json_safe(raw)
+    if not isinstance(data, dict):
+        data = {}
+    data["league"] = play.league
+    data["market"] = play.market
+    data["side"] = play.side
+    data["tier"] = play.tier
+    data["rlm_confirmed"] = play.rlm_confirmed
+    data["low_volume_dog_flag"] = play.low_volume_dog_flag
+    if play.home_away is not None:
+        data["home_away"] = play.home_away
+    if play.composite_gap is not None:
+        data["composite_gap"] = play.composite_gap
+    if play.implied_fair_prob is not None:
+        data["implied_fair_prob"] = play.implied_fair_prob
+    if play.game_time_utc is not None:
+        data["game_time_utc"] = play.game_time_utc
+    return data
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return str(value)
 
 
 def load_sharp_file(path: str | Path) -> list[SharpPlay]:

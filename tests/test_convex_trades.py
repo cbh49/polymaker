@@ -13,6 +13,28 @@ def test_trade_key_normalizes_outcome() -> None:
     )
 
 
+def test_claim_posts_trade_data() -> None:
+    import json
+
+    client = ConvexTradeClient(http_url="https://example.convex.site", token="secret")
+    trade_data = {"tier": "A", "composite_gap": 12.5, "rlm_confirmed": True}
+    with patch("polymaker.trading.convex_trades.requests.post") as post:
+        post.return_value = MagicMock(status_code=200, json=lambda: {"ok": True, "claimed": True})
+        result = client.claim(
+            trade_key_value="sharp|NFL|2026-09-28|nyj|det|spread|det",
+            league="NFL",
+            source="sharp_money",
+            matchup="NYJ @ DET",
+            side="DET",
+            usd=25.0,
+            prediction_date="2026-09-28",
+            trade_data=trade_data,
+        )
+    assert result.claimed is True
+    body = json.loads(post.call_args.kwargs["data"])
+    assert body["tradeData"] == trade_data
+
+
 def test_claim_true() -> None:
     client = ConvexTradeClient(http_url="https://example.convex.site", token="secret")
     with patch("polymaker.trading.convex_trades.requests.post") as post:

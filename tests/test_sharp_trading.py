@@ -11,7 +11,7 @@ import pytest
 from polymaker.domain import MarketMeta, TokenMeta
 from polymaker.trading.execute import SharpTradeConfig, filter_plays
 from polymaker.trading.match import candidate_event_dates, resolve_outcome_token
-from polymaker.trading.sharp import SharpPlay, load_sharp_file
+from polymaker.trading.sharp import SharpPlay, load_sharp_file, qualifying_trade_data
 from polymaker.trading.teams import parse_matchup, resolve_team
 
 
@@ -134,6 +134,43 @@ def test_load_sharp_file(tmp_path: Path) -> None:
     assert len(plays) == 1
     assert plays[0].side == "AZ"
     assert plays[0].tier == "A"
+
+
+def test_qualifying_trade_data_keeps_signal_snapshot() -> None:
+    play = SharpPlay(
+        league="NFL",
+        matchup="NYJ @ DET",
+        side="DET",
+        market="spread",
+        tier="A",
+        home_away="home",
+        game_time_utc="2026-09-28T17:00:00.000Z",
+        implied_fair_prob=0.57,
+        rlm_confirmed=True,
+        composite_gap=12.5,
+        source_path="/tmp/nfl_sharp_money.json",
+        raw={
+            "agreeing_sources": ["vsin", "sbd"],
+            "n_sources_agreeing": 2,
+            "public_bet_pct": 38.0,
+            "handle_bet_pct": 61.0,
+            "vsin_gap": 18.0,
+            "sbd_gap": float("nan"),
+            "exchange_confirmation": {"exchange_edge_pct": 3.2, "exchange_rlm_confirmed": True},
+        },
+        low_volume_dog_flag=False,
+    )
+    data = qualifying_trade_data(play)
+    assert data["league"] == "NFL"
+    assert data["tier"] == "A"
+    assert data["composite_gap"] == 12.5
+    assert data["rlm_confirmed"] is True
+    assert data["agreeing_sources"] == ["vsin", "sbd"]
+    assert data["public_bet_pct"] == 38.0
+    assert data["handle_bet_pct"] == 61.0
+    assert data["sbd_gap"] is None
+    assert data["exchange_confirmation"]["exchange_edge_pct"] == 3.2
+    assert "source_path" not in data
 
 
 def test_filter_plays_tier_and_market() -> None:
