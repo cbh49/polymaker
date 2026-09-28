@@ -14,7 +14,7 @@ from dataclasses import dataclass
 class Thresholds:
     # --- Trade size tiers (USDC notional) ---
     notable_trade_usd: float = 10_000
-    whale_trade_usd: float = 50_000
+    whale_trade_usd: float = 100_000
     major_trade_usd: float = 100_000
 
     # --- Order book microstructure (log-only by default; see TradeConfig) ---
