@@ -21,7 +21,7 @@ from polymaker.trading.event_key import (
 from polymaker.trading.fill import enrich_fill
 from polymaker.trading.kalshi_match import KalshiMatchedPlay, match_kalshi_plays
 from polymaker.trading.match import MatchedPlay
-from polymaker.trading.sharp import SharpPlay, load_sharp_plays
+from polymaker.trading.sharp import SharpPlay, load_sharp_plays, qualifying_trade_data
 from polymaker.trading.venue_quote import PricedVenue, pick_venue, price_venue
 
 
@@ -363,6 +363,7 @@ async def _trade_one(
         prediction_date=pred_date,
         slug=m.slug,
         condition_id=m.meta.condition_id if m.meta is not None else None,
+        trade_data=qualifying_trade_data(m.play),
         payload={
             "tier": m.play.tier,
             "ask": chosen.ask,
@@ -426,6 +427,7 @@ def _claim_event(
     slug: str | None,
     condition_id: str | None,
     payload: dict[str, Any],
+    trade_data: dict[str, Any] | None = None,
 ) -> tuple[list[str], str | None]:
     """Claim canonical key, then optional Polymarket slug lock. Release on failure."""
     claim = convex.claim(
@@ -440,6 +442,7 @@ def _claim_event(
         condition_id=condition_id,
         venue=str(payload.get("venue") or ""),
         payload=payload,
+        trade_data=trade_data,
     )
     if not claim.claimed:
         return [], claim.detail
