@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -26,8 +27,9 @@ def _purdue_play(**overrides) -> dict:
         "matchup_display": "Wake Forest @ Purdue",
         "away_team": "Wake Forest",
         "home_team": "Purdue",
+        "game_time_utc": "2099-09-12T16:00:00.000Z",
         "game_time_local": "9/12, 12:00PM",
-        "date": "2026-09-12",
+        "date": "2099-09-12",
         "event_id": "34603628",
         "market": "spread",
         "side": "PUR",
@@ -103,6 +105,10 @@ def test_purdue_embed_highlights_play_and_steam() -> None:
     conf = next(f for f in embed["fields"] if f["name"] == "Confidence")
     assert "**90**" in conf["value"]
     assert "Fair 49.6%" in conf["value"]
+    starts = next(f for f in embed["fields"] if f["name"] == "Starts")
+    assert "12:00 PM ET" in starts["value"]
+    assert "Sep 12" in starts["value"]
+    assert "Starts" in embed["description"]
 
 
 def test_resolve_play_label_moneyline_and_total() -> None:
@@ -199,3 +205,31 @@ def test_dedupe_and_a_plus_upgrade(tmp_path: Path) -> None:
     )
     assert third["posted"] == 1
     assert "A+" in posted[0]["embeds"][0]["title"]
+
+
+def test_skips_plays_after_kickoff(tmp_path: Path) -> None:
+    posted: list[dict] = []
+
+    def capture(_url: str, payload: dict) -> _Resp:
+        posted.append(payload)
+        return _Resp()
+
+    started = _purdue_play(game_time_utc="2020-01-01T00:00:00.000Z", play_label="Started +3")
+    live = _purdue_play(event_id="later", side="LATER", play_label="Later +3")
+    output = {
+        "league": "NCAAF",
+        "config": {"primary_source": "draftkings"},
+        "plays": [started, live],
+    }
+    result = post_sharp_alerts(
+        output,
+        webhook_url="https://discord.com/api/webhooks/1/token",
+        cache_path=tmp_path / ".discord_sent.json",
+        post_fn=capture,
+    )
+    assert result["posted"] == 1
+    assert result["skipped"] == 1
+    assert len(posted[0]["embeds"]) == 1
+    blob = json.dumps(posted[0]["embeds"])
+    assert "Later +3" in blob
+    assert "Started +3" not in blob

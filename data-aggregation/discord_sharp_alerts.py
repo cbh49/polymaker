@@ -27,6 +27,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 BOT_ROOT = SCRIPT_DIR.parent
 DEFAULT_CACHE = SCRIPT_DIR / "output" / ".discord_sent.json"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
+KICKOFF_TZ = ZoneInfo("America/New_York")
 
 WEBHOOK_ENV = ("DISCORD_SHARP_WEBHOOK_URL", "DISCORD_WEBHOOK_URL")
 ALERT_TIERS = frozenset({"A", "A+"})
@@ -111,6 +112,75 @@ def _with_juice(number: str | None, odds: float | None) -> str | None:
         return None
     juice = _format_american(odds)
     return f"{number} ({juice})" if juice else number
+
+
+def _clean_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.lower() in {"nan", "none", "null"}:
+        return ""
+    return text
+
+
+def game_start_dt(play: dict[str, Any]) -> datetime | None:
+    """Kickoff as a timezone-aware datetime, or None when the play has no clock."""
+    utc = _clean_text(play.get("game_time_utc"))
+    if utc:
+        try:
+            dt = datetime.fromisoformat(utc.replace("Z", "+00:00"))
+        except ValueError:
+            dt = None
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+
+    date_s = _clean_text(play.get("date"))
+    local = _clean_text(play.get("game_time_local"))
+    clock = ""
+    if "," in local:
+        clock = local.split(",", 1)[1].strip().replace(" ", "")
+        if len(clock) >= 6 and clock[-2:] in {"AM", "PM"} and ":" in clock:
+            clock = f"{clock[:-2]} {clock[-2:]}"
+    if date_s and clock:
+        for fmt in ("%Y-%m-%d %I:%M %p", "%Y-%m-%d %I:%M%p"):
+            try:
+                return datetime.strptime(f"{date_s} {clock}", fmt).replace(tzinfo=KICKOFF_TZ)
+            except ValueError:
+                continue
+    if date_s:
+        try:
+            return datetime.fromisoformat(date_s[:10]).replace(hour=19, tzinfo=PAGE_TZ)
+        except ValueError:
+            return None
+    return None
+
+
+def format_game_start(play: dict[str, Any]) -> str:
+    """Readable kickoff, e.g. 'Sat, Oct 3 · 3:30 PM ET'."""
+    local = _clean_text(play.get("game_time_local"))
+    dt = game_start_dt(play)
+    if dt is None:
+        return local
+    # A date with no clock falls back to 7pm Pacific. Prefer the raw local string.
+    has_clock = bool(_clean_text(play.get("game_time_utc"))) or (
+        "," in local and local.split(",", 1)[1].strip()
+    )
+    if not has_clock:
+        return local
+    et = dt.astimezone(KICKOFF_TZ)
+    hour = str(int(et.strftime("%I")))
+    return f"{et.strftime('%a, %b')} {et.day} · {hour}:{et.strftime('%M %p')} ET"
+
+
+def play_has_started(play: dict[str, Any], *, now: datetime | None = None) -> bool:
+    """True once kickoff is reached. Plays with no start time are still eligible."""
+    dt = game_start_dt(play)
+    if dt is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return dt <= current
 
 
 def alert_plays(plays: list[Any]) -> list[dict[str, Any]]:
@@ -357,7 +427,7 @@ def build_embed(
     tier = str(play.get("tier") or "A").strip().upper()
     market = str(play.get("market") or "moneyline").strip().lower()
     league_s = str(league or play.get("league") or "").strip().upper()
-    kickoff = str(play.get("game_time_local") or "").strip()
+    kickoff = format_game_start(play)
     play_label = resolve_play_label(play)
     juice = _format_american(_as_float(play.get("play_odds")))
     if market == "moneyline":
@@ -368,13 +438,17 @@ def build_embed(
         play_value = f">>> **{play_label}**"
 
     desc_bits = [f"**{_matchup_line(play)}**"]
-    meta = " · ".join(p for p in (kickoff, league_s, market) if p)
+    if kickoff:
+        desc_bits.append(f"Starts {kickoff}")
+    meta = " · ".join(p for p in (league_s, market) if p)
     if meta:
         desc_bits.append(meta)
 
     fields: list[dict[str, Any]] = [
         {"name": "PLAY", "value": play_value, "inline": False},
     ]
+    if kickoff:
+        fields.append({"name": "Starts", "value": kickoff, "inline": False})
     steam = _steam_field(play)
     if steam:
         fields.append({"name": "Steam", "value": steam, "inline": False})
@@ -424,6 +498,7 @@ def post_sharp_alerts(
     force: bool = False,
     cache_path: Path | None = None,
     post_fn: PostFn | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Filter A/A+, skip already-sent keys, POST embeds. Never raises to caller.
 
@@ -447,9 +522,21 @@ def post_sharp_alerts(
         print("Discord: no A/A+ plays to post.")
         return {"posted": 0, "skipped": 0, "reason": "no_alerts"}
 
+    upcoming: list[dict[str, Any]] = []
+    started = 0
+    for play in plays:
+        if play_has_started(play, now=now):
+            started += 1
+            continue
+        upcoming.append(play)
+    plays = upcoming
+    if not plays:
+        print(f"Discord: skipping {started} play(s) that already started.")
+        return {"posted": 0, "skipped": started, "reason": "started"}
+
     cache = SentCache(cache_path or DEFAULT_CACHE)
     fresh: list[dict[str, Any]] = []
-    skipped = 0
+    skipped = started
     for play in plays:
         key = play_key(play, league)
         if not force and key in cache.keys:

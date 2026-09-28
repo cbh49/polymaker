@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Post up to two A/A+ sharp-money plays per Pacific day to X.
+"""Post each A+ sharp-money play to X once, with a card image.
 
-Uses the same OAuth 1.0a credentials as whale tweets. Discord still posts
-every A/A+; this path is capped at MAX_PER_DAY.
+Discord still posts every A and A+ play. This path only tweets tier A+, skips
+games that have already started, and does not repeat a play.
 
 Enabled when X_SHARP_POSTS=1, or (if unset) when X_WHALE_POSTS is on so the
 production monitor switch also turns on sharp-money tweets. Set
@@ -24,11 +24,11 @@ from zoneinfo import ZoneInfo
 from discord_sharp_alerts import (
     _as_float,
     _format_american,
-    _format_number_line,
     _matchup_line,
-    alert_plays,
+    play_has_started,
     resolve_play_label,
 )
+from sharp_card import render_sharp_card
 
 try:
     from dotenv import load_dotenv
@@ -45,12 +45,7 @@ DEFAULT_QUOTA = SCRIPT_DIR / "output" / ".x_sharp_posted.json"
 
 TWEET_CHAR_LIMIT = 280
 T_CO_URL_LEN = 23
-MAX_PER_DAY = 2
-SUBSCRIBE_URL = "https://www.bretonanalytics.com/#/subscribe"
-SUBSCRIBE_CTA = (
-    "To get all sharp money plays, subscribe to the discord via bretonpicks website: "
-    f"{SUBSCRIBE_URL}"
-)
+SHARP_URL = "https://www.bretonanalytics.com/#/sharp"
 _URL_RE = re.compile(r"https?://\S+")
 
 TweetFn = Callable[..., Any]
@@ -105,119 +100,42 @@ def _normalize_league(value: str | None) -> str:
     return key or "SHARP"
 
 
-class DailyQuota:
-    """At most MAX_PER_DAY tweets on a Pacific calendar day."""
+class PostedPlays:
+    """Remember every play already tweeted so the timer does not re-post it."""
 
-    def __init__(self, path: Path, *, day: str | None = None) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self.day = day or pacific_today_iso()
         self.keys: list[str] = []
         if path.is_file():
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 raw = {}
-            if isinstance(raw, dict) and str(raw.get("date") or "") == self.day:
-                stored = raw.get("keys") or []
-                if isinstance(stored, list):
-                    self.keys = [str(k) for k in stored]
-
-    @property
-    def remaining(self) -> int:
-        return max(0, MAX_PER_DAY - len(self.keys))
+            stored = raw.get("keys") if isinstance(raw, dict) else raw
+            if isinstance(stored, list):
+                self.keys = [str(k) for k in stored]
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "date": self.day,
             "updated_at": datetime.now(PAGE_TZ).isoformat(),
             "keys": self.keys,
         }
         self.path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def _play_line_text(play: dict[str, Any]) -> str:
-    label = resolve_play_label(play)
-    market = str(play.get("market") or "").strip().lower()
-    juice = _format_american(_as_float(play.get("play_odds")))
-    if market != "moneyline" and juice:
-        return f"{label} ({juice})"
-    return label
-
-
-def _steam_line(play: dict[str, Any]) -> str | None:
-    pub_name = str(play.get("public_favors_name") or "").strip()
-    pub_pct = _as_float(play.get("public_favors_bet_pct"))
-    handle_pct = _as_float(play.get("handle_bet_pct"))
-    sharp_pub = _as_float(play.get("public_bet_pct"))
-    home_away = str(play.get("home_away") or "").strip().lower()
-    if home_away in {"over", "under"}:
-        handle_name = home_away.capitalize()
-    elif home_away == "away":
-        handle_name = str(play.get("away_team") or play.get("side") or "").strip()
-    elif home_away == "home":
-        handle_name = str(play.get("home_team") or play.get("side") or "").strip()
-    else:
-        handle_name = str(play.get("side") or "").strip()
-    if pub_name and pub_pct is not None and handle_name and handle_pct is not None:
-        steam = None if sharp_pub is None else handle_pct - sharp_pub
-        extra = f" (+{steam:.0f}pp)" if steam is not None and steam > 0 else ""
-        return f"Public {pub_pct:.0f}% {pub_name} · Handle {handle_pct:.0f}% {handle_name}{extra}"
-    if handle_pct is not None and sharp_pub is not None:
-        return f"Tickets {sharp_pub:.0f}% · Handle {handle_pct:.0f}%"
-    return None
-
-
-def _line_move_text(play: dict[str, Any]) -> str | None:
-    market = str(play.get("market") or "").strip().lower()
-    signed = market == "spread"
-    opened = _format_number_line(_as_float(play.get("open")), signed=signed)
-    live = _format_number_line(_as_float(play.get("live")), signed=signed)
-    open_juice = _format_american(_as_float(play.get("open_odds")))
-    live_juice = _format_american(
-        _as_float(play.get("play_odds") if market != "moneyline" else play.get("live"))
-    )
-    if market == "moneyline":
-        opened = _format_american(_as_float(play.get("open")))
-        live = _format_american(_as_float(play.get("live")))
-        open_juice = live_juice = None
-    if not opened or not live:
-        return None
-    left = f"{opened} ({open_juice})" if open_juice else opened
-    right = f"{live} ({live_juice})" if live_juice else live
-    return f"{left} → {right}"
-
-
 def format_sharp_tweet(play: dict[str, Any], *, league: str | None = None) -> str:
-    """Eye-catching tweet; CTA is never dropped. Fits X's 280-char weighted limit."""
-    league_s = _normalize_league(league or play.get("league"))
-    tier = str(play.get("tier") or "A").strip().upper()
-    header = f"💰 SHARP MONEY · {league_s} · {tier}"
+    """Short A+ alert. The card image carries the splits and line move."""
+    del league  # matchup and league live on the image
+    label = resolve_play_label(play)
     matchup = _matchup_line(play)
-    play_txt = _play_line_text(play)
-    steam = _steam_line(play)
-    moved = _line_move_text(play)
-    details = "\n".join(p for p in (steam, moved) if p) or None
-    tags = f"#{league_s} #Gambling𝕏 #SportsBettingX"
-
-    def _join(parts: list[str | None]) -> str:
-        blocks = [p for p in parts if p]
-        return "\n\n".join(blocks)
-
-    candidates = [
-        _join([header, f"{matchup}\nPLAY: {play_txt}", details, tags, SUBSCRIBE_CTA]),
-        _join([header, f"{matchup}\nPLAY: {play_txt}", steam, tags, SUBSCRIBE_CTA]),
-        _join([header, f"{matchup}\nPLAY: {play_txt}", tags, SUBSCRIBE_CTA]),
-        _join([header, f"PLAY: {play_txt}", tags, SUBSCRIBE_CTA]),
-        _join([header, f"PLAY: {play_txt}", SUBSCRIBE_CTA]),
-    ]
-    for body in candidates:
-        if x_weighted_len(body) <= TWEET_CHAR_LIMIT:
-            return body
-    # Last resort: keep CTA, trim the play line.
-    room = TWEET_CHAR_LIMIT - x_weighted_len(SUBSCRIBE_CTA) - 2
-    head = f"{header}\nPLAY: {play_txt}"[: max(0, room)]
-    return f"{head}\n\n{SUBSCRIBE_CTA}"
+    play_line = f"{matchup} — {label}" if matchup and matchup not in label else label
+    odds = _format_american(_as_float(play.get("play_odds")))
+    lines = ["🚨 Sharp Money Play", "", play_line]
+    if odds:
+        lines.append(f"Odds: {odds}")
+    lines.extend(["", f"See all sharp plays at: {SHARP_URL}", "#Gambling𝕏 #SportsBettingX"])
+    return "\n".join(lines)
 
 
 def _rank_key(play: dict[str, Any]) -> tuple[int, float, float]:
@@ -227,7 +145,12 @@ def _rank_key(play: dict[str, Any]) -> tuple[int, float, float]:
     return (0 if tier == "A+" else 1, -gap, -conf)
 
 
+def _is_a_plus(play: dict[str, Any]) -> bool:
+    return str(play.get("tier") or "").strip().upper() == "A+"
+
+
 def collect_alert_plays(outputs: list[dict[str, Any]] | dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """A+ plays only, strongest gap first. Tier A stays on Discord."""
     if isinstance(outputs, dict):
         outputs = [outputs]
     rows: list[tuple[str, dict[str, Any]]] = []
@@ -235,10 +158,17 @@ def collect_alert_plays(outputs: list[dict[str, Any]] | dict[str, Any]) -> list[
         if not isinstance(payload, dict):
             continue
         league = _normalize_league(str(payload.get("league") or ""))
-        for play in alert_plays(list(payload.get("plays") or [])):
-            rows.append((league, play))
+        for play in payload.get("plays") or []:
+            if isinstance(play, dict) and _is_a_plus(play):
+                rows.append((league, play))
     rows.sort(key=lambda item: _rank_key(item[1]))
     return rows
+
+
+def _card_path(play: dict[str, Any], league: str, directory: Path) -> Path:
+    key = tweet_play_key(play, league).replace("|", "_")
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", key)[:140]
+    return directory / f"{safe}.png"
 
 
 def post_sharp_tweets(
@@ -248,48 +178,69 @@ def post_sharp_tweets(
     quota_path: Path | None = None,
     day: str | None = None,
     poster: TweetFn | None = None,
+    now: datetime | None = None,
+    card_dir: Path | None = None,
+    fetch_logos: bool = True,
 ) -> dict[str, Any]:
-    """Tweet the best remaining A/A+ plays until today's cap is hit. Never raises."""
+    """Tweet every new A+ play that has not started. Never raises."""
+    del day  # kept so older callers can still pass a Pacific day
     _load_env()
     rows = collect_alert_plays(outputs)
     if not rows:
-        print("X: no A/A+ plays to tweet.")
+        print("X: no A+ plays to tweet.")
         return {"posted": 0, "skipped": 0, "reason": "no_alerts"}
 
-    quota = DailyQuota(quota_path or DEFAULT_QUOTA, day=day)
-    already = set(quota.keys)
-    slots = quota.remaining
-    if slots <= 0:
-        print(f"X: daily cap of {MAX_PER_DAY} sharp-money tweets already hit.")
-        return {"posted": 0, "skipped": len(rows), "reason": "daily_cap"}
+    upcoming: list[tuple[str, dict[str, Any]]] = []
+    started = 0
+    for league, play in rows:
+        if play_has_started(play, now=now):
+            started += 1
+            continue
+        upcoming.append((league, play))
+    if not upcoming:
+        print(f"X: skipping {started} A+ play(s) that already started.")
+        return {"posted": 0, "skipped": started, "reason": "started"}
+
+    posted_log = PostedPlays(quota_path or DEFAULT_QUOTA)
+    already = set(posted_log.keys)
 
     if not dry_run and not sharp_posts_enabled():
         print("X: skip sharp tweets (set X_SHARP_POSTS=1 or X_WHALE_POSTS=1).")
-        return {"posted": 0, "skipped": len(rows), "reason": "disabled"}
+        return {"posted": 0, "skipped": len(upcoming) + started, "reason": "disabled"}
 
     from polymaker.x_client import credentials_ready, post_tweet
 
     send = poster if poster is not None else post_tweet
     if poster is None and not dry_run and not credentials_ready():
         print("X: skip sharp tweets (missing OAuth credentials).")
-        return {"posted": 0, "skipped": len(rows), "reason": "missing_credentials"}
+        return {"posted": 0, "skipped": len(upcoming) + started, "reason": "missing_credentials"}
 
+    images_dir = card_dir or (SCRIPT_DIR / "output" / "sharp_cards")
     posted = 0
-    skipped = 0
+    skipped = started
     texts: list[str] = []
-    for league, play in rows:
+    images: list[str] = []
+    for league, play in upcoming:
         key = tweet_play_key(play, league)
         if key in already:
             skipped += 1
             continue
-        if posted >= slots:
-            skipped += 1
-            continue
         text = format_sharp_tweet(play, league=league)
+        media: list[Path] | None = None
+        try:
+            png = render_sharp_card(
+                play,
+                _card_path(play, league, images_dir),
+                league=league,
+                fetch_logos=fetch_logos,
+            )
+            media = [png]
+        except Exception as exc:  # noqa: BLE001
+            print(f"X: card render failed: {exc}", flush=True)
         try:
             if posted and not dry_run:
                 time.sleep(1.1)
-            result = send(text, dry_run=dry_run)
+            result = send(text, dry_run=dry_run, media_paths=media)
         except Exception as exc:  # noqa: BLE001
             print(f"X: tweet failed: {exc}", flush=True)
             return {
@@ -297,22 +248,31 @@ def post_sharp_tweets(
                 "skipped": skipped,
                 "reason": "error",
                 "texts": texts,
+                "images": images,
             }
-        quota.keys.append(key)
+        posted_log.keys.append(key)
         already.add(key)
         posted += 1
         texts.append(text)
+        if media:
+            images.append(str(media[0]))
         url = getattr(result, "url", "") or ""
         print(f"X: posted {url or '(dry-run)'}  {resolve_play_label(play)}")
 
     if posted and not dry_run:
-        quota.save()
+        posted_log.save()
     elif dry_run:
         for text in texts:
             print(text)
             print("---")
-        print(f"X dry-run: {posted} tweet(s), skipped {skipped}, cap {MAX_PER_DAY}/day.")
+        print(f"X dry-run: {posted} A+ tweet(s), skipped {skipped}.")
 
     if posted == 0 and skipped:
-        print(f"X: nothing new to tweet ({skipped} already used today's slots or keys).")
-    return {"posted": posted, "skipped": skipped, "reason": "ok" if posted else "noop", "texts": texts}
+        print(f"X: nothing new to tweet ({skipped} already posted or started).")
+    return {
+        "posted": posted,
+        "skipped": skipped,
+        "reason": "ok" if posted else "noop",
+        "texts": texts,
+        "images": images,
+    }
