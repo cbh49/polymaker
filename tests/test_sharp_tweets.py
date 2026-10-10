@@ -276,7 +276,7 @@ def test_disabled_when_flags_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 def test_card_copy_matches_site_and_hides_books() -> None:
     copy = card_copy(_play(), league="NCAAF")
     blob = json.dumps(copy)
-    assert copy["bet"] == "Purdue +3  -108"
+    assert copy["bet"] == "Purdue +3 (-108)"
     assert copy["public_name"] == "Wake Forest"
     assert copy["public_pct"] == 55
     assert copy["handle_name"] == "Purdue"
@@ -290,6 +290,71 @@ def test_card_copy_matches_site_and_hides_books() -> None:
     assert "SBD" not in blob
     assert "DK" not in blob
     assert "VSiN" not in blob
+
+
+def test_card_moneyline_is_team_and_one_price() -> None:
+    copy = card_copy(
+        _play(
+            market="moneyline",
+            home_away="away",
+            away_team="Chicago Bears",
+            home_team="Washington Commanders",
+            side="CHI",
+            play_label="Chicago Bears -115 (-108)",
+            play_line=-115,
+            play_odds=-115,
+            open=-100,
+            live=-108,
+            line_move=-8,
+        ),
+        league="NFL",
+    )
+    assert copy["bet"] == "Chicago Bears ML -115"
+
+
+def test_card_total_shows_the_number_not_two_prices() -> None:
+    good = card_copy(
+        _play(
+            market="total",
+            home_away="under",
+            side="Under",
+            play_label="Under 41.5",
+            play_line=41.5,
+            play_odds=-112,
+            open=42.5,
+            live=41.5,
+            open_odds=None,
+            live_odds=-112,
+            line_move=-1,
+        ),
+        league="NFL",
+    )
+    assert good["bet"] == "Under 41.5 (-112)"
+    assert good["open_text"] == "42.5"
+    assert good["now_text"] == "41.5 (-112)"
+    assert good["move_note"] == "Moved 1 toward Under"
+
+    leaked = card_copy(
+        _play(
+            market="total",
+            home_away="under",
+            side="Under",
+            play_label="Under -120",
+            play_line=-120,
+            play_odds=-112,
+            open=-100,
+            live=-120,
+            open_odds=None,
+            live_odds=-112,
+            line_move=-20,
+        ),
+        league="NFL",
+    )
+    assert leaked["bet"] == "Under (-112)"
+    assert "-120" not in leaked["bet"]
+    assert leaked["move_note"] is None
+    assert "-120" not in leaked["now_text"]
+    assert "-100" not in leaked["open_text"]
 
 
 def test_render_card_png(tmp_path: Path) -> None:

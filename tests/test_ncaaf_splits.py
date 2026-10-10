@@ -20,6 +20,7 @@ from cfb_team_map import (  # noqa: E402
 from find_sharp_money import (  # noqa: E402
     _markets_from_arg,
     config_snapshot,
+    format_play_label,
     primary_source_label,
     process_game,
     sources_for_league,
@@ -696,6 +697,128 @@ def test_rlm_prefers_polymarket_when_eva_flat_and_thespread_missing() -> None:
     # Pair comes from Poly history, not eva_open 400 vs DK live 270
     assert play["open"] == 344
     assert play["live"] == 250
+
+
+def test_total_line_stays_the_number_when_polymarket_moves() -> None:
+    """Poly history is an American price. The posted total stays 41.5."""
+    game = {
+        "matchup": "NYG @ WAS",
+        "away": "New York Giants",
+        "home": "Washington Commanders",
+        "date": "2026-10-11",
+        "total": {
+            "over": _side(
+                public=84,
+                handle=19,
+                vsin_pub=81,
+                vsin_h=20,
+                sbd_pub=80,
+                sbd_h=18,
+                selection="Over",
+                live=41.5,
+                live_odds=-108,
+                polymarket=_poly(
+                    line_open=-110,
+                    line_live=100,
+                    p_open=52.4,
+                    p_live=50.0,
+                    liquidity=20_000.0,
+                ),
+            ),
+            "under": _side(
+                public=16,
+                handle=81,
+                vsin_pub=19,
+                vsin_h=80,
+                sbd_pub=20,
+                sbd_h=82,
+                selection="Under",
+                live=41.5,
+                live_odds=-112,
+                polymarket=_poly(
+                    line_open=-100,
+                    line_live=-120,
+                    p_open=50.0,
+                    p_live=54.5,
+                    liquidity=20_000.0,
+                ),
+            ),
+        },
+    }
+    play = process_game(game, market="total", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["home_away"] == "under"
+    assert play["rlm_source_used"] == "polymarket"
+    assert play["rlm_confirmed"] is True
+    assert play["play_label"] == "Under 41.5"
+    assert play["play_line"] == 41.5
+    assert play["play_odds"] == -112
+    assert play["live"] == 41.5
+    assert play["open"] in (None, 41.5)
+    assert play["line_move"] in (None, 0)
+
+
+def test_total_ignores_odds_stuffed_into_the_line_fields() -> None:
+    """A mis-read -100 → -120 is juice, not a 20-point total move."""
+    game = {
+        "matchup": "NYG @ WAS",
+        "away": "New York Giants",
+        "home": "Washington Commanders",
+        "date": "2026-10-11",
+        "total": {
+            "over": _side(
+                public=84,
+                handle=19,
+                vsin_pub=81,
+                vsin_h=20,
+                sbd_pub=80,
+                sbd_h=18,
+                selection="Over",
+                open=-110,
+                live=-105,
+                live_odds=-108,
+                eva_open=41.5,
+                eva_line=41.5,
+                polymarket=_poly(
+                    line_open=-110,
+                    line_live=100,
+                    p_open=52.4,
+                    p_live=50.0,
+                    liquidity=20_000.0,
+                ),
+            ),
+            "under": _side(
+                public=16,
+                handle=81,
+                vsin_pub=19,
+                vsin_h=80,
+                sbd_pub=20,
+                sbd_h=82,
+                selection="Under",
+                open=-100,
+                live=-120,
+                live_odds=-112,
+                eva_open=41.5,
+                eva_line=41.5,
+                polymarket=_poly(
+                    line_open=-100,
+                    line_live=-120,
+                    p_open=50.0,
+                    p_live=54.5,
+                    liquidity=20_000.0,
+                ),
+            ),
+        },
+    }
+    play = process_game(game, market="total", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["play_label"] == "Under 41.5"
+    assert play["play_line"] == 41.5
+    assert play["open"] == 41.5
+    assert play["live"] == 41.5
+    assert play["line_move"] == 0
+    assert play["play_odds"] == -112
+    assert format_play_label(name="Under", market="total", line=-120, odds=-112) == "Under"
 
 
 def test_rlm_low_liquidity_polymarket_falls_to_eva() -> None:

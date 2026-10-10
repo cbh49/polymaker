@@ -9,14 +9,18 @@ game.total.over/under) — confirmed against mlb/wnba/ufc/ncaaf/nfl_betting_spli
            (MLB: PlayerProps.ai; WNBA/UFC/NCAAF/NFL: DraftKings Network)
   sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NCAAF + NFL)
   prices   eva_open / eva_line first when EVA detected a move, else
-           TheSpread open / live, else Polymarket history
+           TheSpread open / live. Polymarket history is the moneyline
+           price and, for spread/total, only the move direction — its
+           American price is never the point line.
            (never splice EVA open against DK live)
-  juice    open_odds / live_odds  (spread/total vig when the number is flat)
+  juice    open_odds / live_odds  (spread/total vig; not a substitute for the number)
   ML fair  live American odds, else EVA (no-vig)
 
 Moneyline is the default market. Spread open/live are point-spread numbers,
 so RLM uses the number first and falls back to juice implied-prob movement.
 Totals use over/under: a rising total confirms Over, a falling total Under.
+A negative total, or a spread at +/-100 or beyond, is an American price
+that leaked into the line field and is ignored.
 WNBA/UFC score DraftKings alone. MLB/NCAAF/NFL need PlayerProps or DraftKings
 plus SportsBettingDime. Pinnacle is skipped. RLM source order:
 EV Analytics (chart history), then TheSpread open→live, then Polymarket.
@@ -174,6 +178,31 @@ def _as_float(value: Any) -> float | None:
     if out != out:  # NaN
         return None
     return out
+
+
+def is_point_line(value: Any, market: str) -> bool:
+    """True when `value` is a spread or total, not an American price.
+
+    Totals are positive. Spreads in these leagues stay inside +/-100;
+    American odds are integers at or beyond 100, which is what shows up
+    when a contract price is stored in the line field.
+    """
+    num = _as_float(value)
+    if num is None:
+        return False
+    kind = (market or "").strip().lower()
+    if kind == "total":
+        return num > 0
+    if kind == "spread":
+        return abs(num) < 100
+    return True
+
+
+def _as_point(value: Any, market: str) -> float | None:
+    num = _as_float(value)
+    if not is_point_line(num, market):
+        return None
+    return num
 
 
 # --- Step 1: per-source gaps --------------------------------------------------
@@ -382,7 +411,8 @@ def check_rlm(
     elif poly_usable:
         source_used = "polymarket"
         line_moved_toward = poly_move
-        open_px, live_px = poly_open, poly_live
+        if market == "moneyline":
+            open_px, live_px = poly_open, poly_live
     elif eva_available:
         source_used = "eva"
         line_moved_toward = eva_move
@@ -390,7 +420,8 @@ def check_rlm(
     elif poly_ready:
         source_used = "polymarket"
         line_moved_toward = poly_move
-        open_px, live_px = poly_open, poly_live
+        if market == "moneyline":
+            open_px, live_px = poly_open, poly_live
 
     rlm = (
         public_favors is not None
@@ -422,11 +453,44 @@ def _eva_open_live(side: dict[str, Any]) -> tuple[float | None, float | None]:
     return _as_float(side.get("eva_open")), _as_float(side.get("eva_line"))
 
 
+def _book_point_pair(side: dict[str, Any], market: Market) -> tuple[float | None, float | None]:
+    """TheSpread open/live when both are point lines, else the EVA pair.
+
+    A lone DK/TheSpread number is kept when neither book has a full pair,
+    so the bet can still say 41.5 after the price history was unusable.
+    American prices stuffed into open/live are dropped, not drawn as the line.
+    """
+    opened, live = _thespread_open_live(side)
+    opened = _as_point(opened, market)
+    live = _as_point(live, market)
+    if opened is not None and live is not None:
+        return opened, live
+    eva_open, eva_live = _eva_open_live(side)
+    eva_open = _as_point(eva_open, market)
+    eva_live = _as_point(eva_live, market)
+    if eva_open is not None and eva_live is not None:
+        return eva_open, eva_live
+    if opened is not None or live is not None:
+        return opened, live
+    return eva_open, eva_live
+
+
+def _point_pair_fn(market: Market, raw_fn):
+    def pair(side: dict[str, Any]) -> tuple[float | None, float | None]:
+        opened, live = raw_fn(side)
+        return _as_point(opened, market), _as_point(live, market)
+
+    return pair
+
+
 def _thespread_pair_complete(away: dict[str, Any], home: dict[str, Any], market: Market) -> bool:
     """True when TheSpread itself supplied an open→live (or juice) pair."""
     for side in (away, home):
         opened, live = _thespread_open_live(side)
-        if opened is not None and live is not None:
+        if market == "moneyline":
+            if opened is not None and live is not None:
+                return True
+        elif _as_point(opened, market) is not None and _as_point(live, market) is not None:
             return True
         if market != "moneyline":
             if _as_float(side.get("open_odds")) is not None and _as_float(side.get("live_odds")) is not None:
@@ -440,21 +504,19 @@ def _thespread_move(
     market: Market,
     sharp_side: Side,
 ) -> tuple[Side | None, float | None, float | None]:
+    pair_fn = _thespread_open_live if market == "moneyline" else _point_pair_fn(market, _thespread_open_live)
     if market == "spread":
-        moved = _spread_number_moved_toward(away, home, _thespread_open_live)
+        moved = _spread_number_moved_toward(away, home, pair_fn)
         if moved is None:
             moved = _juice_moved_toward(away, home)
     elif market == "total":
-        moved = _total_number_moved_toward(away, home, _thespread_open_live)
+        moved = _total_number_moved_toward(away, home, pair_fn)
         if moved is None:
             moved = _juice_moved_toward(away, home)
     else:
         moved = _american_odds_moved_toward(away, home, _thespread_open_live)
     sharp = away if sharp_side == "away" else home
-    opened, live = _thespread_open_live(sharp)
-    if opened is None and live is None and market != "moneyline":
-        opened = _as_float(sharp.get("open_odds"))
-        live = _as_float(sharp.get("live_odds"))
+    opened, live = pair_fn(sharp)
     return moved, opened, live
 
 
@@ -464,14 +526,15 @@ def _eva_move(
     market: Market,
     sharp_side: Side,
 ) -> tuple[Side | None, float | None, float | None]:
+    pair_fn = _eva_open_live if market == "moneyline" else _point_pair_fn(market, _eva_open_live)
     if market == "spread":
-        moved = _spread_number_moved_toward(away, home, _eva_open_live)
+        moved = _spread_number_moved_toward(away, home, pair_fn)
     elif market == "total":
-        moved = _total_number_moved_toward(away, home, _eva_open_live)
+        moved = _total_number_moved_toward(away, home, pair_fn)
     else:
         moved = _american_odds_moved_toward(away, home, _eva_open_live)
     sharp = away if sharp_side == "away" else home
-    opened, live = _eva_open_live(sharp)
+    opened, live = pair_fn(sharp)
     return moved, opened, live
 
 
@@ -791,6 +854,8 @@ def format_play_label(
     if market == "moneyline":
         formatted = _format_american(odds if odds is not None else line)
         return f"{label} {formatted}" if formatted else label
+    if not is_point_line(line, market):
+        line = None
     formatted = _format_number_line(line, signed=(market == "spread"))
     return f"{label} {formatted}" if formatted else label
 
@@ -883,10 +948,17 @@ def build_output(
     labeled = _label_side(logical, market) or side
     abbr = side_data.get("selection") or game.get(f"{labeled}_abbr") or game.get(f"{side}_abbr")
     fair = _fair_prob_for_side(away, home, logical, market)
-    if rlm.open_px is not None or rlm.live_px is not None:
+    if market == "moneyline" and (rlm.open_px is not None or rlm.live_px is not None):
         open_px, live_px = rlm.open_px, rlm.live_px
-    else:
+    elif market == "moneyline":
         open_px, live_px = _open_live_number(side_data)
+    else:
+        rlm_open = _as_point(rlm.open_px, market)
+        rlm_live = _as_point(rlm.live_px, market)
+        if rlm_open is not None or rlm_live is not None:
+            open_px, live_px = rlm_open, rlm_live
+        else:
+            open_px, live_px = _book_point_pair(side_data, market)
     away_team = _team_name(game, "away")
     home_team = _team_name(game, "home")
     if away_team and home_team:
@@ -898,10 +970,12 @@ def build_output(
         play_line = _as_float(live_px) if live_px is not None else _ml_american_odds(side_data)
         play_odds = play_line
     else:
-        play_line = _as_float(live_px)
+        play_line = live_px if live_px is not None else open_px
         play_odds = _as_float(side_data.get("live_odds"))
         if play_odds is None:
             play_odds = _as_float(side_data.get("open_odds"))
+        if play_odds is None:
+            play_odds = _as_float(side_data.get("eva_odds"))
     open_num = _as_float(open_px)
     live_num = _as_float(live_px)
     line_move = None if open_num is None or live_num is None else round(live_num - open_num, 4)

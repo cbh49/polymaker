@@ -18,8 +18,8 @@ from discord_sharp_alerts import (
     _format_number_line,
     _matchup_line,
     format_game_start,
-    resolve_play_label,
 )
+from find_sharp_money import is_point_line
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BOT_ROOT = SCRIPT_DIR.parent
@@ -329,19 +329,57 @@ def _market_label(market: str) -> str:
 def _format_line(market: str, number: Any, juice: Any) -> str:
     if market == "moneyline":
         return _format_american(_as_float(number)) or "—"
+    odds = _format_american(_as_float(juice))
+    if not is_point_line(number, market):
+        return odds or "—"
     signed = market == "spread"
     body = _format_number_line(_as_float(number), signed=signed)
-    odds = _format_american(_as_float(juice))
     if not body:
         return odds or "—"
     return f"{body} ({odds})" if odds else body
 
 
-def _move_note(play: dict[str, Any], market: str) -> str | None:
-    move = _as_float(play.get("line_move"))
-    opened = _as_float(play.get("open"))
-    live = _as_float(play.get("live"))
-    if move is None or opened is None or live is None:
+def _label_point(play: dict[str, Any], market: str) -> float | None:
+    """Point spread or total. Skips an American price sitting in the line field."""
+    for key in ("play_line", "live", "open"):
+        if is_point_line(play.get(key), market):
+            return _as_float(play.get(key))
+    match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*$", str(play.get("play_label") or ""))
+    if match and is_point_line(match.group(1), market):
+        return _as_float(match.group(1))
+    return None
+
+
+def _bet_text(play: dict[str, Any], market: str) -> str:
+    """THE BET line. One price on a moneyline; the point total on Over/Under."""
+    name = _side_name(play)
+    odds = _format_american(_as_float(play.get("play_odds")))
+    if market == "moneyline":
+        if not odds:
+            odds = _format_american(_as_float(play.get("live")))
+        if not odds:
+            odds = _format_american(_as_float(play.get("open")))
+        return f"{name} ML {odds}" if odds else f"{name} ML"
+    point = _label_point(play, market)
+    body = _format_number_line(point, signed=(market == "spread"))
+    if body and odds:
+        return f"{name} {body} ({odds})"
+    if body:
+        return f"{name} {body}"
+    if odds:
+        return f"{name} ({odds})"
+    return name
+
+
+def _move_note(
+    play: dict[str, Any],
+    market: str,
+    *,
+    move: float | None,
+    opened: float | None,
+    live: float | None,
+) -> str | None:
+    if move is None or opened is None or live is None or move == 0:
         return None
     name = _side_name(play)
     if market == "moneyline":
@@ -356,12 +394,7 @@ def card_copy(play: dict[str, Any], *, league: str | None = None) -> dict[str, A
     league_s = str(league or play.get("league") or "").strip().upper()
     if league_s == "CFB":
         league_s = "NCAAF"
-    label = resolve_play_label(play)
-    odds = _format_american(_as_float(play.get("play_odds")))
-    if market == "moneyline" or not odds:
-        bet = label
-    else:
-        bet = f"{label}  {odds}"
+    bet = _bet_text(play, market)
     public_name = str(play.get("public_favors_name") or "").strip() or "Public"
     public_pct = _as_float(play.get("public_favors_bet_pct"))
     sharp_pub = _as_float(play.get("public_bet_pct"))
@@ -375,6 +408,16 @@ def card_copy(play: dict[str, Any], *, league: str | None = None) -> dict[str, A
     now_juice = play.get("live_odds")
     if now_juice is None:
         now_juice = play.get("play_odds")
+    if market == "moneyline":
+        open_value = _as_float(play.get("open"))
+        live_value = _as_float(play.get("live"))
+        line_move = _as_float(play.get("line_move"))
+    else:
+        open_value = _as_float(play.get("open")) if is_point_line(play.get("open"), market) else None
+        live_value = _as_float(play.get("live")) if is_point_line(play.get("live"), market) else None
+        line_move = None
+        if open_value is not None and live_value is not None:
+            line_move = round(live_value - open_value, 4)
     return {
         "matchup": _matchup_line(play),
         "league": league_s,
@@ -385,13 +428,13 @@ def card_copy(play: dict[str, Any], *, league: str | None = None) -> dict[str, A
         "handle_name": handle_name,
         "handle_pct": handle_pct,
         "steam": steam,
-        "open_text": _format_line(market, play.get("open"), play.get("open_odds")),
-        "now_text": _format_line(market, play.get("live"), now_juice),
-        "move_note": _move_note(play, market),
+        "open_text": _format_line(market, open_value, play.get("open_odds")),
+        "now_text": _format_line(market, live_value, now_juice),
+        "move_note": _move_note(play, market, move=line_move, opened=open_value, live=live_value),
         "starts": format_game_start(play),
-        "open_value": _as_float(play.get("open")),
-        "live_value": _as_float(play.get("live")),
-        "line_move": _as_float(play.get("line_move")),
+        "open_value": open_value,
+        "live_value": live_value,
+        "line_move": line_move,
     }
 
 
