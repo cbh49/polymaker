@@ -77,6 +77,14 @@ W_SBD = 0.75
 TIER_A_THRESHOLD = 15.0
 TIER_B_THRESHOLD = 15.0
 
+# Spread/total only. A move of exactly 1 point still qualifies. Moneylines
+# stay on implied-probability RLM and are not point-capped.
+MAX_POINT_LINE_MOVE = 1.0
+
+# Qualified moneyline at or under this no-vig fair is bought as that team's spread.
+# The published row stays a moneyline so the card still shows the ML splits.
+ML_TO_SPREAD_MAX_FAIR = 0.48
+
 # Exchange confirmation (enrichment only; never filters plays).
 EXCHANGE_RLM_MIN_PP = 1.0
 LOW_LIQUIDITY_THRESHOLD = 10_000.0
@@ -721,6 +729,53 @@ def assign_tier(
     return None
 
 
+def agreement_tier(n_agreeing: int, n_sources: int) -> Tier | None:
+    """Tier the agreement count would earn, ignoring RLM, gap, and SBD override."""
+    if n_agreeing == n_sources and n_sources >= 1:
+        return "A"
+    if n_sources >= 3 and n_agreeing == n_sources - 1 and n_agreeing >= 2:
+        return "B"
+    return None
+
+
+def _gap_rejects(n_agreeing: int, composite_gap: float, n_sources: int) -> bool:
+    if agreement_tier(n_agreeing, n_sources) is None:
+        return True
+    return composite_gap < TIER_B_THRESHOLD
+
+
+def point_move_rejects(market: Market, line_move: float | None) -> bool:
+    """True when a spread or total moved more than MAX_POINT_LINE_MOVE points."""
+    if market not in {"spread", "total"}:
+        return False
+    if line_move is None:
+        return False
+    return abs(line_move) > MAX_POINT_LINE_MOVE
+
+
+def rejection_reasons(
+    *,
+    rlm_confirmed: bool,
+    n_agreeing: int,
+    composite_gap: float,
+    n_sources: int,
+    sbd_override: bool,
+    market: Market,
+    line_move: float | None,
+) -> list[str]:
+    """Every failed gate, so a later review can tell them apart."""
+    reasons: list[str] = []
+    if not rlm_confirmed:
+        reasons.append("rlm")
+    if _gap_rejects(n_agreeing, composite_gap, n_sources):
+        reasons.append("gap")
+    if sbd_override:
+        reasons.append("sbd_override")
+    if point_move_rejects(market, line_move):
+        reasons.append("line_move")
+    return reasons
+
+
 # --- Step 6: output row -------------------------------------------------------
 
 
@@ -938,7 +993,7 @@ def build_output(
     agreement: Agreement,
     composite_gap: float,
     rlm: RLMResult,
-    tier: Tier,
+    tier: Tier | None,
     market: Market,
     sources: tuple[str, ...] = MLB_SOURCES,
 ) -> dict[str, Any]:
@@ -1187,12 +1242,61 @@ def enrich_with_exchange_data(play: dict[str, Any], game_data: dict[str, Any]) -
     return play
 
 
+def _team_spread_quote(
+    game: dict[str, Any], home_away: str
+) -> tuple[float, float | None, str] | None:
+    """Point spread and juice for one team. None when the number is missing."""
+    if home_away not in {"away", "home"}:
+        return None
+    block = game.get("spread")
+    if not isinstance(block, dict):
+        return None
+    side = block.get(home_away)
+    if not isinstance(side, dict):
+        return None
+    opened, live = _book_point_pair(side, "spread")
+    line = live if live is not None else opened
+    if line is None:
+        return None
+    odds = _as_float(side.get("live_odds"))
+    if odds is None:
+        odds = _as_float(side.get("open_odds"))
+    if odds is None:
+        odds = _as_float(side.get("eva_odds"))
+    return line, odds, home_away
+
+
+def _attach_ml_trade_target(play: dict[str, Any], game: dict[str, Any]) -> None:
+    """Buy the team spread when a qualified ML fair is at or under 0.48.
+
+    Card fields (market, play_label, open, live) stay the moneyline.
+    """
+    if play.get("market") != "moneyline" or play.get("qualified") is not True:
+        return
+    fair = _as_float(play.get("implied_fair_prob"))
+    if fair is None or fair > ML_TO_SPREAD_MAX_FAIR:
+        return
+    quote = _team_spread_quote(game, str(play.get("home_away") or ""))
+    if quote is None:
+        play["trade_market"] = "skip"
+        return
+    line, odds, home_away = quote
+    play["trade_market"] = "spread"
+    play["trade_line"] = line
+    play["trade_odds"] = odds
+    play["trade_home_away"] = home_away
+
+
 def process_game(
     game: dict[str, Any],
     market: Market = "moneyline",
     sources: tuple[str, ...] = MLB_SOURCES,
 ) -> dict[str, Any] | None:
-    """Run steps 1–5, then exchange enrichment. Return a play dict or None."""
+    """Run steps 1–5, then exchange enrichment.
+
+    Returns a row when the sources agree, including plays the gates drop.
+    Those rows have qualified false and are not posted or traded.
+    """
     block = game.get(market)
     if not isinstance(block, dict):
         return None
@@ -1216,16 +1320,14 @@ def process_game(
     side_gaps = away_gaps if agreement.side == "away" else home_gaps
     composite_gap = compute_composite(side_gaps, agreement.agreeing_sources)
     rlm = check_rlm(away, home, agreement.side, market=market)
+    n_sources = len(sources)
     tier = assign_tier(
         agreement.n_agreeing,
         composite_gap,
         rlm.rlm_confirmed,
-        n_sources=len(sources),
+        n_sources=n_sources,
         sbd_override=agreement.sbd_override,
     )
-    if tier is None:
-        return None
-
     play = build_output(
         game=game,
         side=side,
@@ -1241,6 +1343,22 @@ def process_game(
         market=market,
         sources=sources,
     )
+    reasons = rejection_reasons(
+        rlm_confirmed=rlm.rlm_confirmed,
+        n_agreeing=agreement.n_agreeing,
+        composite_gap=composite_gap,
+        n_sources=n_sources,
+        sbd_override=agreement.sbd_override,
+        market=market,
+        line_move=_as_float(play.get("line_move")),
+    )
+    qualified = tier is not None and "line_move" not in reasons
+    play["qualified"] = qualified
+    play["reject_reasons"] = reasons
+    play["would_be_tier"] = agreement_tier(agreement.n_agreeing, n_sources)
+    if not qualified:
+        play["tier"] = None
+    _attach_ml_trade_target(play, game)
     return enrich_with_exchange_data(play, game)
 
 
@@ -1263,7 +1381,9 @@ def process_slate(
     frame = pd.DataFrame(plays)
     if frame.empty:
         return frame
-    ranked = frame.assign(_tier_rank=frame["tier"].map({"A+": 0, "A": 1, "B": 2}))
+    ranked = frame.assign(
+        _tier_rank=frame["tier"].map({"A+": 0, "A": 1, "B": 2}).fillna(3)
+    )
     ranked = ranked.sort_values(["_tier_rank", "composite_gap"], ascending=[True, False])
     return ranked.drop(columns=["_tier_rank"]).reset_index(drop=True)
 
@@ -1289,6 +1409,8 @@ def config_snapshot(
     cfg["exchange_rlm_min_pp"] = EXCHANGE_RLM_MIN_PP
     cfg["low_liquidity_threshold"] = LOW_LIQUIDITY_THRESHOLD
     cfg["tier_a_plus_edge_pct"] = TIER_A_PLUS_EDGE_PCT
+    cfg["max_point_line_move"] = MAX_POINT_LINE_MOVE
+    cfg["ml_to_spread_max_fair"] = ML_TO_SPREAD_MAX_FAIR
     return cfg
 
 
@@ -1299,22 +1421,39 @@ def slate_to_json(
     markets: tuple[Market, ...],
 ) -> dict[str, Any]:
     plays = frame.to_dict(orient="records") if not frame.empty else []
+    qualified_n = sum(1 for play in plays if play.get("qualified") is True)
     return {
         "source_file": str(source_file),
         "date": payload.get("date"),
         "league": payload.get("league", "MLB"),
         "generated_at": datetime.now(PAGE_TZ).astimezone().isoformat(),
         "game_count": payload.get("game_count") or len(payload.get("games") or []),
-        "play_count": len(plays),
+        "play_count": qualified_n,
+        "candidate_count": len(plays),
         "config": config_snapshot(markets, sources_for_league(payload.get("league")), payload.get("league")),
         "plays": plays,
     }
 
 
+def _qualified_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty or "qualified" not in frame.columns:
+        return frame
+    mask = frame["qualified"].map(lambda value: value is True)
+    return frame.loc[mask].reset_index(drop=True)
+
+
 def print_summary(frame: pd.DataFrame) -> None:
-    if frame.empty:
+    qualified = _qualified_frame(frame)
+    rejected = 0 if frame.empty else len(frame) - len(qualified)
+    if qualified.empty:
         print("No Tier A/B sharp-money plays.")
-        return
+    else:
+        _print_play_table(qualified)
+    if rejected:
+        print(f"{rejected} rejected candidate(s) logged (not posted).")
+
+
+def _print_play_table(frame: pd.DataFrame) -> None:
     display_cols = [
         "tier",
         "market",
@@ -1387,6 +1526,88 @@ def _resolve_cli_path(path: Path) -> Path:
     return path
 
 
+def candidate_log_path() -> Path:
+    """Persistent log. The daily sharp JSON is overwritten on the next run."""
+    for parent in SCRIPT_DIR.parents:
+        if (parent / "json-data").is_dir():
+            return parent / "json-data" / "sharp_candidate_log.jsonl"
+    return SCRIPT_DIR / "output" / "sharp_candidate_log.jsonl"
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, float) and value != value:
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_ready(item())
+        except (TypeError, ValueError):
+            return str(value)
+    return value
+
+
+def _candidate_key(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(row.get("league") or ""),
+            str(row.get("slate_date") or row.get("date") or ""),
+            str(row.get("event_id") or row.get("matchup") or ""),
+            str(row.get("market") or ""),
+            str(row.get("home_away") or row.get("side") or ""),
+        ]
+    )
+
+
+def append_candidate_log(output: dict[str, Any], path: Path | None = None) -> int:
+    """Write each agreed play once. A re-run replaces the same key."""
+    dest = path or candidate_log_path()
+    league = output.get("league")
+    slate_date = output.get("date")
+    incoming: list[dict[str, Any]] = []
+    for play in output.get("plays") or []:
+        if not isinstance(play, dict):
+            continue
+        row = _json_ready(play)
+        if not isinstance(row, dict):
+            continue
+        row["league"] = league or row.get("league")
+        row["slate_date"] = slate_date or row.get("date")
+        incoming.append(row)
+    existing: list[dict[str, Any]] = []
+    if dest.is_file():
+        for line in dest.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                existing.append(parsed)
+    by_key = {_candidate_key(row): row for row in existing}
+    for row in incoming:
+        by_key[_candidate_key(row)] = row
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for row in existing + incoming:
+        key = _candidate_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(
+        json.dumps(by_key[key], ensure_ascii=False) + "\n" for key in ordered
+    )
+    dest.write_text(body, encoding="utf-8")
+    return len(incoming)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Find sharp-money plays from combined betting splits")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
@@ -1414,6 +1635,7 @@ def main() -> None:
     markets = _markets_from_arg(args.market)
     frame = process_slate(payload, markets=markets)
     output = slate_to_json(payload, frame, args.input, markets)
+    logged = append_candidate_log(output)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
@@ -1423,6 +1645,7 @@ def main() -> None:
     print_summary(frame)
     print(f"JSON → {args.out}")
     print(f"CSV  → {args.csv}")
+    print(f"Candidates → {candidate_log_path()} ({logged})")
     if not args.no_discord:
         from discord_sharp_alerts import post_sharp_alerts
 

@@ -11,7 +11,13 @@ import pytest
 from polymaker.domain import MarketMeta, TokenMeta
 from polymaker.trading.execute import SharpTradeConfig, filter_plays
 from polymaker.trading.match import candidate_event_dates, resolve_outcome_token
-from polymaker.trading.sharp import SharpPlay, load_sharp_file, qualifying_trade_data
+from polymaker.trading.sharp import (
+    SharpPlay,
+    load_sharp_file,
+    order_play,
+    plays_for_orders,
+    qualifying_trade_data,
+)
 from polymaker.trading.teams import parse_matchup, resolve_team
 
 
@@ -171,6 +177,107 @@ def test_qualifying_trade_data_keeps_signal_snapshot() -> None:
     assert data["sbd_gap"] is None
     assert data["exchange_confirmation"]["exchange_edge_pct"] == 3.2
     assert "source_path" not in data
+
+
+def _sharp_play(**overrides: object) -> SharpPlay:
+    raw = {
+        "market": "moneyline",
+        "open": 250,
+        "live": 220,
+        "play_line": 220,
+        "play_odds": 220,
+        "home_away": "away",
+    }
+    extra = overrides.pop("raw", None)
+    if isinstance(extra, dict):
+        raw.update(extra)
+    base = dict(
+        league="NCAAF",
+        matchup="UNC @ TCU",
+        side="UNC",
+        market="moneyline",
+        tier="A",
+        home_away="away",
+        game_time_utc="2026-08-29T23:00:00.000Z",
+        implied_fair_prob=0.45,
+        rlm_confirmed=True,
+        composite_gap=30.0,
+        source_path="x",
+        raw=raw,
+    )
+    base.update(overrides)
+    return SharpPlay(**base)  # type: ignore[arg-type]
+
+
+def test_load_sharp_file_skips_unqualified(tmp_path: Path) -> None:
+    path = tmp_path / "ncaaf_sharp_money.json"
+    path.write_text(
+        json.dumps(
+            {
+                "league": "NCAAF",
+                "plays": [
+                    {
+                        "matchup": "UNC @ TCU",
+                        "side": "UNC",
+                        "market": "moneyline",
+                        "tier": "A",
+                        "qualified": True,
+                    },
+                    {
+                        "matchup": "HAW @ STAN",
+                        "side": "HAW",
+                        "market": "spread",
+                        "tier": None,
+                        "qualified": False,
+                        "reject_reasons": ["rlm"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    plays = load_sharp_file(path)
+    assert [play.matchup for play in plays] == ["UNC @ TCU"]
+
+
+def test_order_play_matches_the_spread_and_keeps_the_ml_signal() -> None:
+    play = _sharp_play(
+        raw={
+            "trade_market": "spread",
+            "trade_line": 3.5,
+            "trade_odds": -110,
+            "trade_home_away": "away",
+        }
+    )
+    ordered = plays_for_orders([play])
+    assert len(ordered) == 1
+    bought = ordered[0]
+    assert bought.market == "spread"
+    assert bought.home_away == "away"
+    assert bought.raw["live"] == 3.5
+    assert bought.raw["open"] == 3.5
+    assert bought.raw["play_line"] == 3.5
+    assert bought.raw["play_odds"] == -110
+    assert bought.raw["signal_market"] == "moneyline"
+    assert bought.raw["signal_live"] == 220
+    data = qualifying_trade_data(bought)
+    assert data["market"] == "spread"
+    assert data["signal_market"] == "moneyline"
+    assert data["implied_fair_prob"] == 0.45
+    assert data["live"] == 3.5
+    assert data["signal_live"] == 220
+
+
+def test_order_play_does_not_buy_a_skipped_moneyline() -> None:
+    play = _sharp_play(raw={"trade_market": "skip"})
+    assert order_play(play) is None
+    assert plays_for_orders([play]) == []
+
+
+def test_order_play_leaves_a_full_price_moneyline_alone() -> None:
+    play = _sharp_play()
+    assert order_play(play) is play
+    assert play.market == "moneyline"
 
 
 def test_filter_plays_tier_and_market() -> None:

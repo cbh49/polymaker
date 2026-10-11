@@ -250,7 +250,11 @@ def post_sharp_plays(
 ) -> dict[str, Any]:
     """POST every play in a finder payload to Convex. Never raises to caller."""
     league = _league_key(output.get("league"))
-    plays = [p for p in (output.get("plays") or []) if isinstance(p, dict)]
+    plays = [
+        p
+        for p in (output.get("plays") or [])
+        if isinstance(p, dict) and p.get("qualified") is not False
+    ]
     if not plays:
         print("Convex sharp: no plays to post.")
         return {"posted": 0, "skipped": 0, "reason": "no_plays"}

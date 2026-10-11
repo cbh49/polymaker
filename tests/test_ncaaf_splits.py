@@ -19,6 +19,7 @@ from cfb_team_map import (  # noqa: E402
 )
 from find_sharp_money import (  # noqa: E402
     _markets_from_arg,
+    append_candidate_log,
     config_snapshot,
     format_play_label,
     primary_source_label,
@@ -876,3 +877,265 @@ def test_rlm_low_liquidity_polymarket_falls_to_eva() -> None:
     assert play["open"] == 280
     assert play["live"] == 250
     assert play["live"] != 270  # DK live is not spliced into the EVA pair
+
+
+def test_agreed_play_without_rlm_is_logged_not_qualified() -> None:
+    """Sources agree, but the line moved with the public. Keep the row, do not trade it."""
+    game = {
+        "matchup": "UNC @ TCU",
+        "away": "North Carolina",
+        "home": "TCU",
+        "date": "2026-08-29",
+        "event_id": "unc-tcu",
+        "moneyline": {
+            "away": _side(
+                public=18,
+                handle=38,
+                vsin_pub=20,
+                vsin_h=40,
+                sbd_pub=19,
+                sbd_h=41,
+                selection="UNC",
+                open=250,
+                live=280,
+            ),
+            "home": _side(
+                public=82,
+                handle=62,
+                vsin_pub=80,
+                vsin_h=60,
+                sbd_pub=81,
+                sbd_h=59,
+                selection="TCU",
+                open=-320,
+                live=-355,
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["qualified"] is False
+    assert play["reject_reasons"] == ["rlm"]
+    assert play["tier"] is None
+    assert play["would_be_tier"] == "A"
+    assert play["rlm_confirmed"] is False
+    assert "trade_market" not in play
+
+
+def test_spread_move_over_one_point_is_rejected() -> None:
+    game = {
+        "matchup": "HAW @ STAN",
+        "date": "2026-08-29",
+        "spread": {
+            "away": _side(
+                public=39,
+                handle=77,
+                vsin_pub=40,
+                vsin_h=75,
+                sbd_pub=38,
+                sbd_h=70,
+                selection="HAW",
+                open=6.0,
+                live=3.5,
+                live_odds=-108,
+            ),
+            "home": _side(
+                public=61,
+                handle=23,
+                vsin_pub=60,
+                vsin_h=25,
+                sbd_pub=62,
+                sbd_h=30,
+                selection="STAN",
+                open=-6.0,
+                live=-3.5,
+                live_odds=-112,
+            ),
+        },
+    }
+    play = process_game(game, market="spread", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["qualified"] is False
+    assert play["reject_reasons"] == ["line_move"]
+    assert play["tier"] is None
+    assert play["would_be_tier"] == "A"
+    assert play["line_move"] == -2.5
+
+
+def test_one_point_spread_move_still_qualifies() -> None:
+    game = {
+        "matchup": "HAW @ STAN",
+        "date": "2026-08-29",
+        "spread": {
+            "away": _side(
+                public=39,
+                handle=77,
+                vsin_pub=40,
+                vsin_h=75,
+                sbd_pub=38,
+                sbd_h=70,
+                selection="HAW",
+                open=6.0,
+                live=5.0,
+                live_odds=-108,
+            ),
+            "home": _side(
+                public=61,
+                handle=23,
+                vsin_pub=60,
+                vsin_h=25,
+                sbd_pub=62,
+                sbd_h=30,
+                selection="STAN",
+                open=-6.0,
+                live=-5.0,
+                live_odds=-112,
+            ),
+        },
+    }
+    play = process_game(game, market="spread", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["reject_reasons"] == []
+    assert play["tier"] in {"A", "A+"}
+    assert abs(play["line_move"]) == 1.0
+
+
+def test_ml_at_or_under_48_keeps_the_card_and_trades_the_spread() -> None:
+    """+109/-109 de-vigs to about 0.478, which is at or under the 0.48 cutoff."""
+    game = {
+        "matchup": "UNC @ TCU",
+        "away": "North Carolina",
+        "home": "TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _side(
+                public=30,
+                handle=55,
+                vsin_pub=28,
+                vsin_h=50,
+                sbd_pub=32,
+                sbd_h=52,
+                selection="UNC",
+                open=130,
+                live=109,
+            ),
+            "home": _side(
+                public=70,
+                handle=45,
+                vsin_pub=72,
+                vsin_h=50,
+                sbd_pub=68,
+                sbd_h=48,
+                selection="TCU",
+                open=-150,
+                live=-129,
+            ),
+        },
+        "spread": {
+            "away": _side(
+                public=40,
+                handle=40,
+                vsin_pub=40,
+                vsin_h=40,
+                sbd_pub=40,
+                sbd_h=40,
+                selection="UNC",
+                open=4.0,
+                live=3.5,
+                live_odds=-110,
+            ),
+            "home": _side(
+                public=60,
+                handle=60,
+                vsin_pub=60,
+                vsin_h=60,
+                sbd_pub=60,
+                sbd_h=60,
+                selection="TCU",
+                open=-4.0,
+                live=-3.5,
+                live_odds=-110,
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["market"] == "moneyline"
+    assert play["play_label"] == "North Carolina +109"
+    assert play["live"] == 109
+    assert play["open"] == 130
+    assert play["implied_fair_prob"] <= 0.48
+    assert play["trade_market"] == "spread"
+    assert play["trade_line"] == 3.5
+    assert play["trade_odds"] == -110
+    assert play["trade_home_away"] == "away"
+
+
+def test_cheap_ml_without_a_spread_is_skipped() -> None:
+    game = {
+        "matchup": "UNC @ TCU",
+        "away": "North Carolina",
+        "home": "TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _side(
+                public=18,
+                handle=38,
+                vsin_pub=20,
+                vsin_h=40,
+                sbd_pub=19,
+                sbd_h=41,
+                selection="UNC",
+                open=280,
+                live=250,
+            ),
+            "home": _side(
+                public=82,
+                handle=62,
+                vsin_pub=80,
+                vsin_h=60,
+                sbd_pub=81,
+                sbd_h=59,
+                selection="TCU",
+                open=-355,
+                live=-320,
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["market"] == "moneyline"
+    assert play["play_label"] == "North Carolina +250"
+    assert play["trade_market"] == "skip"
+    assert "trade_line" not in play
+
+
+def test_candidate_log_replaces_the_same_play(tmp_path) -> None:
+    path = tmp_path / "sharp_candidate_log.jsonl"
+    output = {
+        "league": "NCAAF",
+        "date": "2026-08-29",
+        "plays": [
+            {
+                "matchup": "UNC @ TCU",
+                "event_id": "unc-tcu",
+                "market": "moneyline",
+                "home_away": "away",
+                "qualified": False,
+                "reject_reasons": ["rlm"],
+            }
+        ],
+    }
+    assert append_candidate_log(output, path) == 1
+    output["plays"][0]["reject_reasons"] = ["rlm", "gap"]
+    assert append_candidate_log(output, path) == 1
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1
+    saved = __import__("json").loads(lines[0])
+    assert saved["league"] == "NCAAF"
+    assert saved["slate_date"] == "2026-08-29"
+    assert saved["reject_reasons"] == ["rlm", "gap"]
+    assert saved["qualified"] is False

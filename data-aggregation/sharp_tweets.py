@@ -159,7 +159,11 @@ def collect_alert_plays(outputs: list[dict[str, Any]] | dict[str, Any]) -> list[
             continue
         league = _normalize_league(str(payload.get("league") or ""))
         for play in payload.get("plays") or []:
-            if isinstance(play, dict) and _is_a_plus(play):
+            if (
+                isinstance(play, dict)
+                and play.get("qualified") is not False
+                and _is_a_plus(play)
+            ):
                 rows.append((league, play))
     rows.sort(key=lambda item: _rank_key(item[1]))
     return rows

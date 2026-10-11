@@ -188,6 +188,8 @@ def alert_plays(plays: list[Any]) -> list[dict[str, Any]]:
     for play in plays:
         if not isinstance(play, dict):
             continue
+        if play.get("qualified") is False:
+            continue
         if str(play.get("tier") or "").strip().upper() in ALERT_TIERS:
             out.append(play)
     return out
