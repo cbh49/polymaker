@@ -143,6 +143,9 @@ def opportunity(
     sigma_source: SigmaSource | None = None,
     role_bucket: str | None = None,
     veto_reason: str | None = None,
+    kickoff: str | None = None,
+    books_quoted_at: str | None = None,
+    venue_quoted_at: str | None = None,
 ) -> PricedOpportunity:
     edges = price_side(fair_prob=fair_prob, market_price=market_price, venue=venue, cfg=cfg)
     rank = edges["fee_adjusted_edge"] * confidence
@@ -177,6 +180,9 @@ def opportunity(
         sigma_source=sigma_source,
         role_bucket=role_bucket,
         veto_reason=veto_reason,
+        kickoff=kickoff,
+        books_quoted_at=books_quoted_at,
+        venue_quoted_at=venue_quoted_at,
     )
 
 

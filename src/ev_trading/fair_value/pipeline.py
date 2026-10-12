@@ -18,6 +18,8 @@ from ev_trading.fair_value.consensus import (
     strike_range,
 )
 from ev_trading.fair_value.devig import devig_one_sided, devig_two_way, prob_to_american
+from ev_trading.fair_value.freshness import QuoteTimes, quote_times_for, reference_is_stale
+from ev_trading.fair_value.key_numbers import translate_cover
 from ev_trading.fair_value.models import (
     BookPoint,
     FittedDistribution,
@@ -342,7 +344,18 @@ def _route_opp(
     fit: FittedDistribution | None,
     points: list[BookPoint] | None,
     cfg: FairValueConfig,
+    preset_veto: str | None = None,
 ) -> None:
+    if reference_is_stale(
+        opp.books_quoted_at,
+        opp.venue_quoted_at,
+        max_lag_seconds=cfg.max_book_venue_lag_seconds,
+    ):
+        rejected.append(replace(opp, veto_reason="stale_reference", rank_score=0.0))
+        return
+    if preset_veto:
+        rejected.append(replace(opp, veto_reason=preset_veto, rank_score=0.0))
+        return
     reason = different_strike_veto(
         n_books=opp.n_books,
         fit=fit,
@@ -489,6 +502,9 @@ def _emit_binary_venue(
     informational: list[InformationalRow] | None = None,
     info_yes_side: str | None = None,
     info_no_side: str | None = None,
+    quotes: QuoteTimes | None = None,
+    sigma_source_override: str | None = None,
+    preset_veto: str | None = None,
 ) -> None:
     if info_yes_side is None and info_no_side is None:
         alert_yes, alert_no = yes_side, no_side
@@ -499,6 +515,7 @@ def _emit_binary_venue(
         kalshi = None
     rng = strike_range(points or [])
     book_min = rng[0] if rng else None
+    clock = quotes or QuoteTimes()
 
     def _emit_side(common: dict[str, Any], side: str, fair: float, price: float) -> None:
         opp = _make_opp({**common, "side": side, "fair_prob": fair, "market_price": price})
@@ -509,11 +526,14 @@ def _emit_binary_venue(
             fit=fit,
             points=points,
             cfg=cfg,
+            preset_veto=preset_veto,
         )
 
     if isinstance(kalshi, dict):
         k_line = venue_line if venue_line is not None else _f(kalshi.get("line"))
         meta = _strike_meta(fit=fit, points=points, market_line=k_line)
+        if sigma_source_override:
+            meta["sigma_source"] = sigma_source_override
         vol, liq, v24 = _depth(kalshi)
         conf, low_c = _conf(
             n_books=n_books,
@@ -550,6 +570,9 @@ def _emit_binary_venue(
             confidence=conf,
             cfg=cfg,
             venue="kalshi",
+            kickoff=clock.kickoff,
+            books_quoted_at=clock.books_quoted_at,
+            venue_quoted_at=clock.venue_kalshi,
             **meta,
         )
         if yes_ask is not None and _allow_ou_side(
@@ -609,6 +632,8 @@ def _emit_binary_venue(
             poly_line = venue_line
         p_line = poly_line if poly_line is not None else venue_line
         meta = _strike_meta(fit=fit, points=points, market_line=p_line)
+        if sigma_source_override:
+            meta["sigma_source"] = sigma_source_override
         vol, liq, v24 = _depth(polymarket)
         conf, low_c = _conf(
             n_books=n_books,
@@ -643,6 +668,9 @@ def _emit_binary_venue(
             confidence=conf,
             cfg=cfg,
             venue="polymarket",
+            kickoff=clock.kickoff,
+            books_quoted_at=clock.books_quoted_at,
+            venue_quoted_at=clock.venue_polymarket,
             **meta,
         )
         if over is not None and _allow_ou_side(
@@ -760,6 +788,7 @@ def _process_ou(
     tradable: list[PricedOpportunity],
     rejected: list[PricedOpportunity],
     informational: list[InformationalRow],
+    quotes: QuoteTimes | None = None,
 ) -> None:
     books = _books(blob)
     points = _ou_points(books, cfg)
@@ -779,9 +808,7 @@ def _process_ou(
     if poly is not None:
         targets.append(("poly", poly_line or consensus_line, None, poly))
     if not targets:
-        fair, fit, cons = _fair_at_line(
-            points, stat=stat, target_line=consensus_line, cfg=cfg
-        )
+        fair, fit, cons = _fair_at_line(points, stat=stat, target_line=consensus_line, cfg=cfg)
         informational.extend(
             _info_rows(
                 points,
@@ -837,7 +864,13 @@ def _process_ou(
             no_side="under",
             points=points,
             informational=informational,
+            quotes=quotes,
         )
+
+
+def _weighted_line(points: list[BookPoint]) -> float:
+    weight = sum(p.weight for p in points)
+    return sum(p.line * p.weight for p in points) / weight
 
 
 def _process_spread(
@@ -848,6 +881,7 @@ def _process_spread(
     tradable: list[PricedOpportunity],
     rejected: list[PricedOpportunity],
     informational: list[InformationalRow],
+    quotes: QuoteTimes | None = None,
 ) -> None:
     books = _books(blob)
     points = _spread_points(books, cfg)
@@ -861,29 +895,43 @@ def _process_spread(
         kalshi_home = _f(kalshi.get("line"))
         if kalshi_home is None:
             kalshi_home = _f(kalshi.get("home_line"))
-    # Fit on margin threshold −home_spread.
-    fit_points = _threshold_points(points)
     dist = cfg.distribution_for("spread")
     common_home = lines_are_same_strike([p.line for p in points], cfg.same_strike_line_tolerance)
+    mean_line = _weighted_line(points)
+    agreement = same_strike_consensus(points, cfg=cfg)
 
-    def fair_home_at(home_line: float | None) -> tuple[float, FittedDistribution | None, SameStrikeConsensus | None]:
+    def fair_home_at(
+        home_line: float | None,
+    ) -> tuple[
+        float, FittedDistribution | None, SameStrikeConsensus | None, str | None, str | None
+    ]:
+        """Fair P(home covers), fit, consensus, sigma_source, veto."""
         if home_line is None:
             home_line = consensus_line
         if home_line is None:
-            cons = same_strike_consensus(points, cfg=cfg)
-            return cons.fair_prob, None, cons
-        target_matches = abs(
-            (sum(p.line * p.weight for p in points) / sum(p.weight for p in points)) - home_line
-        ) <= cfg.same_strike_line_tolerance
+            return agreement.fair_prob, None, agreement, None, None
+        target_matches = abs(mean_line - home_line) <= cfg.same_strike_line_tolerance
         if dist == "same_strike" or (common_home and target_matches):
-            cons = same_strike_consensus(points, cfg=cfg)
-            return cons.fair_prob, None, cons
-        kind = dist if dist in {"normal", "poisson", "nbinom"} else "normal"
-        fit = fit_distribution(fit_points, kind, stat="spread", cfg=cfg)
-        return fair_over_from_fit(fit, -home_line), fit, None
+            return agreement.fair_prob, None, agreement, None, None
+        translated: list[float] = []
+        weights: list[float] = []
+        for point in points:
+            if abs(point.line - home_line) <= cfg.same_strike_line_tolerance:
+                translated.append(point.fair_over)
+            else:
+                translated.append(translate_cover(point.fair_over, point.line, home_line))
+            weights.append(point.weight)
+        fair = sum(v * w for v, w in zip(translated, weights, strict=True)) / sum(weights)
+        fair = min(max(fair, 0.0), 1.0)
+        veto = (
+            "spread_span"
+            if abs(mean_line - home_line) > cfg.spread_max_translation_points
+            else None
+        )
+        return fair, None, agreement, "key_numbers", veto
 
     for point in points:
-        fair_book, _, _ = fair_home_at(point.line)
+        fair_book, _, _, _, _ = fair_home_at(point.line)
         if point.raw_over is not None:
             informational.append(
                 InformationalRow(
@@ -920,8 +968,9 @@ def _process_spread(
                 )
             )
 
+    clock = quotes or QuoteTimes()
     if kalshi:
-        fair, fit, cons = fair_home_at(kalshi_home)
+        fair, fit, cons, sigma_source, veto = fair_home_at(kalshi_home)
         # Yes pays the named team ("CAR wins by over 3.5"), not always home.
         contract_yes = str(kalshi.get("yes_side") or "home").strip().lower()
         if contract_yes not in {"home", "away"}:
@@ -955,12 +1004,23 @@ def _process_spread(
             informational=informational,
             info_yes_side=info_yes,
             info_no_side=info_no,
+            quotes=clock,
+            sigma_source_override=sigma_source,
+            preset_veto=veto,
         )
     if poly:
-        fair, fit, cons = fair_home_at(consensus_line)
+        poly_home = _f(poly.get("home_line"))
+        if poly_home is None:
+            poly_home = consensus_line
+        fair, fit, cons, sigma_source, veto = fair_home_at(poly_home)
         home_px = polymarket_side_ask(poly, "home")
         away_px = polymarket_side_ask(poly, "away")
-        meta = _strike_meta(fit=fit, points=points, market_line=consensus_line)
+        line_delta = None
+        if poly_home is not None and consensus_line is not None:
+            line_delta = poly_home - consensus_line
+        meta = _strike_meta(fit=fit, points=points, market_line=poly_home)
+        if sigma_source:
+            meta["sigma_source"] = sigma_source
         rng = strike_range(points)
         vol, liq, v24 = _depth(poly)
         conf, low_c = _conf(
@@ -970,7 +1030,7 @@ def _process_spread(
             volume=vol,
             liquidity=liq,
             volume_24hr=v24,
-            line_delta=0.0,
+            line_delta=line_delta,
             cfg=cfg,
             extrapolation_distance=meta["extrapolation_distance"],
             book_line_min=rng[0] if rng else None,
@@ -982,11 +1042,11 @@ def _process_spread(
             stat="spread",
             player=None,
             fair_line=consensus_line,
-            market_line=consensus_line,
+            market_line=poly_home,
             volume=vol,
             liquidity=liq,
             volume_24hr=v24,
-            line_delta=0.0,
+            line_delta=line_delta,
             low_liquidity=thin,
             low_confidence=low_c,
             n_books=len(points),
@@ -998,6 +1058,9 @@ def _process_spread(
             confidence=conf,
             cfg=cfg,
             venue="polymarket",
+            kickoff=clock.kickoff,
+            books_quoted_at=clock.books_quoted_at,
+            venue_quoted_at=clock.venue_polymarket,
             **meta,
         )
         if home_px is not None:
@@ -1008,6 +1071,7 @@ def _process_spread(
                 fit=fit,
                 points=points,
                 cfg=cfg,
+                preset_veto=veto,
             )
             _append_venue_info(
                 informational,
@@ -1033,6 +1097,7 @@ def _process_spread(
                 fit=fit,
                 points=points,
                 cfg=cfg,
+                preset_veto=veto,
             )
             _append_venue_info(
                 informational,
@@ -1058,6 +1123,7 @@ def _process_moneyline(
     tradable: list[PricedOpportunity],
     rejected: list[PricedOpportunity],
     informational: list[InformationalRow],
+    quotes: QuoteTimes | None = None,
 ) -> None:
     books = _books(blob)
     points = _ml_points(books, cfg)
@@ -1106,7 +1172,9 @@ def _process_moneyline(
                 informational=informational,
                 info_yes_side=side,
                 info_no_side=None,
+                quotes=quotes,
             )
+    clock = quotes or QuoteTimes()
     if isinstance(poly, dict):
         vol, liq, v24 = _depth(poly)
         conf, low_c = _conf(
@@ -1126,7 +1194,7 @@ def _process_moneyline(
                 continue
             side_blob = poly.get(side)
             mid: dict[str, Any] = side_blob if isinstance(side_blob, dict) else {}
-            tradable.append(
+            _route_opp(
                 opportunity(
                     market=f"{matchup} ML {side}",
                     matchup=matchup,
@@ -1149,7 +1217,15 @@ def _process_moneyline(
                     fit_r2=None,
                     market_id=str(mid["market_id"]) if mid.get("market_id") else None,
                     confidence=conf,
-                )
+                    kickoff=clock.kickoff,
+                    books_quoted_at=clock.books_quoted_at,
+                    venue_quoted_at=clock.venue_polymarket,
+                ),
+                tradable=tradable,
+                rejected=rejected,
+                fit=None,
+                points=points,
+                cfg=cfg,
             )
             _append_venue_info(
                 informational,
@@ -1178,6 +1254,7 @@ def _process_yes_prop(
     tradable: list[PricedOpportunity],
     rejected: list[PricedOpportunity],
     informational: list[InformationalRow],
+    quotes: QuoteTimes | None = None,
 ) -> None:
     books = _books(blob)
     points = _yes_points(books, cfg)
@@ -1220,6 +1297,7 @@ def _process_yes_prop(
         informational=informational,
         info_yes_side="yes",
         info_no_side=None,
+        quotes=quotes,
     )
 
 
@@ -1233,6 +1311,8 @@ def process_game(
 ) -> int:
     """Process one game. Returns the number of markets touched."""
     matchup = _matchup_label(game)
+    game_quotes = quote_times_for(game, props=False)
+    prop_quotes = quote_times_for(game, props=True)
     n = 0
     raw_markets = game.get("markets")
     markets: dict[str, Any] = raw_markets if isinstance(raw_markets, dict) else {}
@@ -1245,6 +1325,7 @@ def process_game(
             tradable=tradable,
             rejected=rejected,
             informational=informational,
+            quotes=game_quotes,
         )
         n += 1
     spread = markets.get("spread")
@@ -1256,6 +1337,7 @@ def process_game(
             tradable=tradable,
             rejected=rejected,
             informational=informational,
+            quotes=game_quotes,
         )
         n += 1
     total = markets.get("total")
@@ -1270,6 +1352,7 @@ def process_game(
             tradable=tradable,
             rejected=rejected,
             informational=informational,
+            quotes=game_quotes,
         )
         n += 1
     for prop in game.get("player_props") or []:
@@ -1295,6 +1378,7 @@ def process_game(
                     tradable=tradable,
                     rejected=rejected,
                     informational=informational,
+                    quotes=prop_quotes,
                 )
                 continue
         _process_yes_prop(
@@ -1307,12 +1391,14 @@ def process_game(
             tradable=tradable,
             rejected=rejected,
             informational=informational,
+            quotes=prop_quotes,
         )
     return n
 
 
-def process_slate(payload: dict[str, Any], cfg: FairValueConfig | None = None) -> FairValueReport:
-    cfg = cfg or FairValueConfig()
+def _walk_slate(
+    payload: dict[str, Any], cfg: FairValueConfig
+) -> tuple[list[PricedOpportunity], list[PricedOpportunity], list[InformationalRow], int]:
     tradable: list[PricedOpportunity] = []
     rejected: list[PricedOpportunity] = []
     informational: list[InformationalRow] = []
@@ -1329,6 +1415,24 @@ def process_slate(payload: dict[str, Any], cfg: FairValueConfig | None = None) -
                 rejected=rejected,
                 informational=informational,
             )
+    return tradable, rejected, informational, n_markets
+
+
+def priced_opportunities(
+    payload: dict[str, Any], cfg: FairValueConfig | None = None
+) -> list[PricedOpportunity]:
+    """Every priced side, including sub-min-edge and vetoed rows.
+
+    Closing-line value needs the fair even when the close is no longer +EV.
+    """
+    cfg = cfg or FairValueConfig()
+    tradable, rejected, _, _ = _walk_slate(payload, cfg)
+    return tradable + rejected
+
+
+def process_slate(payload: dict[str, Any], cfg: FairValueConfig | None = None) -> FairValueReport:
+    cfg = cfg or FairValueConfig()
+    tradable, rejected, informational, n_markets = _walk_slate(payload, cfg)
     return build_report(
         tradable,
         informational,

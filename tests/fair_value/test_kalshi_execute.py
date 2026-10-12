@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -30,7 +31,17 @@ def _opp(
     ticker: str | None = "KXNFLRECYDS-TEST-15",
     market: str = "Jonathan Taylor receiving_yards",
     fee_adjusted_edge: float = 0.06,
+    kickoff: str | None = "default",
+    books_quoted_at: str | None = "default",
+    venue_quoted_at: str | None = "default",
 ) -> PricedOpportunity:
+    now = datetime.now(UTC)
+    if kickoff == "default":
+        kickoff = (now + timedelta(hours=8)).isoformat()
+    if books_quoted_at == "default":
+        books_quoted_at = now.isoformat()
+    if venue_quoted_at == "default":
+        venue_quoted_at = (now + timedelta(seconds=20)).isoformat()
     return PricedOpportunity(
         market=market,
         matchup="BAL @ IND",
@@ -57,6 +68,9 @@ def _opp(
         market_id=ticker,
         ticker=ticker,
         rank_score=0.05,
+        kickoff=kickoff,
+        books_quoted_at=books_quoted_at,
+        venue_quoted_at=venue_quoted_at,
     )
 
 
@@ -239,9 +253,7 @@ def test_ioc_no_fill_is_not_deduped(tmp_path: Path) -> None:
     client = _FakeClient(fill_count="0.00")
     log = tmp_path / "fills.jsonl"
     convex = _FakeConvex()
-    cfg = KalshiTradeConfig(
-        dry_run=False, filled_log=log, refresh_quote=False, convex=convex
-    )
+    cfg = KalshiTradeConfig(dry_run=False, filled_log=log, refresh_quote=False, convex=convex)
     report = FairValueReport(tradable=[_opp()])
     first = run_kalshi_trades(report, cfg, client=client)
     assert first[0].action == "skipped"
@@ -328,7 +340,9 @@ class _FakeClient:
 
 
 class _FakeConvex:
-    def __init__(self, *, configured: bool = True, claimed: bool = True, detail: str = "claimed") -> None:
+    def __init__(
+        self, *, configured: bool = True, claimed: bool = True, detail: str = "claimed"
+    ) -> None:
         self.configured = configured
         self._claimed = claimed
         self._detail = detail
@@ -345,3 +359,39 @@ class _FakeConvex:
 
     def release(self, trade_key_value: str) -> None:
         self.releases.append(trade_key_value)
+
+
+def test_dry_run_skips_inside_kickoff_buffer(tmp_path: Path) -> None:
+    kickoff = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+    results = run_kalshi_trades(
+        FairValueReport(tradable=[_opp(kickoff=kickoff)]),
+        KalshiTradeConfig(dry_run=True, filled_log=tmp_path / "fills.jsonl"),
+    )
+    assert results[0].action == "skipped"
+    assert results[0].detail == "inside kickoff buffer"
+
+
+def test_dry_run_skips_missing_kickoff(tmp_path: Path) -> None:
+    results = run_kalshi_trades(
+        FairValueReport(tradable=[_opp(kickoff=None)]),
+        KalshiTradeConfig(dry_run=True, filled_log=tmp_path / "fills.jsonl"),
+    )
+    assert results[0].action == "skipped"
+    assert results[0].detail == "missing kickoff"
+
+
+def test_dry_run_skips_when_books_are_stale(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    results = run_kalshi_trades(
+        FairValueReport(
+            tradable=[
+                _opp(
+                    books_quoted_at=(now - timedelta(minutes=11)).isoformat(),
+                    venue_quoted_at=now.isoformat(),
+                )
+            ]
+        ),
+        KalshiTradeConfig(dry_run=True, filled_log=tmp_path / "fills.jsonl"),
+    )
+    assert results[0].action == "skipped"
+    assert results[0].detail == "stale books"

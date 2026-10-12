@@ -151,14 +151,31 @@ PASSING_YARDS = {
 }
 
 
+_FRESH_QUOTES = {
+    "kickoff": "2026-12-06T18:00:00+00:00",
+    "books_quoted_at": "2026-12-06T16:00:00+00:00",
+    "props_quoted_at": "2026-12-06T16:00:00+00:00",
+    "kalshi_quoted_at": "2026-12-06T16:00:30+00:00",
+    "polymarket_quoted_at": "2026-12-06T16:00:30+00:00",
+}
+
+
+def _stamp(game: dict) -> dict:
+    stamped = dict(game)
+    stamped.update(_FRESH_QUOTES)
+    return stamped
+
+
 def _slate() -> dict:
     return {
         "games": [
-            {
-                "matchup": "NYG @ DAL",
-                "markets": {"spread": SPREAD},
-                "player_props": [PASSING_YARDS],
-            }
+            _stamp(
+                {
+                    "matchup": "NYG @ DAL",
+                    "markets": {"spread": SPREAD},
+                    "player_props": [PASSING_YARDS],
+                }
+            )
         ]
     }
 
@@ -288,11 +305,13 @@ def _cousins_slate(*, yes_bid: float = 0.13, yes_ask: float = 0.19) -> dict:
     blob["kalshi"] = {**COUSINS_RUSH["kalshi"], "yes_bid": yes_bid, "yes_ask": yes_ask}
     return {
         "games": [
-            {
-                "matchup": "MIA @ LV",
-                "markets": {},
-                "player_props": [blob],
-            }
+            _stamp(
+                {
+                    "matchup": "MIA @ LV",
+                    "markets": {},
+                    "player_props": [blob],
+                }
+            )
         ]
     }
 
@@ -312,8 +331,7 @@ def test_longshot_rush_over_is_not_a_plus_ev_over() -> None:
     assert rejected
     assert all(r.veto_reason for r in rejected)
     assert all(
-        r.veto_reason in {"fallback_sigma_extrapolation", "fit_quality_too_low"}
-        for r in rejected
+        r.veto_reason in {"fallback_sigma_extrapolation", "fit_quality_too_low"} for r in rejected
     )
 
 
@@ -326,11 +344,7 @@ def test_longshot_under_is_vetoed_even_when_no_is_cheap() -> None:
         if r.player == "Kirk Cousins" and r.side == "under"
     ]
     assert cheap_unders == []
-    rejected = [
-        r
-        for r in cheap.rejected
-        if r.player == "Kirk Cousins" and r.venue == "kalshi"
-    ]
+    rejected = [r for r in cheap.rejected if r.player == "Kirk Cousins" and r.venue == "kalshi"]
     assert rejected
     assert all(r.is_extrapolation is True for r in rejected)
 
@@ -346,12 +360,12 @@ def test_allow_ou_side_blocks_longshot_over_keeps_nearby_alt() -> None:
         low_confidence=True,
         sigma_source="fallback",
     )
-    assert _allow_ou_side(
-        "over", market_line=9.5, fair_line=0.5, fit=default_rush, cfg=cfg
-    ) is False
-    assert _allow_ou_side(
-        "under", market_line=9.5, fair_line=0.5, fit=default_rush, cfg=cfg
-    ) is True
+    assert (
+        _allow_ou_side("over", market_line=9.5, fair_line=0.5, fit=default_rush, cfg=cfg) is False
+    )
+    assert (
+        _allow_ou_side("under", market_line=9.5, fair_line=0.5, fit=default_rush, cfg=cfg) is True
+    )
 
     default_pass = FittedDistribution(
         mu=213.0,
@@ -362,12 +376,14 @@ def test_allow_ou_side_blocks_longshot_over_keeps_nearby_alt() -> None:
         low_confidence=True,
         sigma_source="fallback",
     )
-    assert _allow_ou_side(
-        "over", market_line=224.5, fair_line=213.0, fit=default_pass, cfg=cfg
-    ) is True
-    assert _allow_ou_side(
-        "under", market_line=224.5, fair_line=213.0, fit=default_pass, cfg=cfg
-    ) is True
+    assert (
+        _allow_ou_side("over", market_line=224.5, fair_line=213.0, fit=default_pass, cfg=cfg)
+        is True
+    )
+    assert (
+        _allow_ou_side("under", market_line=224.5, fair_line=213.0, fit=default_pass, cfg=cfg)
+        is True
+    )
 
     fitted = FittedDistribution(
         mu=0.5,
@@ -378,9 +394,7 @@ def test_allow_ou_side_blocks_longshot_over_keeps_nearby_alt() -> None:
         low_confidence=False,
         sigma_source="fitted",
     )
-    assert _allow_ou_side(
-        "over", market_line=9.5, fair_line=0.5, fit=fitted, cfg=cfg
-    ) is True
+    assert _allow_ou_side("over", market_line=9.5, fair_line=0.5, fit=fitted, cfg=cfg) is True
 
 
 def test_cheap_nearby_passing_over_still_tradable() -> None:
@@ -600,7 +614,7 @@ TRAUTMAN_REC = {
 
 
 def _prop_slate(prop: dict, matchup: str) -> dict:
-    return {"games": [{"matchup": matchup, "markets": {}, "player_props": [prop]}]}
+    return {"games": [_stamp({"matchup": matchup, "markets": {}, "player_props": [prop]})]}
 
 
 def test_chase_silent_fit_failure_is_rejected() -> None:
@@ -613,11 +627,7 @@ def test_chase_silent_fit_failure_is_rejected() -> None:
         if r.player == "Ja'Marr Chase" and r.market_line == pytest.approx(49.5)
     ]
     assert tradable == []
-    rejected = [
-        r
-        for r in report.rejected
-        if r.player == "Ja'Marr Chase" and r.venue == "kalshi"
-    ]
+    rejected = [r for r in report.rejected if r.player == "Ja'Marr Chase" and r.venue == "kalshi"]
     assert rejected
     assert all(r.veto_reason == "fit_quality_too_low" for r in rejected)
     assert all(r.is_extrapolation is True for r in rejected)
@@ -631,16 +641,10 @@ def test_trautman_fallback_extrapolation_is_rejected() -> None:
     cfg = FairValueConfig(min_edge_pct=0.0)
     report = process_slate(_prop_slate(TRAUTMAN_REC, "DEN @ KC"), cfg)
     tradable = [
-        r
-        for r in report.tradable + report.tradable_low_liquidity
-        if r.player == "Adam Trautman"
+        r for r in report.tradable + report.tradable_low_liquidity if r.player == "Adam Trautman"
     ]
     assert tradable == []
-    rejected = [
-        r
-        for r in report.rejected
-        if r.player == "Adam Trautman" and r.venue == "kalshi"
-    ]
+    rejected = [r for r in report.rejected if r.player == "Adam Trautman" and r.venue == "kalshi"]
     assert rejected
     assert all(r.is_extrapolation is True for r in rejected)
     assert all(r.extrapolation_distance == pytest.approx(4.0) for r in rejected)
@@ -713,11 +717,13 @@ def test_first_td_and_2plus_td_go_to_tradable_td() -> None:
     report = process_slate(
         {
             "games": [
-                {
-                    "matchup": "TB @ CIN",
-                    "markets": {},
-                    "player_props": [first, plus],
-                }
+                _stamp(
+                    {
+                        "matchup": "TB @ CIN",
+                        "markets": {},
+                        "player_props": [first, plus],
+                    }
+                )
             ]
         },
         cfg,
@@ -746,6 +752,10 @@ def test_away_favorite_spread_prices_yes_as_away() -> None:
         "games": [
             {
                 "matchup": "CAR @ CLE",
+                "kickoff": "2026-12-06T18:00:00+00:00",
+                "books_quoted_at": "2026-12-06T16:00:00+00:00",
+                "kalshi_quoted_at": "2026-12-06T16:00:30+00:00",
+                "polymarket_quoted_at": "2026-12-06T16:00:30+00:00",
                 "markets": {
                     "spread": {
                         "consensus_line": 3.5,
@@ -792,3 +802,42 @@ def test_away_favorite_spread_prices_yes_as_away() -> None:
     assert by_order["yes"].market_price == pytest.approx(0.44)
     assert by_order["yes"].fair_prob == pytest.approx(by_side["away"].fair_prob)
     assert "no" not in by_order
+
+
+def test_stale_and_undated_rows_are_rejected() -> None:
+    cfg = FairValueConfig(min_edge_pct=0.0)
+    stale = _slate()
+    game = stale["games"][0]
+    game["books_quoted_at"] = "2026-12-06T16:00:00+00:00"
+    game["props_quoted_at"] = "2026-12-06T16:00:00+00:00"
+    game["kalshi_quoted_at"] = "2026-12-06T16:11:30+00:00"
+    game["polymarket_quoted_at"] = "2026-12-06T16:11:30+00:00"
+    report = process_slate(stale, cfg)
+    priced = (
+        report.tradable
+        + report.tradable_low_liquidity
+        + report.tradable_td
+        + report.tradable_td_low_liquidity
+    )
+    assert priced == []
+    assert report.rejected
+    assert all(row.veto_reason == "stale_reference" for row in report.rejected)
+
+    undated = _slate()
+    for key in (
+        "books_quoted_at",
+        "props_quoted_at",
+        "kalshi_quoted_at",
+        "polymarket_quoted_at",
+    ):
+        undated["games"][0].pop(key)
+    bare = process_slate(undated, cfg)
+    bare_priced = (
+        bare.tradable
+        + bare.tradable_low_liquidity
+        + bare.tradable_td
+        + bare.tradable_td_low_liquidity
+    )
+    assert bare_priced == []
+    assert bare.rejected
+    assert all(row.veto_reason == "stale_reference" for row in bare.rejected)

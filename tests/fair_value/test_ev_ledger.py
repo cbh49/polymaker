@@ -7,6 +7,7 @@ from ev_trading.fair_value.ev_ledger import (
     meets_min_edge,
     nfl_ev_trade_key,
     poly_slug_lock_key,
+    signal_snapshot,
     venues_from_trade_arg,
 )
 from polymaker.trading.convex_trades import ClaimResult
@@ -68,6 +69,23 @@ def test_claim_nfl_ev_records_canonical_and_slug_lock() -> None:
     assert ledger.claims[0]["source"] == "nfl-ev"
     assert ledger.claims[0]["league"] == "nfl"
     assert ledger.claims[1]["payload"]["lockOnly"] is True
+
+
+def test_signal_snapshot_keeps_priced_metrics_and_derives_edge_pct() -> None:
+    snapshot = signal_snapshot(
+        {
+            "fair_prob": 0.62,
+            "fee_adjusted_edge": 0.06,
+            "confidence": 0.85,
+            "stat": "receiving_yards",
+            "player": None,
+            "unused": "nope",
+        }
+    )
+    assert snapshot["fair_prob"] == 0.62
+    assert snapshot["edge_pct"] == 6.0
+    assert "unused" not in snapshot
+    assert "player" not in snapshot
 
 
 class _FakeConvex:

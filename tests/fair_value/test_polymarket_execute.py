@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,17 @@ def _opp(
     player: str | None = None,
     stat: str = "spread",
     fee_adjusted_edge: float = 0.06,
+    kickoff: str | None = "default",
+    books_quoted_at: str | None = "default",
+    venue_quoted_at: str | None = "default",
 ) -> PricedOpportunity:
+    now = datetime.now(UTC)
+    if kickoff == "default":
+        kickoff = (now + timedelta(hours=8)).isoformat()
+    if books_quoted_at == "default":
+        books_quoted_at = now.isoformat()
+    if venue_quoted_at == "default":
+        venue_quoted_at = (now + timedelta(seconds=20)).isoformat()
     return PricedOpportunity(
         market=market,
         matchup=matchup,
@@ -60,6 +71,9 @@ def _opp(
         market_id=market_id,
         ticker=None,
         rank_score=0.04,
+        kickoff=kickoff,
+        books_quoted_at=books_quoted_at,
+        venue_quoted_at=venue_quoted_at,
     )
 
 
@@ -171,9 +185,7 @@ async def test_live_fak_buy_and_dedupe(tmp_path: Path) -> None:
     gw = _FakeGateway()
     convex = _FakeConvex()
     report = FairValueReport(tradable=[_opp()])
-    cfg = PolyTradeConfig(
-        dry_run=False, filled_log=log, refresh_quote=True, convex=convex
-    )
+    cfg = PolyTradeConfig(dry_run=False, filled_log=log, refresh_quote=True, convex=convex)
     results = await run_polymarket_trades_async(report, cfg, gamma=gamma, gateway=gw)
     assert results[0].action == "bought"
     assert results[0].outcome == "New York Giants"
@@ -280,6 +292,39 @@ def _gamma_spread() -> dict[str, Any]:
     }
 
 
+@pytest.mark.asyncio
+async def test_dry_run_skips_missing_kickoff_without_gamma_start(tmp_path: Path) -> None:
+    raw = _gamma_spread()
+    raw.pop("startTime")
+    results = await run_polymarket_trades_async(
+        FairValueReport(tradable=[_opp(kickoff=None)]),
+        PolyTradeConfig(dry_run=True, filled_log=tmp_path / "fills.jsonl"),
+        gamma=_FakeGamma(raw=raw),
+        gateway=_FakeGateway(),
+    )
+    assert results[0].action == "skipped"
+    assert results[0].detail == "missing kickoff"
+    assert results[0].action != "dry_run"
+
+
+@pytest.mark.asyncio
+async def test_live_gamma_start_inside_buffer_blocks(tmp_path: Path) -> None:
+    raw = _gamma_spread()
+    raw["startTime"] = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+    results = await run_polymarket_trades_async(
+        FairValueReport(tradable=[_opp()]),
+        PolyTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            convex=_FakeConvex(),
+        ),
+        gamma=_FakeGamma(raw=raw),
+        gateway=_FakeGateway(),
+    )
+    assert results[0].action == "skipped"
+    assert results[0].detail == "not pre-game (startTime)"
+
+
 class _FakeGamma:
     def __init__(self, raw: dict[str, Any] | None = None) -> None:
         self.raw = raw
@@ -323,7 +368,9 @@ class _FakeGateway:
 
 
 class _FakeConvex:
-    def __init__(self, *, configured: bool = True, claimed: bool = True, detail: str = "claimed") -> None:
+    def __init__(
+        self, *, configured: bool = True, claimed: bool = True, detail: str = "claimed"
+    ) -> None:
         self.configured = configured
         self._claimed = claimed
         self._detail = detail

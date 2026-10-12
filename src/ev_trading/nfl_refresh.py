@@ -69,9 +69,7 @@ def refresh_rotowire_games() -> Path:
 
 
 def refresh_rotowire_props() -> Path:
-    return Path(
-        _load_script(_SUPPORT / "scrape_nfl_prop_lines.py", "scrape_nfl_prop_lines").main()
-    )
+    return Path(_load_script(_SUPPORT / "scrape_nfl_prop_lines.py", "scrape_nfl_prop_lines").main())
 
 
 def refresh_kalshi() -> Path:
@@ -88,7 +86,9 @@ def refresh_polymarket() -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     n_props = sum(len(g.get("player_props") or []) for g in result.get("games") or [])
-    print(f"Wrote {result.get('game_count', 0)} NFL Polymarket games ({n_props} player props) → {out}")
+    print(
+        f"Wrote {result.get('game_count', 0)} NFL Polymarket games ({n_props} player props) → {out}"
+    )
     return out
 
 
@@ -183,6 +183,20 @@ def run_nfl_refresh(
         )
         if not quiet:
             render_report(fv_report)
+        from ev_trading.fair_value.clv import record_closing_lines
+
+        n_clv = record_closing_lines(aggregated, cfg=cfg)
+        if n_clv:
+            emit(f"clv rows appended={n_clv}")
+        from ev_trading.fair_value.slate_archive import publish_slate
+
+        try:
+            n_days = publish_slate(fv_report)
+        except Exception as exc:  # noqa: BLE001 — the local report still stands
+            emit(f"slate archive skipped: {exc}")
+        else:
+            if n_days:
+                emit(f"slate days published={n_days}")
         emit(
             f"tradable={len(fv_report.tradable)} "
             f"low_liq={len(fv_report.tradable_low_liquidity)} "
