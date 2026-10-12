@@ -1125,6 +1125,7 @@ def scrape(
                     "away": game.get("away"),
                     "home": game.get("home"),
                     "date": game.get("date"),
+                    "start_time": event.get("startTime") or event.get("start_time"),
                     "polymarket_event_slug": event.get("slug"),
                 }
                 row.update(

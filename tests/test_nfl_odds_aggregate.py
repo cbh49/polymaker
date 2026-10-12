@@ -321,6 +321,7 @@ def test_aggregate_joins_jac_jax_and_closest_prop_line() -> None:
     game = result["games"][0]
     assert game["away"]["abbr"] == "CLE"
     assert game["home"]["abbr"] == "JAX"
+    assert game["kickoff"] == "2026-09-13T17:00:00+00:00"
     assert game["markets"]["spread"]["consensus_line"] == -3.5
     assert game["markets"]["spread"]["kalshi"]["line"] == -3.5
     assert game["markets"]["spread"]["polymarket"]["home_line"] == -3.5

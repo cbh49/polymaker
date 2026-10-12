@@ -9,11 +9,13 @@ DistributionType = Literal["normal", "poisson", "nbinom"]
 DevigMethod = Literal["multiplicative", "shin"]
 VenueName = Literal["kalshi", "polymarket"]
 SideName = Literal["yes", "no", "over", "under", "home", "away"]
-SigmaSource = Literal["fitted", "fallback"]
+SigmaSource = Literal["fitted", "fallback", "key_numbers"]
 VetoReason = Literal[
     "fit_quality_too_low",
     "fallback_sigma_extrapolation",
     "insufficient_books",
+    "stale_reference",
+    "spread_span",
 ]
 
 
@@ -92,6 +94,9 @@ class PricedOpportunity:
     sigma_source: SigmaSource | None = None
     role_bucket: str | None = None
     veto_reason: str | None = None
+    kickoff: str | None = None
+    books_quoted_at: str | None = None
+    venue_quoted_at: str | None = None
 
     @property
     def edge_pct(self) -> float:

@@ -21,6 +21,7 @@ _SRC = SCRIPT_DIR.parents[1]
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from ev_trading.fair_value.freshness import kickoff_iso  # noqa: E402
 from ev_trading.nfl_odds import (  # noqa: E402
     CANONICAL_PROP_TYPES,
     ROTOWIRE_PROP_TO_CANONICAL,
@@ -46,7 +47,9 @@ from ev_trading.nfl_odds import (  # noqa: E402
 DEFAULT_GAME_ODDS = SCRIPT_DIR / "nfl_game_odds.json"
 DEFAULT_PLAYER_PROPS = SCRIPT_DIR / "nfl_player_props.json"
 DEFAULT_KALSHI = SCRIPT_DIR.parent / "venues" / "kalshi" / "nfl_week_markets.json"
-DEFAULT_POLYMARKET = SCRIPT_DIR.parents[2] / "data-aggregation" / "output" / "polymarket_nfl_odds.json"
+DEFAULT_POLYMARKET = (
+    SCRIPT_DIR.parents[2] / "data-aggregation" / "output" / "polymarket_nfl_odds.json"
+)
 DEFAULT_OUT = SCRIPT_DIR / "nfl_aggregated_odds.json"
 
 
@@ -283,7 +286,8 @@ def _build_moneyline(
             home_abbr=home_abbr,
             away_name=away_name,
             home_name=home_name,
-            team_abbr=market.get("team_abbr") or kalshi_ticker_team(str(market.get("ticker") or "")),
+            team_abbr=market.get("team_abbr")
+            or kalshi_ticker_team(str(market.get("ticker") or "")),
         )
         if side:
             kalshi_ml[side] = _kalshi_price(market)
@@ -291,8 +295,12 @@ def _build_moneyline(
     poly_ml_raw = (poly or {}).get("moneyline") or {}
     poly_ml = _drop_none(
         {
-            "away": _poly_game_side(poly_ml_raw.get("away") if isinstance(poly_ml_raw, dict) else None),
-            "home": _poly_game_side(poly_ml_raw.get("home") if isinstance(poly_ml_raw, dict) else None),
+            "away": _poly_game_side(
+                poly_ml_raw.get("away") if isinstance(poly_ml_raw, dict) else None
+            ),
+            "home": _poly_game_side(
+                poly_ml_raw.get("home") if isinstance(poly_ml_raw, dict) else None
+            ),
         }
     )
 
@@ -506,7 +514,9 @@ def _build_total(
     return row or None
 
 
-def _player_lookup(rows: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[tuple[str, str], list[str]]]:
+def _player_lookup(
+    rows: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[tuple[str, str], list[str]]]:
     by_norm: dict[str, dict[str, Any]] = {}
     by_initial: dict[tuple[str, str], list[str]] = {}
     for row in rows:
@@ -546,7 +556,11 @@ def _resolve_player(
 
 def _prop_books_consensus(books: dict[str, Any]) -> float | None:
     return median_line(
-        [row["line"] for row in books.values() if isinstance(row, dict) and row.get("line") is not None]
+        [
+            row["line"]
+            for row in books.values()
+            if isinstance(row, dict) and row.get("line") is not None
+        ]
     )
 
 
@@ -589,7 +603,9 @@ def _build_player_props(
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     by_norm, by_initial = _player_lookup(rw_props)
 
-    def _ensure(norm: str, *, name: str, prop_type: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _ensure(
+        norm: str, *, name: str, prop_type: str, meta: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         key = (norm, prop_type)
         row = grouped.get(key)
         if row is None:
@@ -641,7 +657,9 @@ def _build_player_props(
 
     stats = {"with_books": 0, "kalshi": 0, "polymarket": 0}
     out: list[dict[str, Any]] = []
-    for (norm, prop_type), row in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1])):
+    for (norm, prop_type), row in sorted(
+        grouped.items(), key=lambda item: (item[0][0], item[0][1])
+    ):
         books = row.get("books") or {}
         consensus = _prop_books_consensus(books)
         kalshi_alts = kalshi_by_key.get((norm, prop_type), [])
@@ -682,7 +700,9 @@ def _build_player_props(
     return out, stats
 
 
-def _team_fields(rw: dict[str, Any] | None, poly: dict[str, Any] | None, abbr: str, side: str) -> dict[str, Any]:
+def _team_fields(
+    rw: dict[str, Any] | None, poly: dict[str, Any] | None, abbr: str, side: str
+) -> dict[str, Any]:
     if rw:
         blob = rw.get(side) or {}
         return {
@@ -786,6 +806,16 @@ def aggregate_nfl_slate(
         stats = built.pop("_prop_stats")
         for name, count in stats.items():
             prop_stats[name] = prop_stats.get(name, 0) + count
+        poly = poly_games.get(key)
+        rw = rw_games.get(key)
+        built["kickoff"] = kickoff_iso(
+            (rw or {}).get("gameDate") if isinstance(rw, dict) else None,
+            (poly or {}).get("start_time") if isinstance(poly, dict) else None,
+        )
+        built["books_quoted_at"] = game_odds.get("scraped_at")
+        built["props_quoted_at"] = player_props.get("scraped_at")
+        built["kalshi_quoted_at"] = kalshi.get("generated_at")
+        built["polymarket_quoted_at"] = polymarket.get("scraped_at")
         games.append(_drop_none(built))
 
     return {
@@ -795,16 +825,22 @@ def aggregate_nfl_slate(
         "prop_stats": prop_stats,
         "sources": {
             "rotowire_games": game_odds.get("source"),
+            "rotowire_games_at": game_odds.get("scraped_at"),
             "rotowire_props": player_props.get("source"),
+            "rotowire_props_at": player_props.get("scraped_at"),
+            "kalshi_at": kalshi.get("generated_at"),
             "kalshi_generated_at": kalshi.get("generated_at"),
             "polymarket": polymarket.get("source"),
+            "polymarket_at": polymarket.get("scraped_at"),
         },
         "games": games,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Aggregate NFL sportsbook + Kalshi + Polymarket odds")
+    parser = argparse.ArgumentParser(
+        description="Aggregate NFL sportsbook + Kalshi + Polymarket odds"
+    )
     parser.add_argument("--game-odds", type=Path, default=DEFAULT_GAME_ODDS)
     parser.add_argument("--player-props", type=Path, default=DEFAULT_PLAYER_PROPS)
     parser.add_argument("--kalshi", type=Path, default=DEFAULT_KALSHI)

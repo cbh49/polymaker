@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -24,7 +25,9 @@ from ev_trading.fair_value.ev_ledger import (
     poly_slug_lock_key,
     release_keys,
     resolve_ledger,
+    signal_snapshot,
 )
+from ev_trading.fair_value.freshness import MAX_BOOK_VENUE_LAG_SECONDS, execution_block
 from ev_trading.fair_value.kalshi_execute import (
     DEFAULT_MIN_CONFIDENCE,
     DEFAULT_USD,
@@ -78,6 +81,7 @@ class PolyTradeConfig:
     max_ask_slippage: float = DEFAULT_MAX_ASK_SLIPPAGE
     refresh_quote: bool = True
     pregame_buffer_minutes: float = DEFAULT_PREGAME_BUFFER_MINUTES
+    max_book_venue_lag_seconds: float = MAX_BOOK_VENUE_LAG_SECONDS
     config_dir: str = "config"
     convex: TradeLedger | None = None
 
@@ -186,9 +190,7 @@ def run_polymarket_trades(
     gateway: PolyExecutionGateway | None = None,
 ) -> list[PolyTradeResult]:
     """Filter + size + (optionally) send FAK buys. Dry-run unless cfg.dry_run is False."""
-    return asyncio.run(
-        run_polymarket_trades_async(source, cfg, gamma=gamma, gateway=gateway)
-    )
+    return asyncio.run(run_polymarket_trades_async(source, cfg, gamma=gamma, gateway=gateway))
 
 
 async def run_polymarket_trades_async(
@@ -264,6 +266,14 @@ async def _trade_one(
     base = PolyTradeResult(market=market, market_id=market_id, side=side, action="skipped")
     if key in already:
         base.detail = "already traded (dedupe log)"
+        return base
+    blocked_clock = execution_block(
+        row,
+        buffer_minutes=cfg.pregame_buffer_minutes,
+        max_lag_seconds=cfg.max_book_venue_lag_seconds,
+    )
+    if blocked_clock:
+        base.detail = blocked_clock
         return base
     try:
         ask = float(row.get("market_price"))
@@ -360,6 +370,7 @@ async def _trade_one(
             "confidence": row.get("confidence"),
             "venue": "polymarket",
         },
+        trade_data=signal_snapshot(row),
     )
     if claim_err:
         base.detail = claim_err
@@ -411,6 +422,15 @@ async def _trade_one(
         "buy_price": buy_price,
         "shares": shares,
         "start_time_ms": start_ms,
+        "fair_side": row.get("side"),
+        "fair_prob": row.get("fair_prob"),
+        "market_line": row.get("market_line"),
+        "stat": row.get("stat"),
+        "player": row.get("player"),
+        "matchup": row.get("matchup"),
+        "kickoff": row.get("kickoff"),
+        "books_quoted_at": row.get("books_quoted_at"),
+        "filled_at": datetime.now(UTC).isoformat(),
     }
     try:
         ledger.complete(

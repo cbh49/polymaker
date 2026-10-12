@@ -33,6 +33,7 @@ class TradeLedger(Protocol):
         condition_id: str | None = None,
         venue: str | None = None,
         payload: dict[str, Any] | None = None,
+        trade_data: dict[str, Any] | None = None,
     ) -> ClaimResult: ...
 
     def complete(
@@ -102,6 +103,46 @@ def live_ledger_block(ledger: TradeLedger | None) -> str | None:
     return None
 
 
+SNAPSHOT_FIELDS = (
+    "fair_prob",
+    "market_price",
+    "raw_edge",
+    "fee_adjusted_edge",
+    "edge_pct",
+    "confidence",
+    "rank_score",
+    "n_books",
+    "sigma_source",
+    "role_bucket",
+    "fit_r2",
+    "line_delta",
+    "is_extrapolation",
+    "extrapolation_distance",
+    "volume",
+    "liquidity",
+    "low_confidence",
+    "stat",
+    "player",
+    "side",
+    "market_line",
+    "kickoff",
+)
+
+
+def signal_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    """Priced-row metrics kept on tradeData after the fill overwrites payload."""
+    snapshot: dict[str, Any] = {}
+    for key in SNAPSHOT_FIELDS:
+        value = row.get(key)
+        if value is not None:
+            snapshot[key] = value
+    if "edge_pct" not in snapshot:
+        edge = snapshot.get("fee_adjusted_edge")
+        if isinstance(edge, (int, float)) and not isinstance(edge, bool):
+            snapshot["edge_pct"] = round(float(edge) * 100.0, 3)
+    return snapshot
+
+
 def claim_nfl_ev(
     ledger: TradeLedger,
     *,
@@ -114,6 +155,7 @@ def claim_nfl_ev(
     slug: str | None = None,
     condition_id: str | None = None,
     slug_lock_key: str | None = None,
+    trade_data: dict[str, Any] | None = None,
 ) -> tuple[list[str], str | None]:
     """Claim the canonical NFL EV key, then an optional Polymarket slug lock."""
     canonical = nfl_ev_trade_key(venue, market_id, side)
@@ -129,6 +171,7 @@ def claim_nfl_ev(
         condition_id=condition_id,
         venue=venue,
         payload=payload,
+        trade_data=trade_data,
     )
     if not claim.claimed:
         return [], claim.detail

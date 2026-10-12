@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,10 +25,13 @@ from ev_trading.fair_value.ev_ledger import (
     nfl_ev_trade_key,
     release_keys,
     resolve_ledger,
+    signal_snapshot,
 )
+from ev_trading.fair_value.freshness import MAX_BOOK_VENUE_LAG_SECONDS, execution_block
 from ev_trading.fair_value.models import PricedOpportunity
 from ev_trading.fair_value.report import FairValueReport
 from ev_trading.fair_value.tradable_pricer import kalshi_no_ask, kalshi_yes_ask
+from polymaker.catalog.sports import DEFAULT_PREGAME_BUFFER_MINUTES
 
 YES_SIDES = frozenset({"yes", "over", "home"})
 NO_SIDES = frozenset({"no", "under", "away"})
@@ -65,6 +69,8 @@ class KalshiTradeConfig:
     time_in_force: str = "immediate_or_cancel"
     max_ask_slippage: float = DEFAULT_MAX_ASK_SLIPPAGE
     refresh_quote: bool = True
+    pregame_buffer_minutes: float = DEFAULT_PREGAME_BUFFER_MINUTES
+    max_book_venue_lag_seconds: float = MAX_BOOK_VENUE_LAG_SECONDS
     convex: TradeLedger | None = None
 
 
@@ -201,7 +207,9 @@ def select_tradable_kalshi(
     return picked
 
 
-def load_tradable_rows(source: FairValueReport | dict[str, Any] | Path | str) -> list[dict[str, Any]]:
+def load_tradable_rows(
+    source: FairValueReport | dict[str, Any] | Path | str,
+) -> list[dict[str, Any]]:
     """Read the `tradable` list from a report object, dict, or JSON path."""
     if isinstance(source, FairValueReport):
         return [r.to_dict() for r in source.tradable]
@@ -278,6 +286,14 @@ def _trade_one(
     if key in already:
         base.detail = "already traded (dedupe log)"
         return base
+    blocked_clock = execution_block(
+        row,
+        buffer_minutes=cfg.pregame_buffer_minutes,
+        max_lag_seconds=cfg.max_book_venue_lag_seconds,
+    )
+    if blocked_clock:
+        base.detail = blocked_clock
+        return base
     try:
         ask = float(row.get("market_price"))
     except (TypeError, ValueError):
@@ -352,6 +368,7 @@ def _trade_one(
             "confidence": row.get("confidence"),
             "venue": "kalshi",
         },
+        trade_data=signal_snapshot(row),
     )
     if claim_err:
         planned.action = "skipped"
@@ -394,6 +411,15 @@ def _trade_one(
         "venue": "kalshi",
         "buy_price": planned.limit_price,
         "shares": float(fill_count),
+        "fair_side": row.get("side"),
+        "fair_prob": row.get("fair_prob"),
+        "market_line": row.get("market_line"),
+        "stat": row.get("stat"),
+        "player": row.get("player"),
+        "matchup": row.get("matchup"),
+        "kickoff": row.get("kickoff"),
+        "books_quoted_at": row.get("books_quoted_at"),
+        "filled_at": datetime.now(UTC).isoformat(),
     }
     try:
         ledger.complete(

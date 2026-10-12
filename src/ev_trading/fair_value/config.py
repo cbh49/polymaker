@@ -115,9 +115,7 @@ class FairValueConfig(BaseModel):
     role_buckets: dict[str, dict[str, RoleBucketSpec]] = Field(
         default_factory=lambda: {
             "receiving_yards": {
-                "low_target_share": RoleBucketSpec(
-                    line_lt=20, sigma=10, sigma_bounds=(4.0, 16.0)
-                ),
+                "low_target_share": RoleBucketSpec(line_lt=20, sigma=10, sigma_bounds=(4.0, 16.0)),
                 "moderate": RoleBucketSpec(line_lt=50, sigma=18, sigma_bounds=(8.0, 28.0)),
                 "high_target_share": RoleBucketSpec(
                     line_lt=999, sigma=28, sigma_bounds=(12.0, 50.0)
@@ -131,9 +129,7 @@ class FairValueConfig(BaseModel):
             "passing_yards": {
                 "backup": RoleBucketSpec(line_lt=150, sigma=40, sigma_bounds=(20.0, 55.0)),
                 "starter": RoleBucketSpec(line_lt=260, sigma=55, sigma_bounds=(35.0, 80.0)),
-                "high_volume": RoleBucketSpec(
-                    line_lt=999, sigma=62, sigma_bounds=(35.0, 90.0)
-                ),
+                "high_volume": RoleBucketSpec(line_lt=999, sigma=62, sigma_bounds=(35.0, 90.0)),
             },
             "rushing_receiving_yards": {
                 "low_volume": RoleBucketSpec(line_lt=20, sigma=12, sigma_bounds=(5.0, 20.0)),
@@ -143,9 +139,7 @@ class FairValueConfig(BaseModel):
             "receptions": {
                 "low_volume": RoleBucketSpec(line_lt=2.5, sigma=1.0, sigma_bounds=(0.5, 1.8)),
                 "moderate": RoleBucketSpec(line_lt=6.0, sigma=1.6, sigma_bounds=(0.8, 3.0)),
-                "high_volume": RoleBucketSpec(
-                    line_lt=999, sigma=2.2, sigma_bounds=(1.0, 6.0)
-                ),
+                "high_volume": RoleBucketSpec(line_lt=999, sigma=2.2, sigma_bounds=(1.0, 6.0)),
             },
         }
     )
@@ -181,6 +175,12 @@ class FairValueConfig(BaseModel):
     min_volume: float = 50.0
     liquidity_full_scale: float = 5000.0
     min_edge_pct: float = 1.0
+    # Book scrape more than this many seconds older than the venue quote is rejected.
+    max_book_venue_lag_seconds: float = 600.0
+    # Off-strike spreads wider than this are not translated (key-number span).
+    spread_max_translation_points: float = 3.0
+    # Last pre-kickoff window that counts as the closing line.
+    clv_window_minutes: float = 15.0
     line_delta_scale: float = 15.0
     stale_delta: float = 8.0
     target_book_count: int = 8
@@ -235,9 +235,7 @@ class FairValueConfig(BaseModel):
             return float(spec.sigma)
         return self.default_sigma_for(stat)
 
-    def sigma_bounds_for(
-        self, stat: str, mu: float | None = None
-    ) -> tuple[float, float]:
+    def sigma_bounds_for(self, stat: str, mu: float | None = None) -> tuple[float, float]:
         if mu is not None:
             _name, spec = self.role_bucket_for(stat, mu)
             if spec is not None and spec.sigma_bounds is not None:

@@ -159,6 +159,27 @@ class ConvexTradeClient:
         except Exception:  # noqa: BLE001
             return
 
+    def get_report(self, report_type: str) -> dict[str, Any] | None:
+        if not self.configured:
+            raise RuntimeError("CONVEX_HTTP_URL and CONVEX_PUBLISH_TOKEN must be set")
+        response = requests.get(
+            f"{self.http_url}/reports",
+            headers=self._headers(),
+            params={"reportType": report_type},
+            timeout=self.timeout,
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Convex /reports HTTP {response.status_code}: {response.text[:300]}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Convex /reports returned non-JSON") from exc
+        return payload if isinstance(payload, dict) else None
+
     def publish_snapshot(
         self,
         *,
