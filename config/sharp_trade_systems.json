@@ -1,0 +1,18 @@
+{
+  "min_units_per_bet": 0.10,
+  "source": "json-data/sharp_trade_review.json",
+  "generated_at": "2026-10-11T08:13:18.418782+00:00",
+  "systems": [
+    {"key": "sbd_gap:15_to_25", "units_per_bet": 0.7506, "decided": 10, "wins": 9, "losses": 1},
+    {"key": "primary_gap:lt_15", "units_per_bet": 0.4029, "decided": 12, "wins": 8, "losses": 4},
+    {"key": "plus_pp:lt_15", "units_per_bet": 0.4029, "decided": 12, "wins": 8, "losses": 4},
+    {"key": "pair:contrarian+plus_pp:true|lt_15", "units_per_bet": 0.4029, "decided": 12, "wins": 8, "losses": 4},
+    {"key": "handle_pct:40_to_55", "units_per_bet": 0.2657, "decided": 13, "wins": 8, "losses": 5},
+    {"key": "pair:league+market:NCAAF|spread", "units_per_bet": 0.2419, "decided": 20, "wins": 13, "losses": 7},
+    {"key": "bet_side:over", "units_per_bet": 0.204, "decided": 8, "wins": 5, "losses": 3},
+    {"key": "line_move_abs:0_to_1", "units_per_bet": 0.1328, "decided": 27, "wins": 16, "losses": 11},
+    {"key": "pair:market+gap:total|ge_40", "units_per_bet": 0.1143, "decided": 24, "wins": 14, "losses": 10},
+    {"key": "favorite_vs_dog:dog", "units_per_bet": 0.1127, "decided": 42, "wins": 23, "losses": 19},
+    {"key": "composite_gap:15_to_25", "units_per_bet": 0.1077, "decided": 11, "wins": 6, "losses": 5}
+  ]
+}

@@ -243,6 +243,56 @@ def _post_plays(plays: list[dict[str, Any]]) -> dict[str, Any]:
     return payload
 
 
+def _post_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """POST /sharp-candidates without importing polymaker."""
+    import requests
+
+    url, token = _credentials()
+    if not url or not token:
+        raise RuntimeError("CONVEX_HTTP_URL / CONVEX_PUBLISH_TOKEN missing")
+    resp = requests.post(
+        f"{url}/sharp-candidates",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        data=json.dumps({"candidates": candidates}),
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Convex /sharp-candidates HTTP {resp.status_code}: {resp.text[:300]}")
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise RuntimeError("Convex /sharp-candidates returned non-JSON") from exc
+    if not isinstance(payload, dict):
+        return {"ok": True, "count": len(candidates)}
+    return payload
+
+
+def post_sharp_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Upsert every taken and dropped finder play. Never raises to caller."""
+    rows = [row for row in candidates if isinstance(row, dict) and row.get("candidateKey")]
+    if not rows:
+        print("Convex sharp candidates: none to log.")
+        return {"posted": 0, "reason": "no_candidates"}
+    if dry_run:
+        print(f"Convex sharp candidates dry-run: {len(rows)} row(s).")
+        return {"posted": 0, "reason": "dry_run", "candidates": rows}
+    try:
+        raw = _post_candidates(rows)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Convex sharp candidates failed: {exc}", flush=True)
+        return {"posted": 0, "reason": "error", "error": str(exc)}
+    print(f"Convex sharp candidates: logged {raw.get('count', len(rows))}.")
+    return {"posted": raw.get("count", len(rows)), **raw}
+
+
 def post_sharp_plays(
     output: dict[str, Any],
     *,

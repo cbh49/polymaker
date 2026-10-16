@@ -1352,7 +1352,9 @@ def process_game(
         market=market,
         line_move=_as_float(play.get("line_move")),
     )
-    qualified = tier is not None and "line_move" not in reasons
+    # A large point move is recorded, not a veto. The review gate still
+    # trades the play when it matches another profitable system.
+    qualified = tier is not None
     play["qualified"] = qualified
     play["reject_reasons"] = reasons
     play["would_be_tier"] = agreement_tier(agreement.n_agreeing, n_sources)

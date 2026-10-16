@@ -19,7 +19,7 @@ import asyncio
 import json
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,12 @@ from polymaker.trading.execute import (  # noqa: E402
     load_configured_plays,
     run_sharp_trades,
 )
+from polymaker.trading.review_gate import (  # noqa: E402
+    filter_sharp_plays,
+    load_trade_systems,
+    split_slate,
+)
+from polymaker.trading.sharp import plays_for_orders  # noqa: E402
 from polymaker.trading.match import match_sharp_plays  # noqa: E402
 
 
@@ -84,21 +90,30 @@ def _write_sharp(
     _frame_for_csv(frame).to_csv(csv_out, index=False)
     print_summary(frame)
     print(f"JSON → {json_out}")
+    systems = load_trade_systems()
+    logged_at = int(datetime.now(timezone.utc).timestamp() * 1000)
+    tradable, candidates = split_slate(output, systems, logged_at=logged_at)
+    dropped = len(candidates) - len(tradable.get("plays") or [])
+    print(
+        f"Review gate: {len(tradable.get('plays') or [])} tradable, "
+        f"{dropped} dropped, {len(systems)} systems"
+    )
+    if convex:
+        try:
+            from convex_sharp_alerts import post_sharp_candidates, post_sharp_plays
+
+            post_sharp_candidates(candidates, dry_run=convex_dry_run)
+            post_sharp_plays(tradable, dry_run=convex_dry_run)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Convex sharp plays failed: {exc}", file=sys.stderr)
     if discord:
         try:
             from discord_sharp_alerts import post_sharp_alerts
 
-            post_sharp_alerts(output, dry_run=discord_dry_run, force=discord_force)
+            post_sharp_alerts(tradable, dry_run=discord_dry_run, force=discord_force)
         except Exception as exc:  # noqa: BLE001
             print(f"Discord alerts failed: {exc}", file=sys.stderr)
-    if convex:
-        try:
-            from convex_sharp_alerts import post_sharp_plays
-
-            post_sharp_plays(output, dry_run=convex_dry_run)
-        except Exception as exc:  # noqa: BLE001
-            print(f"Convex sharp plays failed: {exc}", file=sys.stderr)
-    return output
+    return tradable
 
 
 def _trade_league(cfg: Config, league: str, *, live: bool) -> list[dict[str, Any]]:
@@ -110,7 +125,8 @@ def _trade_league(cfg: Config, league: str, *, live: bool) -> list[dict[str, Any
         print(f"skip trade {league}: {exc}")
         return []
     trade_cfg = _sharp_trade_cfg(cfg, dry_run=not live)
-    plays = filter_plays(plays, trade_cfg, league=league)
+    plays = plays_for_orders(filter_plays(plays, trade_cfg, league=league))
+    plays = filter_sharp_plays(plays, load_trade_systems())
     if not plays:
         print(f"No sharp plays after filters (league={league}).")
         return []

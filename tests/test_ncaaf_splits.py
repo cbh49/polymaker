@@ -922,7 +922,8 @@ def test_agreed_play_without_rlm_is_logged_not_qualified() -> None:
     assert "trade_market" not in play
 
 
-def test_spread_move_over_one_point_is_rejected() -> None:
+def test_spread_move_over_one_point_stays_qualified() -> None:
+    """The move is recorded. The review gate decides whether it still trades."""
     game = {
         "matchup": "HAW @ STAN",
         "date": "2026-08-29",
@@ -955,9 +956,9 @@ def test_spread_move_over_one_point_is_rejected() -> None:
     }
     play = process_game(game, market="spread", sources=sources_for_league("NCAAF"))
     assert play is not None
-    assert play["qualified"] is False
+    assert play["qualified"] is True
     assert play["reject_reasons"] == ["line_move"]
-    assert play["tier"] is None
+    assert play["tier"] in {"A", "A+"}
     assert play["would_be_tier"] == "A"
     assert play["line_move"] == -2.5
 
