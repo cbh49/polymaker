@@ -181,6 +181,8 @@ def _league_from_name(name: str) -> str:
     lower = name.lower()
     if "wnba" in lower:
         return "WNBA"
+    if "nba" in lower:
+        return "NBA"
     if "ufc" in lower:
         return "UFC"
     if "ncaaf" in lower or "cfb" in lower:

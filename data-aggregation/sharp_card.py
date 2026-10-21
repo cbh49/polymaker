@@ -49,6 +49,7 @@ LEAGUE_COLOR = {
     "CFB": (253, 230, 138),
     "MLB": (147, 197, 253),
     "WNBA": (249, 168, 212),
+    "NBA": (251, 146, 60),
 }
 
 MLB_SLUG = {
@@ -82,6 +83,39 @@ MLB_SLUG = {
     "TEX": "tex",
     "TOR": "tor",
     "WSH": "wsh",
+}
+
+NBA_SLUG = {
+    "ATL": "atl",
+    "BOS": "bos",
+    "BKN": "bkn",
+    "CHA": "cha",
+    "CHI": "chi",
+    "CLE": "cle",
+    "DAL": "dal",
+    "DEN": "den",
+    "DET": "det",
+    "GS": "gs",
+    "HOU": "hou",
+    "IND": "ind",
+    "LAC": "lac",
+    "LAL": "lal",
+    "MEM": "mem",
+    "MIA": "mia",
+    "MIL": "mil",
+    "MIN": "min",
+    "NO": "no",
+    "NY": "ny",
+    "OKC": "okc",
+    "ORL": "orl",
+    "PHI": "phi",
+    "PHO": "phx",
+    "POR": "por",
+    "SAC": "sac",
+    "SA": "sa",
+    "TOR": "tor",
+    "UTA": "utah",
+    "WAS": "wsh",
 }
 
 WNBA_SLUG = {
@@ -228,6 +262,8 @@ def _pro_mark(team: str, slug_map: dict[str, str], prefix: str) -> dict[str, str
     try:
         if prefix == "mlb":
             from mlb_team_map import ABBR_TO_NAME, canonical_abbr
+        elif prefix == "nba":
+            from nba_team_map import ABBR_TO_NAME, canonical_abbr
         else:
             from wnba_team_map import ABBR_TO_NAME, canonical_abbr
     except Exception:
@@ -246,13 +282,12 @@ def _pro_mark(team: str, slug_map: dict[str, str], prefix: str) -> dict[str, str
     slug = slug_map.get(abbr)
     if not slug:
         return None
-    folder = "mlb" if prefix == "mlb" else "wnba"
-    style = "" if prefix == "mlb" else "500-dark/"
-    # mlb path is /500/{slug}; wnba path is /500-dark/{slug}
     if prefix == "mlb":
         url = f"https://a.espncdn.com/i/teamlogos/mlb/500/{slug}.png"
+    elif prefix == "nba":
+        url = f"https://a.espncdn.com/i/teamlogos/nba/500/{slug}.png"
     else:
-        url = f"https://a.espncdn.com/i/teamlogos/{folder}/{style}{slug}.png"
+        url = f"https://a.espncdn.com/i/teamlogos/wnba/500-dark/{slug}.png"
     return {"name": ABBR_TO_NAME.get(abbr, team), "url": url, "color": ""}
 
 
@@ -270,6 +305,8 @@ def team_mark(team: str, league: str) -> dict[str, str] | None:
         return _pro_mark(team, MLB_SLUG, "mlb")
     if code == "WNBA":
         return _pro_mark(team, WNBA_SLUG, "wnba")
+    if code == "NBA":
+        return _pro_mark(team, NBA_SLUG, "nba")
     return (
         _lookup_named(index["nfl"], team)
         or _lookup_named(index["cfb"], team)

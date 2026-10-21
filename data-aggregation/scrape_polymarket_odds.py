@@ -74,6 +74,7 @@ DEFAULT_OUT = {
     "WNBA": SCRIPT_DIR / "output" / "polymarket_wnba_odds.json",
     "UFC": SCRIPT_DIR / "output" / "polymarket_ufc_odds.json",
     "NCAAF": SCRIPT_DIR / "output" / "polymarket_ncaaf_odds.json",
+    "NBA": SCRIPT_DIR / "output" / "polymarket_nba_odds.json",
     "NFL": SCRIPT_DIR / "output" / "polymarket_nfl_odds.json",
 }
 
@@ -84,6 +85,7 @@ _POLY_EVENT_PREFIX = {
     "UFC": "ufc",
     "NCAAF": "cfb",
     "CFB": "cfb",
+    "NBA": "nba",
     "NFL": "nfl",
 }
 
@@ -112,17 +114,25 @@ def poly_event_prefix(league: str) -> str:
 
 
 def poly_series_slugs(league: str, day: date | None = None) -> tuple[str, ...]:
-    """Gamma `series_slug` values. CFB/NFL are year-tagged (`cfb-2026`, `nfl-2026`)."""
+    """Gamma `series_slug` values. CFB/NFL are year-tagged (`cfb-2026`, `nfl-2026`).
+
+    NBA event slugs use the `nba-` prefix. The bare `nba` series is empty;
+    the live board is `nba-YYYY`, tried after the untagged slug.
+    """
     prefix = poly_event_prefix(league)
+    year = (day or datetime.now(PAGE_TZ).date()).year
+    if prefix == "nba":
+        return (prefix, f"{prefix}-{year}", f"{prefix}-{year - 1}", f"{prefix}-{year + 1}")
     if prefix not in {"cfb", "nfl"}:
         return (prefix,)
-    year = (day or datetime.now(PAGE_TZ).date()).year
     return (f"{prefix}-{year}", f"{prefix}-{year - 1}", f"{prefix}-{year + 1}", prefix)
 
 
 def _event_date_max_delta(league: str) -> int:
     # CFB/NFL/UFC slates cluster on weekends; ±1 day would drop Saturday from a Thursday run.
     key = normalize_league(league)
+    if key == "NBA":
+        return 7
     if key in {"NCAAF", "NFL"}:
         return 4
     if key == "UFC":
@@ -1211,7 +1221,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Scrape Polymarket moneyline/spread/total prices (NFL also pulls player props)"
     )
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "UFC", "NCAAF", "CFB", "NFL"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "NBA", "UFC", "NCAAF", "CFB", "NFL"])
     parser.add_argument("--date", default=None, help="Slate date YYYY-MM-DD")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()

@@ -49,10 +49,10 @@ from polymaker.trading.sharp import SharpPlay, load_sharp_plays  # noqa: E402
 from polymaker.trading.teams import resolve_team  # noqa: E402
 
 # Whale monitor watches moneylines + the consensus spread/total for these prefixes.
-WATCH_SLUG_PREFIXES: tuple[str, ...] = ("mlb-", "wnba-", "nfl-")
+WATCH_SLUG_PREFIXES: tuple[str, ...] = ("mlb-", "wnba-", "nba-", "nfl-")
 
 _SLUG_RE = re.compile(
-    r"^(?P<league>mlb|wnba|ufc|cfb|nfl)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
+    r"^(?P<league>mlb|wnba|nba|ufc|cfb|nfl)-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-(?P<ymd>\d{4}-\d{2}-\d{2})$"
 )
 
 
@@ -319,6 +319,7 @@ def export_watch_list(
             Path(cfg.sharp.wnba_path),
             Path(cfg.sharp.ufc_path),
             Path(cfg.sharp.ncaaf_path),
+            Path(cfg.sharp.nba_path),
             Path(cfg.sharp.nfl_path),
         ]
         existing = [p for p in paths if p.is_file()]

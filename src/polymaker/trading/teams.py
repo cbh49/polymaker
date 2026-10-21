@@ -180,6 +180,84 @@ NFL_BETTING_TO_POLY: dict[str, str] = {
     "WSH": "was",
 }
 
+# Polymarket NBA tokens (nba-2026 slugs): Warriors=`gsw`, Lakers=`lal`,
+# Clippers=`lac`, Pelicans=`nop`, Knicks=`nyk`, Spurs=`sas`, Suns=`phx`, Jazz=`uta`.
+NBA_BETTING_TO_POLY: dict[str, str] = {
+    "ATL": "atl",
+    "BOS": "bos",
+    "BKN": "bkn",
+    "BRK": "bkn",
+    "BK": "bkn",
+    "CHA": "cha",
+    "CHO": "cha",
+    "CHI": "chi",
+    "CLE": "cle",
+    "DAL": "dal",
+    "DEN": "den",
+    "DET": "det",
+    "GS": "gsw",
+    "GSW": "gsw",
+    "HOU": "hou",
+    "IND": "ind",
+    "LAC": "lac",
+    "LAL": "lal",
+    "MEM": "mem",
+    "MIA": "mia",
+    "MIL": "mil",
+    "MIN": "min",
+    "NO": "nop",
+    "NOP": "nop",
+    "NY": "nyk",
+    "NYK": "nyk",
+    "OKC": "okc",
+    "ORL": "orl",
+    "PHI": "phi",
+    "PHO": "phx",
+    "PHX": "phx",
+    "POR": "por",
+    "SAC": "sac",
+    "SA": "sas",
+    "SAS": "sas",
+    "TOR": "tor",
+    "UTA": "uta",
+    "UTAH": "uta",
+    "WAS": "was",
+    "WSH": "was",
+}
+
+NBA_POLY_TO_NAME: dict[str, str] = {
+    "atl": "Atlanta Hawks",
+    "bos": "Boston Celtics",
+    "bkn": "Brooklyn Nets",
+    "cha": "Charlotte Hornets",
+    "chi": "Chicago Bulls",
+    "cle": "Cleveland Cavaliers",
+    "dal": "Dallas Mavericks",
+    "den": "Denver Nuggets",
+    "det": "Detroit Pistons",
+    "gsw": "Golden State Warriors",
+    "hou": "Houston Rockets",
+    "ind": "Indiana Pacers",
+    "lac": "Los Angeles Clippers",
+    "lal": "Los Angeles Lakers",
+    "mem": "Memphis Grizzlies",
+    "mia": "Miami Heat",
+    "mil": "Milwaukee Bucks",
+    "min": "Minnesota Timberwolves",
+    "nop": "New Orleans Pelicans",
+    "nyk": "New York Knicks",
+    "okc": "Oklahoma City Thunder",
+    "orl": "Orlando Magic",
+    "phi": "Philadelphia 76ers",
+    "phx": "Phoenix Suns",
+    "por": "Portland Trail Blazers",
+    "sac": "Sacramento Kings",
+    "sas": "San Antonio Spurs",
+    "tor": "Toronto Raptors",
+    "uta": "Utah Jazz",
+    "was": "Washington Wizards",
+}
+
 NFL_POLY_TO_NAME: dict[str, str] = {
     "ari": "Arizona Cardinals",
     "atl": "Atlanta Falcons",
@@ -288,6 +366,14 @@ def resolve_team(league: str, abbr_or_name: str) -> TeamRef | None:
         if code is None:
             return None
         return TeamRef(upper if upper in NFL_BETTING_TO_POLY else raw, code, NFL_POLY_TO_NAME[code])
+
+    if league_l == "nba":
+        code = NBA_BETTING_TO_POLY.get(upper)
+        if code is None:
+            code = _name_to_poly(raw, NBA_POLY_TO_NAME)
+        if code is None:
+            return None
+        return TeamRef(upper if upper in NBA_BETTING_TO_POLY else raw, code, NBA_POLY_TO_NAME[code])
 
     return None
 

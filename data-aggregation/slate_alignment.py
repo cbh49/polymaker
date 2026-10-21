@@ -1,9 +1,9 @@
-"""Same-day source alignment for MLB/WNBA/NCAAF/NFL sharp-money trading.
+"""Same-day source alignment for MLB/WNBA/NBA/NCAAF/NFL sharp-money trading.
 
 A league is tradeable only when every *required* splits source is on the
-Pacific slate day (NCAAF/NFL: a weekend window) and at least one game has
+Pacific slate day (NCAAF: 6 days, NBA/NFL: 7 days) and at least one game has
 overlapping fields from all of those sources. EVA / Covers are enrichment
-and never block trading. Pinnacle is not used for NCAAF or NFL.
+and never block trading. Pinnacle is not used for NBA, NCAAF, or NFL.
 """
 
 from __future__ import annotations
@@ -19,8 +19,10 @@ MLB_REQUIRED: tuple[str, ...] = ("primary", "sbd")
 WNBA_REQUIRED: tuple[str, ...] = ("primary", "thespread")
 NCAAF_REQUIRED: tuple[str, ...] = ("primary", "sbd")
 NFL_REQUIRED: tuple[str, ...] = ("primary", "sbd")
+NBA_REQUIRED: tuple[str, ...] = ("primary", "sbd")
 NCAAF_SLATE_WINDOW_DAYS = 6
 NFL_SLATE_WINDOW_DAYS = 7
+NBA_SLATE_WINDOW_DAYS = 7
 
 # Combined-file `sources` object keys for each logical source.
 MLB_SOURCE_KEYS: dict[str, str] = {
@@ -36,6 +38,10 @@ NCAAF_SOURCE_KEYS: dict[str, str] = {
     "sbd": "sportsbettingdime",
 }
 NFL_SOURCE_KEYS: dict[str, str] = {
+    "primary": "draftkings",
+    "sbd": "sportsbettingdime",
+}
+NBA_SOURCE_KEYS: dict[str, str] = {
     "primary": "draftkings",
     "sbd": "sportsbettingdime",
 }
@@ -115,6 +121,8 @@ def slate_window_days(league: str | None) -> int:
         return NCAAF_SLATE_WINDOW_DAYS
     if key == "NFL":
         return NFL_SLATE_WINDOW_DAYS
+    if key == "NBA":
+        return NBA_SLATE_WINDOW_DAYS
     return 0
 
 
@@ -134,6 +142,8 @@ def required_sources(league: str | None) -> tuple[str, ...]:
         return NCAAF_REQUIRED
     if key == "NFL":
         return NFL_REQUIRED
+    if key == "NBA":
+        return NBA_REQUIRED
     return MLB_REQUIRED
 
 
@@ -145,6 +155,8 @@ def source_block_key(league: str | None, logical: str) -> str:
         mapping = NCAAF_SOURCE_KEYS
     elif key == "NFL":
         mapping = NFL_SOURCE_KEYS
+    elif key == "NBA":
+        mapping = NBA_SOURCE_KEYS
     else:
         mapping = MLB_SOURCE_KEYS
     return mapping.get(logical, logical)

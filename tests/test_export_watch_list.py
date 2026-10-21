@@ -56,10 +56,12 @@ def _meta(
 
 
 def test_watch_prefixes_include_nfl() -> None:
-    assert WATCH_SLUG_PREFIXES == ("mlb-", "wnba-", "nfl-")
+    assert WATCH_SLUG_PREFIXES == ("mlb-", "wnba-", "nba-", "nfl-")
     assert _league_from_slug("nfl-dal-nyg-2026-09-20") == "NFL"
     assert _league_from_slug("nfl-dal-nyg-2026-09-20-spread-home-3pt5") == "NFL"
     assert _league_from_slug("nfl-dal-nyg-2026-09-20-total-44pt5") == "NFL"
+    assert _league_from_slug("nba-mil-was-2026-10-21") == "NBA"
+    assert _league_from_slug("wnba-wsh-gsv-2026-07-20") == "WNBA"
 
 
 def test_fresh_watch_markets_picks_consensus_spread_and_total(tmp_path) -> None:

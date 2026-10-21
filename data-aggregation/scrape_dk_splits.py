@@ -54,6 +54,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "dk_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "dk_ufc_betting_splits.json"
 DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "dk_ncaaf_betting_splits.json"
+DEFAULT_NBA_OUT = SCRIPT_DIR / "output" / "dk_nba_betting_splits.json"
 DEFAULT_NFL_OUT = SCRIPT_DIR / "output" / "dk_nfl_betting_splits.json"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -69,6 +70,10 @@ PAGE_URLS = {
     "NCAAF": (
         "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
         "?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football"
+    ),
+    "NBA": (
+        "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
+        "?tb_eg=42648&tb_edate=n7days&tb_emt=0&itm_content=NBA"
     ),
     "NFL": (
         "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
@@ -416,6 +421,11 @@ def parse_games(
 
             if parsed.get("away_abbr") not in ABBR_TO_NAME or parsed.get("home_abbr") not in ABBR_TO_NAME:
                 continue
+        elif league == "NBA":
+            from nba_team_map import ABBR_TO_NAME as NBA_ABBR
+
+            if parsed.get("away_abbr") not in NBA_ABBR or parsed.get("home_abbr") not in NBA_ABBR:
+                continue
         games.append(parsed)
     return games
 
@@ -491,6 +501,19 @@ def scrape(
         canonical_abbr_fn = nfl_canonical_abbr
         names_match_fn = nfl_names_match
         match_matchup_fn = nfl_match_matchup
+        max_pages = 8
+        allowed_days = None
+    elif league == "NBA":
+        from nba_team_map import canonical_abbr as nba_canonical_abbr
+        from nba_team_map import canonical_name as nba_canonical_name
+        from nba_team_map import match_matchup as nba_match_matchup
+        from nba_team_map import names_match as nba_names_match
+
+        matchups = []
+        canonical_name_fn = nba_canonical_name
+        canonical_abbr_fn = nba_canonical_abbr
+        names_match_fn = nba_names_match
+        match_matchup_fn = nba_match_matchup
         max_pages = 8
         allowed_days = None
     else:
@@ -570,7 +593,7 @@ def scrape(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape DraftKings betting splits")
-    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB", "NFL"])
+    parser.add_argument("--league", default="WNBA", choices=["WNBA", "NBA", "UFC", "NCAAF", "CFB", "NFL"])
     parser.add_argument(
         "--date",
         default=None,
@@ -596,6 +619,7 @@ def main() -> None:
     out = args.out or {
         "UFC": DEFAULT_UFC_OUT,
         "NCAAF": DEFAULT_NCAAF_OUT,
+        "NBA": DEFAULT_NBA_OUT,
         "NFL": DEFAULT_NFL_OUT,
     }.get(league, DEFAULT_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)

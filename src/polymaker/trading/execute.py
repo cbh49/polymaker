@@ -155,9 +155,12 @@ def default_sharp_paths(cfg: Config, *, league: str | None = None) -> list[Path]
         return [Path(sharp.ncaaf_path)]
     if league_l == "nfl":
         return [Path(sharp.nfl_path)]
+    if league_l == "nba":
+        return [Path(sharp.nba_path)]
     return [
         Path(sharp.mlb_path),
         Path(sharp.wnba_path),
+        Path(sharp.nba_path),
         Path(sharp.ufc_path),
         Path(sharp.ncaaf_path),
         Path(sharp.nfl_path),

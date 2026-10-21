@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Scrape public-betting line movement from TheSpread.com (WNBA, UFC, NCAAF, or NFL).
+Scrape public-betting line movement from TheSpread.com (WNBA, NBA, UFC, NCAAF, or NFL).
 
 SportsBettingDime does not publish WNBA/UFC splits; this is the stand-in
 for scrape_sbd_splits.py, used for open → current line movement (RLM).
@@ -10,6 +10,7 @@ Sources:
   WNBA:  https://www.thespread.com/wnba-public-betting-chart/
   UFC:   https://www.thespread.com/mma-odds/
   NCAAF: https://www.thespread.com/ncaa-college-football-public-betting-chart/
+  NBA:   https://www.thespread.com/nba-basketball-public-betting-chart/
   NFL:   https://www.thespread.com/nfl-odds/
 
 WNBA: Cloudflare-protected public-betting chart. Market-average pie
@@ -52,12 +53,14 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "thespread_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "thespread_ufc_betting_splits.json"
 DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "thespread_ncaaf_betting_splits.json"
+DEFAULT_NBA_OUT = SCRIPT_DIR / "output" / "thespread_nba_betting_splits.json"
 DEFAULT_NFL_OUT = SCRIPT_DIR / "output" / "thespread_nfl_betting_splits.json"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
 PAGE_URLS = {
     "WNBA": "https://www.thespread.com/wnba-public-betting-chart/",
     "UFC": "https://www.thespread.com/mma-odds/",
     "NCAAF": "https://www.thespread.com/ncaa-college-football-public-betting-chart/",
+    "NBA": "https://www.thespread.com/nba-basketball-public-betting-chart/",
     "NFL": "https://www.thespread.com/nfl-odds/",
 }
 PAGE_URL = PAGE_URLS["WNBA"]
@@ -780,6 +783,34 @@ def scrape(
                     canonical_abbr_fn=nfl_canonical_abbr,
                     allowed_days=allowed_days,
                 )
+    elif league == "NBA":
+        from nba_team_map import canonical_abbr as nba_canonical_abbr
+        from nba_team_map import canonical_name as nba_canonical_name
+        from nba_team_map import match_matchup as nba_match_matchup
+
+        matchups = load_matchups(matchups_path) if matchups_path and matchups_path.exists() else []
+        html = _fetch_thespread_html(page_url, ".datarow, .tse-game", headed=headed)
+        allowed_mds = {_md_for_day(day + timedelta(days=offset)) for offset in range(0, 8)}
+        allowed_days = {day + timedelta(days=offset) for offset in range(0, 8)}
+        games = []
+        if html:
+            games = parse_games(
+                html,
+                day,
+                matchups,
+                canonical_name_fn=nba_canonical_name,
+                canonical_abbr_fn=nba_canonical_abbr,
+                match_matchup_fn=nba_match_matchup,
+                allowed_mds=allowed_mds,
+            )
+            if not games:
+                games = parse_tse_football_games(
+                    html,
+                    day,
+                    canonical_name_fn=nba_canonical_name,
+                    canonical_abbr_fn=nba_canonical_abbr,
+                    allowed_days=allowed_days,
+                )
     else:
         matchups = load_matchups(matchups_path)
         html = _fetch_thespread_html(page_url, ".datarow", headed=headed)
@@ -797,7 +828,7 @@ def scrape(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape TheSpread public betting / MMA odds")
-    parser.add_argument("--league", default="WNBA", choices=["WNBA", "UFC", "NCAAF", "CFB", "NFL"])
+    parser.add_argument("--league", default="WNBA", choices=["WNBA", "NBA", "UFC", "NCAAF", "CFB", "NFL"])
     parser.add_argument(
         "--date",
         default=None,
@@ -823,6 +854,7 @@ def main() -> None:
     out = args.out or {
         "UFC": DEFAULT_UFC_OUT,
         "NCAAF": DEFAULT_NCAAF_OUT,
+        "NBA": DEFAULT_NBA_OUT,
         "NFL": DEFAULT_NFL_OUT,
     }.get(league, DEFAULT_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -348,6 +348,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     paths = args.input or [
         SCRIPT_DIR / "output" / "ncaaf_sharp_money.json",
+        SCRIPT_DIR / "output" / "nba_sharp_money.json",
         SCRIPT_DIR / "output" / "nfl_sharp_money.json",
         SCRIPT_DIR / "output" / "mlb_sharp_money.json",
         SCRIPT_DIR / "output" / "wnba_sharp_money.json",
