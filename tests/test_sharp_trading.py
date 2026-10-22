@@ -943,6 +943,46 @@ def test_usd_for_play_low_volume_dog() -> None:
     assert _usd_for_play(tier_b_dog, cfg, ask=None) == 4.0
 
 
+def _sized_play(**overrides: object) -> SharpPlay:
+    fields: dict[str, object] = {
+        "league": "NCAAF",
+        "matchup": "OSU @ MICH",
+        "side": "Over",
+        "market": "total",
+        "tier": "A",
+        "home_away": "over",
+        "game_time_utc": None,
+        "implied_fair_prob": 0.52,
+        "rlm_confirmed": True,
+        "composite_gap": 30.0,
+        "source_path": "x",
+        "raw": {"play_label": "Over 45.5"},
+        "low_volume_dog_flag": False,
+    }
+    fields.update(overrides)
+    return SharpPlay(**fields)  # type: ignore[arg-type]
+
+
+def test_usd_for_play_football_totals_are_ten() -> None:
+    from polymaker.trading.execute import SharpTradeConfig, _usd_for_play
+
+    cfg = SharpTradeConfig(usd_tier_a=25.0, usd_tier_b=10.0)
+    assert _usd_for_play(_sized_play(tier="A"), cfg, ask=0.52) == 10.0
+    assert _usd_for_play(_sized_play(tier="A+"), cfg, ask=0.48) == 10.0
+    assert _usd_for_play(_sized_play(league="NFL", side="Under", home_away="under"), cfg, ask=0.51) == 10.0
+    assert _usd_for_play(_sized_play(league="CFB"), cfg, ask=0.50) == 10.0
+    # Tier B was already $10.
+    assert _usd_for_play(_sized_play(tier="B"), cfg, ask=0.50) == 10.0
+    # Spreads, moneylines, and other leagues stay on the A/A+ stake.
+    assert _usd_for_play(_sized_play(market="spread", side="OSU", home_away="away"), cfg, ask=0.50) == 25.0
+    assert _usd_for_play(_sized_play(market="moneyline", side="OSU", home_away="away"), cfg, ask=0.50) == 25.0
+    assert _usd_for_play(_sized_play(league="NBA"), cfg, ask=0.50) == 25.0
+    assert _usd_for_play(_sized_play(league="MLB"), cfg, ask=0.50) == 25.0
+    # A smaller configured A stake is not raised up to $10.
+    small = SharpTradeConfig(usd_tier_a=8.0, usd_tier_b=5.0)
+    assert _usd_for_play(_sized_play(), small, ask=0.50) == 8.0
+
+
 def test_load_sharp_file_dog_flag(tmp_path: Path) -> None:
     path = tmp_path / "ncaaf_sharp_money.json"
     path.write_text(

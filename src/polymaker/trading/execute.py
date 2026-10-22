@@ -29,7 +29,7 @@ from polymaker.trading.venue_quote import PricedVenue, pick_venue, price_venue
 class SharpTradeConfig:
     """Runtime knobs for sharp auto-buys (overridable via CLI)."""
 
-    usd_tier_a: float = 25.0
+    usd_tier_a: float = 25.0  # A/A+ stake; NCAAF/NFL totals cap at $10
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # A = Tier A only; B = A+B
     markets: frozenset[str] = frozenset({"moneyline", "spread", "total"})
@@ -716,10 +716,33 @@ def _is_pre_game_play(m: MatchedPlay, buffer_minutes: float) -> bool:
     return is_pre_game({"startTime": start}, buffer_minutes)
 
 
+# NCAAF/NFL game totals (Over/Under) stake this much even at Tier A/A+.
+FOOTBALL_TOTAL_USD = 10.0
+FOOTBALL_TOTAL_LEAGUES = frozenset({"NCAAF", "NFL"})
+
+
+def _normalized_league(league: str | None) -> str:
+    key = str(league or "").strip().upper()
+    if key == "CFB":
+        return "NCAAF"
+    return key
+
+
 def _usd_for_tier(tier: str, cfg: SharpTradeConfig) -> float:
     if tier.upper() in {"A+", "A"}:
         return float(cfg.usd_tier_a)
     return float(cfg.usd_tier_b)
+
+
+def _football_total_cap(play: SharpPlay, base: float) -> float:
+    """A/A+ Over/Under in NCAAF and NFL stakes $10, not the usual $25."""
+    if str(play.market or "").strip().lower() != "total":
+        return base
+    if _normalized_league(play.league) not in FOOTBALL_TOTAL_LEAGUES:
+        return base
+    if str(play.tier or "").strip().upper() not in {"A+", "A"}:
+        return base
+    return min(base, FOOTBALL_TOTAL_USD)
 
 
 def _american_to_prob(odds: float) -> float | None:
@@ -759,8 +782,12 @@ def stake_to_win(target_profit: float, price: float) -> float:
 
 
 def _usd_for_play(play: SharpPlay, cfg: SharpTradeConfig, ask: float | None) -> float:
-    """Tier stake, or to-win that amount when `low_volume_dog_flag` is set."""
-    base = _usd_for_tier(play.tier, cfg)
+    """Tier stake, or to-win that amount when `low_volume_dog_flag` is set.
+
+    NCAAF and NFL totals cap Tier A/A+ at $10. Moneylines, spreads, and
+    other leagues keep the configured tier stake.
+    """
+    base = _football_total_cap(play, _usd_for_tier(play.tier, cfg))
     if not play.low_volume_dog_flag:
         return base
     price = _dog_price(ask, play)
