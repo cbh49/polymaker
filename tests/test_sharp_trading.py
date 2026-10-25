@@ -990,10 +990,14 @@ def test_nhl_price_gates_and_stakes() -> None:
     assert _price_gate(0.45, None, cfg, market="moneyline", league="NHL") is None
     cheap = _price_gate(0.44, None, cfg, market="moneyline", league="NHL")
     assert cheap is not None and "nhl min moneyline" in cheap
+    assert _price_gate(0.45, None, cfg, market="spread", league="NHL") is None
     assert _price_gate(0.58, None, cfg, market="spread", league="NHL") is None
+    cheap_spread = _price_gate(0.44, None, cfg, market="spread", league="NHL")
+    assert cheap_spread is not None and "nhl min spread" in cheap_spread
     rich = _price_gate(0.59, None, cfg, market="spread", league="NHL")
     assert rich is not None and "nhl max spread" in rich
     assert _price_gate(0.44, None, cfg, market="moneyline", league="NBA") is None
+    assert _price_gate(0.44, None, cfg, market="spread", league="NBA") is None
     assert _price_gate(0.59, None, cfg, market="spread", league="NBA") is None
     assert _price_gate(0.59, None, cfg, market="total", league="NHL") is None
     blocked = _price_gate(0.70, None, cfg, market="total", league="NHL")

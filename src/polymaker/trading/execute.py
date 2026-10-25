@@ -733,8 +733,10 @@ FOOTBALL_TOTAL_LEAGUES = frozenset({"NCAAF", "NFL"})
 # NHL stakes are flat for every tier. Moneyline and spread $15, totals $10.
 NHL_ML_SPREAD_USD = 15.0
 NHL_TOTAL_USD = 10.0
-# Skip an NHL moneyline cheaper than this, and an NHL spread richer than this.
+# NHL moneyline and spread both skip below this. 0.45 still trades.
 NHL_MIN_MONEYLINE_ASK = 0.45
+NHL_MIN_SPREAD_ASK = 0.45
+# NHL spread also skips above this. 0.58 still trades.
 NHL_MAX_SPREAD_ASK = 0.58
 
 
@@ -866,6 +868,8 @@ def _price_gate(
     if _normalized_league(league) == "NHL":
         if kind == "moneyline" and ask is not None and ask < NHL_MIN_MONEYLINE_ASK:
             return f"ask {ask:.3f} below nhl min moneyline {NHL_MIN_MONEYLINE_ASK}"
+        if kind == "spread" and ask is not None and ask < NHL_MIN_SPREAD_ASK:
+            return f"ask {ask:.3f} below nhl min spread {NHL_MIN_SPREAD_ASK}"
         if kind == "spread" and ask is not None and ask > NHL_MAX_SPREAD_ASK:
             return f"ask {ask:.3f} above nhl max spread {NHL_MAX_SPREAD_ASK}"
     if ask is None:
