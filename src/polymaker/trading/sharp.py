@@ -183,6 +183,8 @@ def _league_from_name(name: str) -> str:
         return "WNBA"
     if "nba" in lower:
         return "NBA"
+    if "nhl" in lower:
+        return "NHL"
     if "ufc" in lower:
         return "UFC"
     if "ncaaf" in lower or "cfb" in lower:

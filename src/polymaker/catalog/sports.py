@@ -1,11 +1,12 @@
 """Sports event discovery helpers for Polymarket Gamma series.
 
-MLB / WNBA / NBA / UFC / CFB / NFL are discovered via `GET /events?series_slug=…`.
+MLB / WNBA / NBA / NHL / UFC / CFB / NFL are discovered via `GET /events?series_slug=…`.
 A Gamma sports event slug is the moneyline (`{league}-{away}-{home}-YYYY-MM-DD`);
 spreads and totals are nested markets under that event. Gamma's `startDate` is
 listing time — game day is `eventDate`; tip-off is `startTime`.
-CFB, NFL, and NBA series slugs are year-tagged (`cfb-2026`, `nfl-2026`, `nba-2026`).
-The bare `nba` series is empty; event slugs still start with `nba-`.
+CFB, NFL, NBA, and NHL series slugs are year-tagged
+(`cfb-2026`, `nfl-2026`, `nba-2026`, `nhl-2026`).
+The bare `nba` and `nhl` series are empty; event slugs still start with `nba-` / `nhl-`.
 """
 
 from __future__ import annotations
@@ -18,7 +19,17 @@ from typing import Any
 
 def default_sports_series_slugs(today: date | None = None) -> tuple[str, ...]:
     year = (today or datetime.now(UTC).date()).year
-    return ("mlb", "wnba", "nba", f"nba-{year}", "ufc", f"cfb-{year}", f"nfl-{year}")
+    return (
+        "mlb",
+        "wnba",
+        "nba",
+        f"nba-{year}",
+        "nhl",
+        f"nhl-{year}",
+        "ufc",
+        f"cfb-{year}",
+        f"nfl-{year}",
+    )
 
 
 # Supported Polymarket sports series slugs (Gamma `series_slug` query param).
@@ -33,9 +44,9 @@ UFC_LOOK_AHEAD_DAYS = 14
 LINE_MATCH_TOLERANCE = 1.0
 
 # Moneyline / event: mlb-atl-cws-2026-08-20 / wnba-wsh-gsv-2026-07-20
-# / nba-mil-was-2026-10-21 / ufc-ant-gre3-2026-08-22
+# / nba-mil-was-2026-10-21 / nhl-nyi-dal-2026-10-25 / ufc-ant-gre3-2026-08-22
 # / cfb-hawaii-stan-2026-08-29 / nfl-dal-nyg-2026-09-14
-_LEAGUE = r"mlb|wnba|nba|ufc|cfb|nfl"
+_LEAGUE = r"mlb|wnba|nba|nhl|ufc|cfb|nfl"
 _MONEYLINE_RE = re.compile(
     rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
     r"-(?P<ymd>\d{4}-\d{2}-\d{2})$"
@@ -105,12 +116,13 @@ def is_sports_series(slug: str | None) -> bool:
     if not slug:
         return False
     s = slug.lower()
-    if s in {"mlb", "wnba", "nba", "ufc", "cfb", "nfl"}:
+    if s in {"mlb", "wnba", "nba", "nhl", "ufc", "cfb", "nfl"}:
         return True
     if (
         _is_year_tagged_series(s, "cfb")
         or _is_year_tagged_series(s, "nfl")
         or _is_year_tagged_series(s, "nba")
+        or _is_year_tagged_series(s, "nhl")
     ):
         return True
     return s in SPORTS_SERIES_SLUGS

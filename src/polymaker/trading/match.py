@@ -459,6 +459,18 @@ async def _find_event(
             home=home.poly_code,
             event_dates=event_dates,
         )
+    if league == "nhl":
+        # Bare `nhl` is empty on Gamma; the live board is `nhl-YYYY`.
+        events = await _series_events_for_slugs(
+            gamma, _year_tagged_series_slugs("nhl", event_dates), series_cache
+        )
+        return _find_coded_event(
+            events,
+            league="nhl",
+            away=away.poly_code,
+            home=home.poly_code,
+            event_dates=event_dates,
+        )
     events = await _series_events(gamma, league, series_cache)
     return _find_coded_event(
         events,

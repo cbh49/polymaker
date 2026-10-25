@@ -307,6 +307,8 @@ def team_mark(team: str, league: str) -> dict[str, str] | None:
         return _pro_mark(team, WNBA_SLUG, "wnba")
     if code == "NBA":
         return _pro_mark(team, NBA_SLUG, "nba")
+    if code == "NHL":
+        return None
     return (
         _lookup_named(index["nfl"], team)
         or _lookup_named(index["cfb"], team)

@@ -983,6 +983,39 @@ def test_usd_for_play_football_totals_are_ten() -> None:
     assert _usd_for_play(_sized_play(), small, ask=0.50) == 8.0
 
 
+def test_nhl_price_gates_and_stakes() -> None:
+    from polymaker.trading.execute import SharpTradeConfig, _price_gate, _usd_for_play
+
+    cfg = SharpTradeConfig(max_ask=0.60, min_moneyline_ask=0.35, usd_tier_a=25.0, usd_tier_b=10.0)
+    assert _price_gate(0.45, None, cfg, market="moneyline", league="NHL") is None
+    cheap = _price_gate(0.44, None, cfg, market="moneyline", league="NHL")
+    assert cheap is not None and "nhl min moneyline" in cheap
+    assert _price_gate(0.58, None, cfg, market="spread", league="NHL") is None
+    rich = _price_gate(0.59, None, cfg, market="spread", league="NHL")
+    assert rich is not None and "nhl max spread" in rich
+    assert _price_gate(0.44, None, cfg, market="moneyline", league="NBA") is None
+    assert _price_gate(0.59, None, cfg, market="spread", league="NBA") is None
+    assert _price_gate(0.59, None, cfg, market="total", league="NHL") is None
+    blocked = _price_gate(0.70, None, cfg, market="total", league="NHL")
+    assert blocked is not None and "max_ask" in blocked
+
+    ml = _sized_play(league="NHL", market="moneyline", side="DAL", home_away="home", tier="A")
+    spread = _sized_play(league="NHL", market="spread", side="DAL", home_away="home", tier="B")
+    total = _sized_play(league="NHL", market="total", side="Over", home_away="over", tier="A+")
+    dog = _sized_play(
+        league="NHL",
+        market="moneyline",
+        side="NYI",
+        home_away="away",
+        tier="A",
+        low_volume_dog_flag=True,
+    )
+    assert _usd_for_play(ml, cfg, ask=0.52) == 15.0
+    assert _usd_for_play(spread, cfg, ask=0.48) == 15.0
+    assert _usd_for_play(total, cfg, ask=0.51) == 10.0
+    assert _usd_for_play(dog, cfg, ask=0.46) == 15.0
+
+
 def test_load_sharp_file_dog_flag(tmp_path: Path) -> None:
     path = tmp_path / "ncaaf_sharp_money.json"
     path.write_text(

@@ -57,6 +57,11 @@ GAME_LINE_SERIES: dict[str, dict[str, tuple[str, ...]]] = {
         "spread": ("KXNBASPREAD",),
         "total": ("KXNBATOTAL",),
     },
+    "nhl": {
+        "moneyline": ("KXNHLGAME",),
+        "spread": ("KXNHLSPREAD",),
+        "total": ("KXNHLTOTAL",),
+    },
     "ufc": {
         "moneyline": ("KXUFCGAME", "KXUFCFIGHT", "KXMMAFIGHT", "KXUFC"),
     },

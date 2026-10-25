@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-Scrape MLB, NBA, NCAAF, or NFL public betting % + handle % from SportsBettingDime.
+Scrape MLB, NBA, NCAAF, NFL, or NHL public betting % + handle % from SportsBettingDime.
 
 Source pages:
   MLB:   https://www.sportsbettingdime.com/mlb/public-betting-trends/
   NBA:   https://www.sportsbettingdime.com/nba/public-betting-trends/
   NCAAF: https://www.sportsbettingdime.com/college-football/public-betting-trends/
   NFL:   https://www.sportsbettingdime.com/nfl/public-betting-trends/
+  NHL:   https://www.sportsbettingdime.com/nhl/public-betting-trends/
 
 Data comes from:
   /wp-json/adpt/v1/mlb-odds
   /wp-json/adpt/v1/nba-odds
   /wp-json/adpt/v1/ncaafb-odds
   /wp-json/adpt/v1/nfl-odds
+  /wp-json/adpt/v1/nhl-odds
   (each game includes bettingSplits)
 
 The college-football HTML page may say splits are unavailable while the
@@ -48,6 +50,7 @@ DEFAULT_OUT = {
     "NCAAF": SCRIPT_DIR / "output" / "sbd_ncaaf_betting_splits.json",
     "NBA": SCRIPT_DIR / "output" / "sbd_nba_betting_splits.json",
     "NFL": SCRIPT_DIR / "output" / "sbd_nfl_betting_splits.json",
+    "NHL": SCRIPT_DIR / "output" / "sbd_nhl_betting_splits.json",
 }
 
 PAGE_URLS = {
@@ -55,12 +58,14 @@ PAGE_URLS = {
     "NCAAF": "https://www.sportsbettingdime.com/college-football/public-betting-trends/",
     "NBA": "https://www.sportsbettingdime.com/nba/public-betting-trends/",
     "NFL": "https://www.sportsbettingdime.com/nfl/public-betting-trends/",
+    "NHL": "https://www.sportsbettingdime.com/nhl/public-betting-trends/",
 }
 API_URLS = {
     "MLB": "https://www.sportsbettingdime.com/wp-json/adpt/v1/mlb-odds",
     "NBA": "https://www.sportsbettingdime.com/wp-json/adpt/v1/nba-odds",
     "NCAAF": "https://www.sportsbettingdime.com/wp-json/adpt/v1/ncaafb-odds",
     "NFL": "https://www.sportsbettingdime.com/wp-json/adpt/v1/nfl-odds",
+    "NHL": "https://www.sportsbettingdime.com/wp-json/adpt/v1/nhl-odds",
 }
 PAGE_URL = PAGE_URLS["MLB"]
 API_URL = API_URLS["MLB"]
@@ -380,6 +385,8 @@ def scrape(
         window = 7
     elif league == "NBA":
         window = 7
+    elif league == "NHL":
+        window = 7
     else:
         window = 0
     allowed = {day + timedelta(days=offset) for offset in range(0, window + 1)}
@@ -401,6 +408,13 @@ def scrape(
         matchups = []
     elif league == "NBA":
         from nba_team_map import ABBR_ALIASES, ABBR_TO_NAME, canonical_abbr, canonical_name
+
+        abbr_map = dict(ABBR_TO_NAME)
+        for alias, canon in ABBR_ALIASES.items():
+            abbr_map[alias] = ABBR_TO_NAME[canon]
+        matchups = []
+    elif league == "NHL":
+        from nhl_team_map import ABBR_ALIASES, ABBR_TO_NAME, canonical_abbr, canonical_name
 
         abbr_map = dict(ABBR_TO_NAME)
         for alias, canon in ABBR_ALIASES.items():
@@ -430,7 +444,7 @@ def scrape(
         parsed = parse_event(event, abbr_map, matchups)
         if not parsed:
             continue
-        if league in {"NCAAF", "NFL", "NBA"}:
+        if league in {"NCAAF", "NFL", "NBA", "NHL"}:
             away_name = canonical_name(str(parsed.get("away") or parsed.get("away_abbr") or ""))
             home_name = canonical_name(str(parsed.get("home") or parsed.get("home_abbr") or ""))
             away_abbr = canonical_abbr(str(parsed.get("away_abbr") or away_name or "")) or parsed.get("away_abbr")
@@ -493,7 +507,7 @@ def merge_sbd_into_game(game: dict[str, Any], sbd_game: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape SportsBettingDime public betting splits")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "NBA", "NCAAF", "CFB", "NFL"])
+    parser.add_argument("--league", default="MLB", choices=["MLB", "NBA", "NCAAF", "CFB", "NFL", "NHL"])
     parser.add_argument(
         "--date",
         default=None,

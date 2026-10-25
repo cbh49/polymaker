@@ -157,10 +157,13 @@ def default_sharp_paths(cfg: Config, *, league: str | None = None) -> list[Path]
         return [Path(sharp.nfl_path)]
     if league_l == "nba":
         return [Path(sharp.nba_path)]
+    if league_l == "nhl":
+        return [Path(sharp.nhl_path)]
     return [
         Path(sharp.mlb_path),
         Path(sharp.wnba_path),
         Path(sharp.nba_path),
+        Path(sharp.nhl_path),
         Path(sharp.ufc_path),
         Path(sharp.ncaaf_path),
         Path(sharp.nfl_path),
@@ -245,7 +248,11 @@ async def _trade_one(
         poly_ask = _best_ask(poly_book, m.meta.best_ask)
         usd = _usd_for_play(m.play, trade_cfg, poly_ask)
         skip_reason = _price_gate(
-            poly_ask, m.play.implied_fair_prob, trade_cfg, market=m.play.market
+            poly_ask,
+            m.play.implied_fair_prob,
+            trade_cfg,
+            market=m.play.market,
+            league=m.play.league,
         )
         if skip_reason:
             quote_notes["polymarket"] = skip_reason
@@ -271,7 +278,11 @@ async def _trade_one(
         kalshi_ask = live_ask
         usd_k = _usd_for_play(m.play, trade_cfg, kalshi_ask)
         skip_reason = _price_gate(
-            kalshi_ask, m.play.implied_fair_prob, trade_cfg, market=m.play.market
+            kalshi_ask,
+            m.play.implied_fair_prob,
+            trade_cfg,
+            market=m.play.market,
+            league=m.play.league,
         )
         if skip_reason:
             quote_notes["kalshi"] = skip_reason
@@ -719,6 +730,12 @@ def _is_pre_game_play(m: MatchedPlay, buffer_minutes: float) -> bool:
 # NCAAF/NFL game totals (Over/Under) stake this much even at Tier A/A+.
 FOOTBALL_TOTAL_USD = 10.0
 FOOTBALL_TOTAL_LEAGUES = frozenset({"NCAAF", "NFL"})
+# NHL stakes are flat for every tier. Moneyline and spread $15, totals $10.
+NHL_ML_SPREAD_USD = 15.0
+NHL_TOTAL_USD = 10.0
+# Skip an NHL moneyline cheaper than this, and an NHL spread richer than this.
+NHL_MIN_MONEYLINE_ASK = 0.45
+NHL_MAX_SPREAD_ASK = 0.58
 
 
 def _normalized_league(league: str | None) -> str:
@@ -781,12 +798,28 @@ def stake_to_win(target_profit: float, price: float) -> float:
     return target_profit * price / (1.0 - price)
 
 
+def _nhl_stake(play: SharpPlay) -> float | None:
+    """Flat NHL stake. None for every other league."""
+    if _normalized_league(play.league) != "NHL":
+        return None
+    market = str(play.market or "").strip().lower()
+    if market == "total":
+        return NHL_TOTAL_USD
+    if market in {"moneyline", "spread"}:
+        return NHL_ML_SPREAD_USD
+    return None
+
+
 def _usd_for_play(play: SharpPlay, cfg: SharpTradeConfig, ask: float | None) -> float:
     """Tier stake, or to-win that amount when `low_volume_dog_flag` is set.
 
-    NCAAF and NFL totals cap Tier A/A+ at $10. Moneylines, spreads, and
-    other leagues keep the configured tier stake.
+    NCAAF and NFL totals cap Tier A/A+ at $10. NHL moneyline and spread are
+    a flat $15 and NHL totals are a flat $10, with no long-dog to-win shrink.
+    Other leagues keep the configured tier stake.
     """
+    nhl = _nhl_stake(play)
+    if nhl is not None:
+        return nhl
     base = _football_total_cap(play, _usd_for_tier(play.tier, cfg))
     if not play.low_volume_dog_flag:
         return base
@@ -814,13 +847,15 @@ def _price_gate(
     cfg: SharpTradeConfig,
     *,
     market: str | None = None,
+    league: str | None = None,
 ) -> str | None:
     if cfg.max_ask is not None:
         if ask is None:
             return f"no ask (max_ask {cfg.max_ask})"
         if ask > cfg.max_ask:
             return f"ask {ask:.3f} above max_ask {cfg.max_ask}"
-    is_moneyline = (market or "").strip().lower() == "moneyline"
+    kind = (market or "").strip().lower()
+    is_moneyline = kind == "moneyline"
     if is_moneyline and cfg.min_moneyline_ask is not None:
         if ask is None:
             return f"no ask (min_moneyline_ask {cfg.min_moneyline_ask})"
@@ -828,6 +863,11 @@ def _price_gate(
             return (
                 f"ask {ask:.3f} below min_moneyline_ask {cfg.min_moneyline_ask}"
             )
+    if _normalized_league(league) == "NHL":
+        if kind == "moneyline" and ask is not None and ask < NHL_MIN_MONEYLINE_ASK:
+            return f"ask {ask:.3f} below nhl min moneyline {NHL_MIN_MONEYLINE_ASK}"
+        if kind == "spread" and ask is not None and ask > NHL_MAX_SPREAD_ASK:
+            return f"ask {ask:.3f} above nhl max spread {NHL_MAX_SPREAD_ASK}"
     if ask is None:
         return None
     if cfg.min_edge is not None and fair is not None and ask > fair - cfg.min_edge:

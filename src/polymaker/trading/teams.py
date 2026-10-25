@@ -303,17 +303,25 @@ class TeamRef:
     full_name: str
 
 
-def _cfb_team_map():
-    """Lazy-load data-aggregation/cfb_team_map.py (canonical school names)."""
+def _load_agg_module(name: str):
+    """Lazy-load a data-aggregation team map (cfb_team_map, nhl_team_map)."""
     try:
-        import cfb_team_map as module  # type: ignore
-        return module
+        return __import__(name)
     except ImportError:
         agg = Path(__file__).resolve().parents[3] / "data-aggregation"
         if str(agg) not in sys.path:
             sys.path.insert(0, str(agg))
-        import cfb_team_map as module  # type: ignore
-        return module
+        return __import__(name)
+
+
+def _cfb_team_map():
+    """Lazy-load data-aggregation/cfb_team_map.py (canonical school names)."""
+    return _load_agg_module("cfb_team_map")
+
+
+def _nhl_team_map():
+    """Lazy-load data-aggregation/nhl_team_map.py (canonical NHL names)."""
+    return _load_agg_module("nhl_team_map")
 
 
 def resolve_team(league: str, abbr_or_name: str) -> TeamRef | None:
@@ -374,6 +382,17 @@ def resolve_team(league: str, abbr_or_name: str) -> TeamRef | None:
         if code is None:
             return None
         return TeamRef(upper if upper in NBA_BETTING_TO_POLY else raw, code, NBA_POLY_TO_NAME[code])
+
+    if league_l == "nhl":
+        nhl = _nhl_team_map()
+        abbr = nhl.canonical_abbr(raw)
+        if abbr is None:
+            return None
+        code = nhl.poly_code(abbr)
+        name = nhl.ABBR_TO_NAME.get(abbr)
+        if code is None or name is None:
+            return None
+        return TeamRef(abbr, code, name)
 
     return None
 

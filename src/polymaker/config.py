@@ -30,7 +30,7 @@ class CatalogConfig(BaseModel):
 
     include_politics: bool = True
     series_slugs: list[str] = Field(
-        default_factory=lambda: ["mlb", "wnba", "nba", "nba-2026", "ufc", "cfb-2026", "nfl-2026"]
+        default_factory=lambda: ["mlb", "wnba", "nba", "nba-2026", "nhl", "nhl-2026", "ufc", "cfb-2026", "nfl-2026"]
     )
     look_ahead_days: int = 3
     skip_live_events: bool = True
@@ -60,6 +60,7 @@ class SharpConfig(BaseModel):
     ufc_path: str = "data-aggregation/output/ufc_sharp_money.json"
     ncaaf_path: str = "data-aggregation/output/ncaaf_sharp_money.json"
     nba_path: str = "data-aggregation/output/nba_sharp_money.json"
+    nhl_path: str = "data-aggregation/output/nhl_sharp_money.json"
     nfl_path: str = "data-aggregation/output/nfl_sharp_money.json"
     usd_tier_a: float = 25.0  # stake for A/A+; NCAAF/NFL totals cap at $10; to-win for +200 ML dogs
     usd_tier_b: float = 10.0
