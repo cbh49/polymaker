@@ -3,15 +3,18 @@
 
   uv run python scripts/run_nfl_ev_pipeline.py
 
-With execution (dry-run until --live or POLYMAKER_LIVE=1):
+Odds scoring and Discord/X cards always run. Kalshi and Polymarket buys are
+paused until ``ev_trading.fair_value.order_placement.ENABLED`` is True.
+With that flag on, execution is dry-run until --live or POLYMAKER_LIVE=1:
 
   uv run python scripts/run_nfl_ev_pipeline.py --trade kalshi
   uv run python scripts/run_nfl_ev_pipeline.py --trade polymarket
   uv run python scripts/run_nfl_ev_pipeline.py --trade both
   uv run python scripts/run_nfl_ev_pipeline.py --trade both --live
 
-The AWS `ev` container runs `--trade both --min-edge-pct 5` and goes live when
-POLYMAKER_LIVE=1. Rows need fee-adjusted edge >= 5 points and confidence >= 0.80.
+The AWS `ev` container still runs `--trade both --min-edge-pct 5`. It posts
+alerts and does not send orders while ENABLED is False. Rows need fee-adjusted
+edge >= 5 points and confidence >= 0.80.
 
 Steps:
   1. RotoWire game odds  → supporting-lines/nfl_game_odds.json
@@ -23,7 +26,8 @@ Steps:
   7. Sportsbook/Kalshi/Polymarket +EV >= 5pp → Discord cards (all) + at most one
      X graphic if all 8 odds are filled (DISCORD_EV_WEBHOOK_URL / X_EV_POSTS)
      and Convex `evOpportunities` (CONVEX_HTTP_URL) for the dashboard board.
-  8. Optional: buy `tradable` rows on Kalshi and/or Polymarket ($10 each)
+  8. Optional: buy `tradable` rows on Kalshi and/or Polymarket ($10 each).
+     Paused while order_placement.ENABLED is False.
 
 1–4 run in parallel. Pass --sequential to run them one at a time.
 """
@@ -34,6 +38,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from ev_trading.fair_value import order_placement
 from ev_trading.fair_value.ev_ledger import (
     DEFAULT_MIN_EDGE_PCT,
     venues_from_trade_arg,
@@ -159,7 +164,13 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"EV alerts failed (continuing): {type(exc).__name__}: {exc}", flush=True)
 
-    if not venues:
+    # +EV buys are paused. Set order_placement.ENABLED = True to buy again.
+    if not venues or not order_placement.ENABLED:
+        if venues and not order_placement.ENABLED:
+            print(
+                "EV order placement paused: not buying on "
+                f"{'+'.join(venues)} (analysis + Discord/X still run)"
+            )
         return 0
 
     source = result.report if result.report is not None else Path(args.out)

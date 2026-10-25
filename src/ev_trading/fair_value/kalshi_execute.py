@@ -27,6 +27,7 @@ from ev_trading.fair_value.ev_ledger import (
     resolve_ledger,
     signal_snapshot,
 )
+from ev_trading.fair_value import order_placement
 from ev_trading.fair_value.freshness import MAX_BOOK_VENUE_LAG_SECONDS, execution_block
 from ev_trading.fair_value.models import PricedOpportunity
 from ev_trading.fair_value.report import FairValueReport
@@ -230,13 +231,28 @@ def run_kalshi_trades(
     *,
     client: KalshiTradingClient | None = None,
 ) -> list[KalshiTradeResult]:
-    """Filter + size + (optionally) send IOC buys. Dry-run unless cfg.dry_run is False."""
+    """Filter + size + (optionally) send IOC buys. Dry-run unless cfg.dry_run is False.
+
+    Live sends are off while ``order_placement.ENABLED`` is False. Dry-run
+    still sizes rows and does not touch Kalshi.
+    """
     cfg = cfg or KalshiTradeConfig()
     rows = select_tradable_kalshi(
         load_tradable_rows(source),
         min_confidence=cfg.min_confidence,
         min_edge_pct=cfg.min_edge_pct,
     )
+    if not cfg.dry_run and not order_placement.ENABLED:
+        return [
+            KalshiTradeResult(
+                market=str(row.get("market") or ""),
+                ticker=str(row.get("ticker") or row.get("market_id") or ""),
+                side=str(row.get("side") or ""),
+                action="skipped",
+                detail=order_placement.PAUSE_DETAIL,
+            )
+            for row in rows
+        ]
     already = _load_filled_keys(cfg.filled_log)
     ledger = resolve_ledger(cfg.convex, dry_run=cfg.dry_run)
     results: list[KalshiTradeResult] = []

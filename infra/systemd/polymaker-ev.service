@@ -1,5 +1,5 @@
 [Unit]
-Description=Polymaker NFL fair-value EV scrape + trade (oneshot)
+Description=Polymaker NFL fair-value EV scrape + Discord alerts (buys paused)
 After=docker.service
 Requires=docker.service
 

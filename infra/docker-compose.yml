@@ -72,6 +72,9 @@ services:
     command:
       - python
       - scripts/run_nfl_ev_pipeline.py
+      # +EV Kalshi/Polymarket buys are paused in
+      # src/ev_trading/fair_value/order_placement.py (ENABLED = False).
+      # These flags stay so flipping ENABLED resumes the same job.
       - --trade
       - both
       - --min-edge-pct

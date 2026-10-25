@@ -27,6 +27,7 @@ from ev_trading.fair_value.ev_ledger import (
     resolve_ledger,
     signal_snapshot,
 )
+from ev_trading.fair_value import order_placement
 from ev_trading.fair_value.freshness import MAX_BOOK_VENUE_LAG_SECONDS, execution_block
 from ev_trading.fair_value.kalshi_execute import (
     DEFAULT_MIN_CONFIDENCE,
@@ -189,7 +190,10 @@ def run_polymarket_trades(
     gamma: GammaMarketSource | None = None,
     gateway: PolyExecutionGateway | None = None,
 ) -> list[PolyTradeResult]:
-    """Filter + size + (optionally) send FAK buys. Dry-run unless cfg.dry_run is False."""
+    """Filter + size + (optionally) send FAK buys. Dry-run unless cfg.dry_run is False.
+
+    Live sends are off while ``order_placement.ENABLED`` is False.
+    """
     return asyncio.run(run_polymarket_trades_async(source, cfg, gamma=gamma, gateway=gateway))
 
 
@@ -206,6 +210,17 @@ async def run_polymarket_trades_async(
         min_confidence=cfg.min_confidence,
         min_edge_pct=cfg.min_edge_pct,
     )
+    if not cfg.dry_run and not order_placement.ENABLED:
+        return [
+            PolyTradeResult(
+                market=str(row.get("market") or ""),
+                market_id=str(row.get("market_id") or row.get("ticker") or ""),
+                side=str(row.get("side") or ""),
+                action="skipped",
+                detail=order_placement.PAUSE_DETAIL,
+            )
+            for row in rows
+        ]
     already = _load_filled_keys(cfg.filled_log)
     ledger = resolve_ledger(cfg.convex, dry_run=cfg.dry_run)
     owns_gamma = False

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import ev_trading.fair_value.order_placement as order_placement
 from ev_trading.fair_value.kalshi_execute import (
     KalshiTradeConfig,
     contracts_for_usd,
@@ -20,6 +21,9 @@ from ev_trading.fair_value.kalshi_execute import (
 from ev_trading.fair_value.models import PricedOpportunity
 from ev_trading.fair_value.report import FairValueReport
 from polymaker.trading.convex_trades import ClaimResult
+
+# Keep the order path covered. Production leaves this False.
+order_placement.ENABLED = True
 
 
 def _opp(
@@ -116,6 +120,26 @@ def test_ten_dollars_sizes_whole_contracts() -> None:
     assert contracts_for_usd(10.0, 0.87) == 11
     assert contracts_for_usd(10.0, 0.99) == 10
     assert contracts_for_usd(10.0, 0.0) == 0
+
+
+def test_live_orders_paused_does_not_call_kalshi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(order_placement, "ENABLED", False)
+    client = _FakeClient(fill_count="17.00")
+    results = run_kalshi_trades(
+        FairValueReport(tradable=[_opp()]),
+        KalshiTradeConfig(
+            dry_run=False,
+            filled_log=tmp_path / "fills.jsonl",
+            refresh_quote=False,
+            convex=_FakeConvex(),
+        ),
+        client=client,
+    )
+    assert len(results) == 1
+    assert results[0].action == "skipped"
+    assert results[0].detail == order_placement.PAUSE_DETAIL
+    assert client.orders == []
+    assert not (tmp_path / "fills.jsonl").exists()
 
 
 def test_dry_run_does_not_call_kalshi(tmp_path: Path) -> None:

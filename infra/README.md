@@ -4,7 +4,7 @@ One Ubuntu 24.04 `t3.medium` in **eu-west-1** runs three processes:
 
 - **Monitor** (`polymaker-monitor.service`) — always-on `poly-sharp-finder` (whale + smart-wallet convergence).
 - **Sharp pipeline** (`polymaker-sharp.timer`) — every 30 minutes at `:00/:30`, scrape MLB + WNBA + NCAAF + NFL splits and trade only when every required source is on **today's Pacific slate** (NCAAF uses a 6-day weekend window; NFL uses 7 days so Monday night is included).
-- **NFL EV pipeline** (`polymaker-ev.timer`) — every 30 minutes at `:15/:45`, scrape RotoWire + Kalshi + Polymarket, buy `tradable` rows with fee-adjusted edge ≥ 5 points (confidence ≥ 0.80, $10 each), and post sportsbook quotes that are ≥ 5 points cheap vs consensus to Discord + X. Live orders require `POLYMAKER_LIVE=1` and a Convex claim so the same contract is not bought twice.
+- **NFL EV pipeline** (`polymaker-ev.timer`) — every 30 minutes at `:15/:45`, scrape RotoWire + Kalshi + Polymarket, score `tradable` rows, and post +EV cards to Discord + X. Kalshi/Polymarket buys are paused (`order_placement.ENABLED = False`). Set that flag to True to buy again (fee-adjusted edge ≥ 5 points, confidence ≥ 0.80, $10 each; live orders still require `POLYMAKER_LIVE=1` and a Convex claim).
 
 ## 1. Put secrets in SSM
 

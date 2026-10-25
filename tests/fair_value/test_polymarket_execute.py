@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import ev_trading.fair_value.order_placement as order_placement
 from ev_trading.fair_value.models import PricedOpportunity
 from ev_trading.fair_value.polymarket_execute import (
     PolyTradeConfig,
@@ -20,6 +21,9 @@ from ev_trading.fair_value.polymarket_execute import (
 from ev_trading.fair_value.report import FairValueReport
 from polymaker.domain import MarketMeta, Side, TokenMeta
 from polymaker.trading.convex_trades import ClaimResult
+
+# Keep the order path covered. Production leaves this False.
+order_placement.ENABLED = True
 
 
 def _opp(
@@ -158,6 +162,27 @@ def test_over_under_token_maps_by_outcome_label() -> None:
     )
     assert token_for_poly_side(meta, "over", "MIA @ LV").token_id == "tok-over"
     assert token_for_poly_side(meta, "under", "MIA @ LV").token_id == "tok-under"
+
+
+@pytest.mark.asyncio
+async def test_live_orders_paused_does_not_call_polymarket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(order_placement, "ENABLED", False)
+    gamma = _FakeGamma()
+    gw = _FakeGateway()
+    results = await run_polymarket_trades_async(
+        FairValueReport(tradable=[_opp()]),
+        PolyTradeConfig(dry_run=False, filled_log=tmp_path / "fills.jsonl", convex=_FakeConvex()),
+        gamma=gamma,
+        gateway=gw,
+    )
+    assert len(results) == 1
+    assert results[0].action == "skipped"
+    assert results[0].detail == order_placement.PAUSE_DETAIL
+    assert gamma.calls == []
+    assert gw.orders == []
+    assert not (tmp_path / "fills.jsonl").exists()
 
 
 @pytest.mark.asyncio
