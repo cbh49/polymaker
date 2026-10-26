@@ -87,9 +87,11 @@ TIER_B_THRESHOLD = 15.0
 # stay on implied-probability RLM and are not point-capped.
 MAX_POINT_LINE_MOVE = 1.0
 
-# Qualified moneyline at or under this no-vig fair is bought as that team's spread.
-# The published row stays a moneyline so the card still shows the ML splits.
+# Qualified moneyline outside this no-vig band is bought as that team's spread.
+# At or under 0.48, or above 0.60 (the sharp max_ask). Exactly 0.60 stays a
+# moneyline. The published row stays a moneyline so the card still shows the ML splits.
 ML_TO_SPREAD_MAX_FAIR = 0.48
+ML_TO_SPREAD_HIGH_FAIR = 0.60
 
 # Exchange confirmation (enrichment only; never filters plays).
 EXCHANGE_RLM_MIN_PP = 1.0
@@ -1273,14 +1275,15 @@ def _team_spread_quote(
 
 
 def _attach_ml_trade_target(play: dict[str, Any], game: dict[str, Any]) -> None:
-    """Buy the team spread when a qualified ML fair is at or under 0.48.
+    """Buy the team spread when a qualified ML fair is outside the tradable band.
 
-    Card fields (market, play_label, open, live) stay the moneyline.
+    At or under 0.48, or above 0.60 (the sharp max_ask). Exactly 0.60 stays
+    a moneyline. Card fields (market, play_label, open, live) stay the moneyline.
     """
     if play.get("market") != "moneyline" or play.get("qualified") is not True:
         return
     fair = _as_float(play.get("implied_fair_prob"))
-    if fair is None or fair > ML_TO_SPREAD_MAX_FAIR:
+    if fair is None or ML_TO_SPREAD_MAX_FAIR < fair <= ML_TO_SPREAD_HIGH_FAIR:
         return
     quote = _team_spread_quote(game, str(play.get("home_away") or ""))
     if quote is None:
@@ -1419,6 +1422,7 @@ def config_snapshot(
     cfg["tier_a_plus_edge_pct"] = TIER_A_PLUS_EDGE_PCT
     cfg["max_point_line_move"] = MAX_POINT_LINE_MOVE
     cfg["ml_to_spread_max_fair"] = ML_TO_SPREAD_MAX_FAIR
+    cfg["ml_to_spread_high_fair"] = ML_TO_SPREAD_HIGH_FAIR
     return cfg
 
 

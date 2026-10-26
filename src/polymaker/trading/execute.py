@@ -733,8 +733,9 @@ FOOTBALL_TOTAL_LEAGUES = frozenset({"NCAAF", "NFL"})
 # NHL stakes are flat for every tier. Moneyline and spread $15, totals $10.
 NHL_ML_SPREAD_USD = 15.0
 NHL_TOTAL_USD = 10.0
-# NHL moneyline and spread both skip below this. 0.45 still trades.
-NHL_MIN_MONEYLINE_ASK = 0.45
+# NHL moneyline skips below this. 0.42 still trades.
+NHL_MIN_MONEYLINE_ASK = 0.42
+# NHL spread skips below this. 0.45 still trades.
 NHL_MIN_SPREAD_ASK = 0.45
 # NHL spread also skips above this. 0.58 still trades.
 NHL_MAX_SPREAD_ASK = 0.58

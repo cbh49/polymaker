@@ -987,8 +987,8 @@ def test_nhl_price_gates_and_stakes() -> None:
     from polymaker.trading.execute import SharpTradeConfig, _price_gate, _usd_for_play
 
     cfg = SharpTradeConfig(max_ask=0.60, min_moneyline_ask=0.35, usd_tier_a=25.0, usd_tier_b=10.0)
-    assert _price_gate(0.45, None, cfg, market="moneyline", league="NHL") is None
-    cheap = _price_gate(0.44, None, cfg, market="moneyline", league="NHL")
+    assert _price_gate(0.42, None, cfg, market="moneyline", league="NHL") is None
+    cheap = _price_gate(0.41, None, cfg, market="moneyline", league="NHL")
     assert cheap is not None and "nhl min moneyline" in cheap
     assert _price_gate(0.45, None, cfg, market="spread", league="NHL") is None
     assert _price_gate(0.58, None, cfg, market="spread", league="NHL") is None

@@ -79,6 +79,8 @@ def test_ncaaf_sharp_sources() -> None:
     assert cfg["w_sbd"] == 0.75
     assert "w_vsin" not in cfg
     assert cfg["low_prob_dog_odds_threshold"] == 200.0
+    assert cfg["ml_to_spread_max_fair"] == 0.48
+    assert cfg["ml_to_spread_high_fair"] == 0.60
     assert cfg["rlm_source_priority"] == ["eva", "thespread", "polymarket"]
 
 
@@ -1110,6 +1112,186 @@ def test_cheap_ml_without_a_spread_is_skipped() -> None:
     assert play["qualified"] is True
     assert play["market"] == "moneyline"
     assert play["play_label"] == "North Carolina +250"
+    assert play["trade_market"] == "skip"
+    assert "trade_line" not in play
+
+
+def test_ml_above_60_keeps_the_card_and_trades_the_favorite_spread() -> None:
+    """-190/+160 de-vigs to about 0.63, above the 0.60 buy cap, so the order is the spread."""
+    game = {
+        "matchup": "ATL @ HOU",
+        "away": "Atlanta Hawks",
+        "home": "Houston Rockets",
+        "date": "2026-10-26",
+        "moneyline": {
+            "away": _side(
+                public=70,
+                handle=45,
+                vsin_pub=72,
+                vsin_h=48,
+                sbd_pub=68,
+                sbd_h=48,
+                selection="ATL",
+                open=150,
+                live=160,
+            ),
+            "home": _side(
+                public=30,
+                handle=55,
+                vsin_pub=28,
+                vsin_h=52,
+                sbd_pub=32,
+                sbd_h=52,
+                selection="HOU",
+                open=-170,
+                live=-190,
+            ),
+        },
+        "spread": {
+            "away": _side(
+                public=60,
+                handle=40,
+                vsin_pub=60,
+                vsin_h=40,
+                sbd_pub=60,
+                sbd_h=40,
+                selection="ATL",
+                open=6.0,
+                live=5.5,
+                live_odds=-110,
+            ),
+            "home": _side(
+                public=40,
+                handle=60,
+                vsin_pub=40,
+                vsin_h=60,
+                sbd_pub=40,
+                sbd_h=60,
+                selection="HOU",
+                open=-6.0,
+                live=-5.5,
+                live_odds=-110,
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NBA"))
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["market"] == "moneyline"
+    assert play["play_label"] == "Houston Rockets -190"
+    assert play["live"] == -190
+    assert play["open"] == -170
+    assert play["implied_fair_prob"] > 0.60
+    assert play["trade_market"] == "spread"
+    assert play["trade_line"] == -5.5
+    assert play["trade_odds"] == -110
+    assert play["trade_home_away"] == "home"
+
+
+def test_ml_inside_the_band_stays_a_moneyline() -> None:
+    """-130/+110 de-vigs to about 0.54, inside 0.48–0.60, so the moneyline is the order."""
+    game = {
+        "matchup": "ATL @ HOU",
+        "away": "Atlanta Hawks",
+        "home": "Houston Rockets",
+        "date": "2026-10-26",
+        "moneyline": {
+            "away": _side(
+                public=70,
+                handle=45,
+                vsin_pub=72,
+                vsin_h=48,
+                sbd_pub=68,
+                sbd_h=48,
+                selection="ATL",
+                open=100,
+                live=110,
+            ),
+            "home": _side(
+                public=30,
+                handle=55,
+                vsin_pub=28,
+                vsin_h=52,
+                sbd_pub=32,
+                sbd_h=52,
+                selection="HOU",
+                open=-120,
+                live=-130,
+            ),
+        },
+        "spread": {
+            "away": _side(
+                public=60,
+                handle=40,
+                vsin_pub=60,
+                vsin_h=40,
+                sbd_pub=60,
+                sbd_h=40,
+                selection="ATL",
+                open=3.0,
+                live=2.5,
+                live_odds=-110,
+            ),
+            "home": _side(
+                public=40,
+                handle=60,
+                vsin_pub=40,
+                vsin_h=60,
+                sbd_pub=40,
+                sbd_h=60,
+                selection="HOU",
+                open=-3.0,
+                live=-2.5,
+                live_odds=-110,
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NBA"))
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["market"] == "moneyline"
+    assert play["play_label"] == "Houston Rockets -130"
+    assert 0.48 < play["implied_fair_prob"] <= 0.60
+    assert "trade_market" not in play
+
+
+def test_rich_ml_without_a_spread_is_skipped() -> None:
+    game = {
+        "matchup": "ATL @ HOU",
+        "away": "Atlanta Hawks",
+        "home": "Houston Rockets",
+        "date": "2026-10-26",
+        "moneyline": {
+            "away": _side(
+                public=70,
+                handle=45,
+                vsin_pub=72,
+                vsin_h=48,
+                sbd_pub=68,
+                sbd_h=48,
+                selection="ATL",
+                open=150,
+                live=160,
+            ),
+            "home": _side(
+                public=30,
+                handle=55,
+                vsin_pub=28,
+                vsin_h=52,
+                sbd_pub=32,
+                sbd_h=52,
+                selection="HOU",
+                open=-170,
+                live=-190,
+            ),
+        },
+    }
+    play = process_game(game, market="moneyline", sources=sources_for_league("NBA"))
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["market"] == "moneyline"
+    assert play["play_label"] == "Houston Rockets -190"
+    assert play["implied_fair_prob"] > 0.60
     assert play["trade_market"] == "skip"
     assert "trade_line" not in play
 
