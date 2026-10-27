@@ -61,7 +61,7 @@ def test_nba_aliases() -> None:
 
 
 def test_nba_sharp_sources() -> None:
-    assert sources_for_league("NBA") == ("primary", "sbd")
+    assert sources_for_league("NBA") == ("primary", "sbd", "sao")
     assert primary_source_label("NBA") == "draftkings"
     cfg = config_snapshot(("moneyline", "spread", "total"), sources_for_league("NBA"), "NBA")
     assert cfg["primary_source"] == "draftkings"

@@ -40,6 +40,8 @@ from scrape_polymarket_odds import load_previous_games, merge_polymarket_into_ga
 from scrape_polymarket_odds import scrape as scrape_polymarket
 from scrape_sbd_splits import merge_sbd_into_game
 from scrape_sbd_splits import scrape as scrape_sbd
+from scrape_scoresodds_splits import attach_sao_games
+from scrape_scoresodds_splits import scrape as scrape_sao
 from slate_alignment import game_slate_date as _game_slate_date
 from slate_alignment import native_dates as _native_dates
 from slate_alignment import same_slate as _same_slate
@@ -116,6 +118,7 @@ def main() -> None:
 
     pp = _scrape_or_empty("PlayerProps", lambda: scrape_playerprops(day=day))
     sbd = _scrape_or_empty("SportsBettingDime", lambda: scrape_sbd(day=day))
+    sao = _scrape_or_empty("ScoresAndOdds", lambda: scrape_sao(day=day, league="MLB"))
     eva = _scrape_or_empty("EV Analytics", lambda: scrape_eva())
     covers = _scrape_or_empty("Covers", lambda: scrape_covers(league="MLB"))
     pp_native = _native_dates(pp.get("games") or [])
@@ -196,6 +199,18 @@ def main() -> None:
         pp["games"].sort(key=lambda g: g.get("game_time_utc") or g.get("matchup") or "")
         pp["game_count"] = len(pp["games"])
 
+    sao_merged, sao_extras = attach_sao_games(
+        pp.get("games") or [],
+        sao.get("games") or [],
+        same=lambda src, dest: _same_slate(src, dest, day),
+        on_slate=lambda game: _on_slate(game, day),
+    )
+    if sao_extras:
+        pp.setdefault("games", []).extend(sao_extras)
+        pp["games"].sort(key=lambda g: g.get("game_time_utc") or g.get("matchup") or "")
+        pp["game_count"] = len(pp["games"])
+    sao_native = _native_dates(sao.get("games") or [])
+
     eva_unmerged = [
         g
         for g in (eva.get("games") or [])
@@ -254,6 +269,14 @@ def main() -> None:
             "game_count": sbd.get("game_count"),
             "merged_into_playerprops_games": sbd_merged,
         },
+        "scoresandodds": {
+            "source": sao.get("source"),
+            "source_page": sao.get("source_page"),
+            "date": sao.get("date"),
+            "native_dates": sao_native,
+            "game_count": sao.get("game_count"),
+            "merged_into_games": sao_merged,
+        },
         "evanalytics": {
             "source": eva.get("source"),
             "source_page": eva.get("source_page"),
@@ -309,7 +332,7 @@ def main() -> None:
     args.out.write_text(json.dumps(pp, indent=2) + "\n", encoding="utf-8")
     print(
         f"Wrote {pp['game_count']} games "
-        f"(SBD merged={sbd_merged}, "
+        f"(SBD merged={sbd_merged}, SAO merged={sao_merged}, "
         f"EVA merged={len(eva_merged_ids)}, Covers merged={len(covers_merged_ids)}, "
         f"Polymarket merged={poly_merged}, extras={len(extras)}) → {args.out}"
     )

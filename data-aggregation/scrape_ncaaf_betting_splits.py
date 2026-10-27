@@ -44,6 +44,8 @@ from scrape_polymarket_odds import load_previous_games, merge_polymarket_into_ga
 from scrape_polymarket_odds import scrape as scrape_polymarket
 from scrape_sbd_splits import merge_sbd_into_game
 from scrape_sbd_splits import scrape as scrape_sbd
+from scrape_scoresodds_splits import attach_sao_games
+from scrape_scoresodds_splits import scrape as scrape_sao
 from scrape_thespread_splits import merge_thespread_into_game
 from scrape_thespread_splits import scrape as scrape_thespread
 from slate_alignment import NCAAF_SLATE_WINDOW_DAYS
@@ -142,6 +144,7 @@ def main() -> None:
         "DraftKings", lambda: scrape_dk(day=day, headed=args.headed, league="NCAAF")
     )
     sbd = _scrape_or_empty("SportsBettingDime", lambda: scrape_sbd(day=day, league="NCAAF"))
+    sao = _scrape_or_empty("ScoresAndOdds", lambda: scrape_sao(day=day, league="NCAAF"))
     spread = _scrape_or_empty(
         "TheSpread", lambda: scrape_thespread(day=day, headed=args.headed, league="NCAAF")
     )
@@ -240,6 +243,20 @@ def main() -> None:
         )
         dk["game_count"] = len(dk["games"])
 
+    sao_merged, sao_extras = attach_sao_games(
+        dk.get("games") or [],
+        sao.get("games") or [],
+        same=lambda src, dest: _same(src, dest, day),
+        on_slate=lambda game: _on_slate(game, day),
+    )
+    if sao_extras:
+        dk.setdefault("games", []).extend(sao_extras)
+        dk["games"].sort(
+            key=lambda g: g.get("game_time_utc") or g.get("game_time_local") or g.get("matchup") or ""
+        )
+        dk["game_count"] = len(dk["games"])
+    sao_native = _native_dates(sao.get("games") or [])
+
     eva_unmerged = [
         g
         for g in (eva.get("games") or [])
@@ -296,6 +313,14 @@ def main() -> None:
             "native_dates": sbd_native,
             "game_count": sbd.get("game_count"),
             "merged_into_draftkings_games": sbd_merged,
+        },
+        "scoresandodds": {
+            "source": sao.get("source"),
+            "source_page": sao.get("source_page"),
+            "date": sao.get("date"),
+            "native_dates": sao_native,
+            "game_count": sao.get("game_count"),
+            "merged_into_games": sao_merged,
         },
         "thespread": {
             "source": spread.get("source"),
@@ -364,7 +389,7 @@ def main() -> None:
     args.out.write_text(json.dumps(dk, indent=2) + "\n", encoding="utf-8")
     print(
         f"Wrote {dk['game_count']} NCAAF games "
-        f"(SBD merged={sbd_merged}, TheSpread merged={spread_merged}, "
+        f"(SBD merged={sbd_merged}, SAO merged={sao_merged}, TheSpread merged={spread_merged}, "
         f"EVA merged={len(eva_merged_ids)}, "
         f"Covers merged={len(covers_merged_ids)}, Polymarket merged={poly_merged}, "
         f"extras={len(extras)}) → {args.out}"

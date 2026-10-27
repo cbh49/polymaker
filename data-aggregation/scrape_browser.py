@@ -26,6 +26,7 @@ def fetch_rendered_html(
     optional_selector: str | None = None,
     optional_timeout_ms: int = 15_000,
     require_selector: bool = True,
+    abort_text: str | None = None,
 ) -> str:
     from playwright.sync_api import sync_playwright
 
@@ -47,13 +48,36 @@ def fetch_rendered_html(
         page = context.new_page()
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            try:
-                page.wait_for_selector(
-                    wait_selector, timeout=timeout_ms, state="attached"
-                )
-            except Exception:
-                if require_selector:
-                    raise
+            if abort_text:
+                try:
+                    page.wait_for_function(
+                        """([sel, text]) => {
+                            const body = document.body ? (document.body.innerText || '') : '';
+                            if (body.includes(text)) return 'abort';
+                            if (document.querySelector(sel)) return 'ready';
+                            return false;
+                        }""",
+                        arg=[wait_selector, abort_text],
+                        timeout=timeout_ms,
+                    )
+                except Exception:
+                    if require_selector:
+                        raise
+                body = ""
+                try:
+                    body = page.inner_text("body")
+                except Exception:
+                    body = ""
+                if abort_text in body:
+                    return page.content()
+            else:
+                try:
+                    page.wait_for_selector(
+                        wait_selector, timeout=timeout_ms, state="attached"
+                    )
+                except Exception:
+                    if require_selector:
+                        raise
             if optional_selector:
                 try:
                     page.wait_for_selector(optional_selector, timeout=optional_timeout_ms)

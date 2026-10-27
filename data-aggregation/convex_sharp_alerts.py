@@ -193,6 +193,9 @@ def convex_body_for_play(
     if n_src is not None:
         body["nSourcesAgreeing"] = n_src
 
+    down_note = _as_str(play.get("primary_down_note"))
+    if down_note:
+        body["primaryDownNote"] = down_note
     public_name = _as_str(play.get("public_favors_name"))
     if public_name:
         body["publicFavorsName"] = public_name

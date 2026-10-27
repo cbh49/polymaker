@@ -59,6 +59,7 @@ DEFAULT_NBA_OUT = SCRIPT_DIR / "output" / "dk_nba_betting_splits.json"
 DEFAULT_NFL_OUT = SCRIPT_DIR / "output" / "dk_nfl_betting_splits.json"
 DEFAULT_NHL_OUT = SCRIPT_DIR / "output" / "dk_nhl_betting_splits.json"
 PAGE_TZ = ZoneInfo("America/Los_Angeles")
+DK_UNAVAILABLE_TEXT = "Betting splits are temporarily unavailable"
 
 PAGE_URLS = {
     "WNBA": (
@@ -453,6 +454,11 @@ def _page_url(url: str, page: int) -> str:
     return f"{url}{joiner}tb_page={page}"
 
 
+def dk_splits_unavailable(html: str) -> bool:
+    """True when the splits table was replaced by the outage banner."""
+    return DK_UNAVAILABLE_TEXT in html and "tbsedid" not in html
+
+
 def _pager_max(html: str) -> int:
     from bs4 import BeautifulSoup
 
@@ -572,8 +578,24 @@ def scrape(
             headed=headed,
             extra_wait_ms=1500,
             optional_selector=".tb-se",
+            abort_text=DK_UNAVAILABLE_TEXT,
         )
         last_html = html
+        if dk_splits_unavailable(html):
+            print(
+                "Warning: DraftKings betting splits temporarily unavailable",
+                flush=True,
+            )
+            return {
+                "source": "dknetwork.draftkings.com",
+                "source_page": page_url,
+                "date": day.isoformat(),
+                "league": league,
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+                "game_count": 0,
+                "games": [],
+                "unavailable": True,
+            }
         pages_to_fetch = min(_pager_max(html), max_pages)
         for page in range(1, pages_to_fetch + 1):
             if page > 1:
@@ -583,8 +605,15 @@ def scrape(
                     headed=headed,
                     extra_wait_ms=1500,
                     optional_selector=".tb-se",
+                    abort_text=DK_UNAVAILABLE_TEXT,
                 )
                 last_html = html
+                if dk_splits_unavailable(html):
+                    print(
+                        "Warning: DraftKings betting splits temporarily unavailable",
+                        flush=True,
+                    )
+                    break
             for game in parse_games(html, matchups, **parse_kw):
                 key = str(game.get("event_id") or game.get("matchup") or "")
                 if key in seen_ids:

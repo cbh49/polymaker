@@ -132,6 +132,9 @@ def format_sharp_tweet(play: dict[str, Any], *, league: str | None = None) -> st
     play_line = f"{matchup} — {label}" if matchup and matchup not in label else label
     odds = _format_american(_as_float(play.get("play_odds")))
     lines = ["🚨 Sharp Money Play", "", play_line]
+    down_note = str(play.get("primary_down_note") or "").strip()
+    if down_note:
+        lines.append(down_note)
     if odds:
         lines.append(f"Odds: {odds}")
     lines.extend(["", f"See all sharp plays at: {SHARP_URL}", "#Gambling𝕏 #SportsBettingX"])

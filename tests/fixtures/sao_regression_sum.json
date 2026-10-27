@@ -1,0 +1,10 @@
+{
+  "tier": "A",
+  "qualified": true,
+  "composite_gap": 52.5,
+  "primary_gap": 30.0,
+  "sbd_gap": 30.0,
+  "agreeing_sources": ["primary", "sbd"],
+  "primary_status": "available",
+  "public_side_source": "primary"
+}

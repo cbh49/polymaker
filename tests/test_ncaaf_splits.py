@@ -69,8 +69,8 @@ def test_cfb_unknown_fcs_abbr_stays_uppercase() -> None:
 
 
 def test_ncaaf_sharp_sources() -> None:
-    assert sources_for_league("NCAAF") == ("primary", "sbd")
-    assert sources_for_league("CFB") == ("primary", "sbd")
+    assert sources_for_league("NCAAF") == ("primary", "sbd", "sao")
+    assert sources_for_league("CFB") == ("primary", "sbd", "sao")
     assert primary_source_label("NCAAF") == "draftkings"
     assert primary_source_label("CFB") == "draftkings"
     assert _markets_from_arg("all") == ("moneyline", "spread", "total")
@@ -553,11 +553,12 @@ def test_ml_low_volume_dog_flag_and_spread_divergence() -> None:
     assert play["side"] == "UNC"
     assert play["low_volume_dog_flag"] is True
     assert play["ml_spread_divergence"] is True
-    assert play["spread_composite_gap"] == 2.75  # 1.0×2 + 0.75×1
+    # Weighted average: (1.0×2 + 0.75×1) / 1.75, and the ML gap the same way.
+    assert play["spread_composite_gap"] == 1.5714
     assert play["confidence_note"] is not None
     assert "+200" in play["confidence_note"]
-    assert "33.75" in play["confidence_note"]
-    assert "2.75" in play["confidence_note"]
+    assert "19.29" in play["confidence_note"]
+    assert "1.5714" in play["confidence_note"]
 
 
 def test_rlm_prefers_eva_over_thespread_when_eva_moved() -> None:

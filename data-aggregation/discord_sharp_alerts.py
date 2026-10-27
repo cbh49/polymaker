@@ -34,7 +34,7 @@ ALERT_TIERS = frozenset({"A", "A+"})
 EMBEDS_PER_MESSAGE = 10
 COLOR_A_PLUS = 0xF5C518
 COLOR_A = 0x00E676
-SOURCE_LABELS = {"primary": "DK", "vsin": "VSiN", "sbd": "SBD"}
+SOURCE_LABELS = {"primary": "DK", "vsin": "VSiN", "sbd": "SBD", "sao": "SAO"}
 PRIMARY_LABELS = {"draftkings": "DK", "playerprops": "PlayerProps"}
 RLM_LABELS = {"eva": "EVA", "thespread": "TheSpread", "polymarket": "Polymarket"}
 
@@ -440,6 +440,11 @@ def build_embed(
         play_value = f">>> **{play_label}**"
 
     desc_bits = [f"**{_matchup_line(play)}**"]
+    down_note = str(play.get("primary_down_note") or "").strip()
+    if not down_note and play.get("primary_status") == "unavailable":
+        down_note = str((config or {}).get("primary_down_note") or "").strip()
+    if down_note:
+        desc_bits.append(down_note)
     if kickoff:
         desc_bits.append(f"Starts {kickoff}")
     meta = " · ".join(p for p in (league_s, market) if p)

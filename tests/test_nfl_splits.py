@@ -60,7 +60,7 @@ def test_nfl_aliases() -> None:
 
 
 def test_nfl_sharp_sources() -> None:
-    assert sources_for_league("NFL") == ("primary", "sbd")
+    assert sources_for_league("NFL") == ("primary", "sbd", "sao")
     assert primary_source_label("NFL") == "draftkings"
     assert _markets_from_arg("all") == ("moneyline", "spread", "total")
     cfg = config_snapshot(("moneyline", "spread", "total"), sources_for_league("NFL"), "NFL")

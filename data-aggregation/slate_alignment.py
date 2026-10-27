@@ -56,8 +56,12 @@ NHL_SOURCE_KEYS: dict[str, str] = {
 _SOURCE_FIELDS: dict[str, tuple[str, str]] = {
     "primary": ("moneyline", "public_bet_pct"),
     "sbd": ("moneyline", "sbd_handle_bet_pct"),
+    "sao": ("moneyline", "sao_handle_bet_pct"),
     "thespread": ("spread", "open"),
 }
+
+# When DraftKings / PlayerProps is empty for the whole slate, SBD + SAO can align.
+SAO_FALLBACK_LEAGUES = frozenset({"MLB", "NBA", "NHL", "NCAAF", "NFL"})
 
 
 def pacific_today(now: datetime | None = None) -> date:
@@ -158,6 +162,8 @@ def required_sources(league: str | None) -> tuple[str, ...]:
 
 
 def source_block_key(league: str | None, logical: str) -> str:
+    if logical == "sao":
+        return "scoresandodds"
     key = normalize_league(league)
     if key == "WNBA":
         mapping = WNBA_SOURCE_KEYS
@@ -192,7 +198,7 @@ def game_has_source(game: dict[str, Any], logical: str) -> bool:
     market, field = spec
     if _side_has_field(game, market, field):
         return True
-    if logical in {"primary", "sbd"}:
+    if logical in {"primary", "sbd", "sao"}:
         for extra in ("spread", "total", "moneyline"):
             if extra != market and _side_has_field(game, extra, field):
                 return True
@@ -297,19 +303,15 @@ def _source_native_dates(
     return dates, count
 
 
-def evaluate_payload(
+def _collect_statuses(
     payload: dict[str, Any],
-    *,
-    slate_day: date | None = None,
-) -> AlignmentResult:
-    league = normalize_league(payload.get("league") or "MLB")
-    day = slate_day or _payload_slate_day(payload)
-    needed = required_sources(league)
-    window = slate_window_days(league)
-    games = [g for g in (payload.get("games") or []) if isinstance(g, dict)]
+    league: str,
+    needed: tuple[str, ...],
+    day: date,
+    window: int,
+) -> tuple[dict[str, SourceStatus], list[str]]:
     statuses: dict[str, SourceStatus] = {}
     missing: list[str] = []
-
     for logical in needed:
         key = source_block_key(league, logical)
         dates, count = _source_native_dates(payload, logical, key, day, window)
@@ -327,7 +329,34 @@ def evaluate_payload(
         )
         if not on_slate:
             missing.append(f"{logical}({key})")
+    return statuses, missing
 
+
+def evaluate_payload(
+    payload: dict[str, Any],
+    *,
+    slate_day: date | None = None,
+) -> AlignmentResult:
+    league = normalize_league(payload.get("league") or "MLB")
+    day = slate_day or _payload_slate_day(payload)
+    needed = required_sources(league)
+    window = slate_window_days(league)
+    games = [g for g in (payload.get("games") or []) if isinstance(g, dict)]
+    statuses, missing = _collect_statuses(payload, league, needed, day, window)
+    primary = statuses.get("primary")
+    # Empty means no primary percentages on today's games, not a stale date
+    # while those percentages are still present.
+    if (
+        league in SAO_FALLBACK_LEAGUES
+        and primary is not None
+        and not primary.on_slate
+        and not any(
+            game_has_source(game, "primary")
+            for game in overlap_games(games, day, (), window_days=window)
+        )
+    ):
+        needed = ("sbd", "sao")
+        statuses, missing = _collect_statuses(payload, league, needed, day, window)
     overlap = overlap_games(games, day, needed, window_days=window)
     if missing:
         reason = (

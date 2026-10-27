@@ -22,7 +22,9 @@ Totals use over/under: a rising total confirms Over, a falling total Under.
 A negative total, or a spread at +/-100 or beyond, is an American price
 that leaked into the line field and is ignored.
 WNBA/UFC score DraftKings alone. MLB/NBA/NHL/NCAAF/NFL need PlayerProps or DraftKings
-plus SportsBettingDime. Pinnacle is skipped. RLM source order:
+plus SportsBettingDime, and ScoresAndOdds when SAO_VOTES is on. If the primary
+feed is null on every game, those leagues require SBD and SAO to agree.
+Pinnacle is skipped. RLM source order:
 EV Analytics (chart history), then TheSpread open→live, then Polymarket.
 SBD is not scraped for WNBA/UFC. Covers is not scraped for UFC;
 Polymarket implied prob is used as the exchange fair in that case.
@@ -58,6 +60,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +82,12 @@ Market = Literal["moneyline", "spread", "total"]
 
 W_PRIMARY = 1.0
 W_SBD = 0.75
+SAO_VOTES = True
+SAO_WEIGHT = 0.75
+# "average" divides the weighted sum by the weights of sources that voted,
+# so a third source does not inflate the gap past the threshold of 15.
+# "sum" is the previous composite.
+COMPOSITE_MODE = "average"
 
 TIER_A_THRESHOLD = 15.0
 TIER_B_THRESHOLD = 15.0
@@ -111,15 +120,22 @@ RLM_SOURCE_PRIORITY: tuple[str, ...] = ("eva", "thespread", "polymarket")
 SOURCE_WEIGHTS: dict[str, float] = {
     "primary": W_PRIMARY,
     "sbd": W_SBD,
+    "sao": SAO_WEIGHT,
 }
 MLB_SOURCES = ("primary", "sbd")
+SAO_LEAGUES = frozenset({"MLB", "NBA", "NHL", "NCAAF", "NFL"})
 SINGLE_SOURCE_LEAGUES = frozenset({"WNBA", "UFC"})
 WNBA_SOURCES = ("primary",)
+PUBLIC_PCT_FIELDS = {
+    "primary": "public_bet_pct",
+    "sbd": "sbd_public_bet_pct",
+    "sao": "sao_public_bet_pct",
+}
 SIDES = ("away", "home")
 TOTAL_SIDES = ("over", "under")
 ALL_SIDES = SIDES + TOTAL_SIDES
 Side = Literal["away", "home", "over", "under"]
-SourceName = Literal["primary", "sbd"]
+SourceName = Literal["primary", "sbd", "sao"]
 Tier = Literal["A+", "A", "B"]
 
 
@@ -130,10 +146,19 @@ def _league_key(league: str | None) -> str:
     return key
 
 
-def sources_for_league(league: str | None) -> tuple[str, ...]:
+def sources_for_league(league: str | None, *, sao_votes: bool | None = None) -> tuple[str, ...]:
     if _league_key(league) in SINGLE_SOURCE_LEAGUES:
         return WNBA_SOURCES
+    votes = SAO_VOTES if sao_votes is None else sao_votes
+    if votes and _league_key(league) in SAO_LEAGUES:
+        return MLB_SOURCES + ("sao",)
     return MLB_SOURCES
+
+
+def primary_down_note(league: str | None) -> str:
+    if _league_key(league) == "MLB":
+        return "PlayerProps splits down: SBD + SAO"
+    return "DK splits down: SBD + SAO"
 
 
 def primary_source_label(league: str | None) -> str:
@@ -231,9 +256,10 @@ class SourceGaps:
     primary: float | None
     vsin: float | None
     sbd: float | None
+    sao: float | None = None
 
     def as_dict(self) -> dict[str, float | None]:
-        return {"primary": self.primary, "vsin": self.vsin, "sbd": self.sbd}
+        return {"primary": self.primary, "vsin": self.vsin, "sbd": self.sbd, "sao": self.sao}
 
 
 def compute_gaps(side: dict[str, Any] | None) -> SourceGaps:
@@ -255,6 +281,7 @@ def compute_gaps(side: dict[str, Any] | None) -> SourceGaps:
         primary=_gap("handle_bet_pct", "public_bet_pct"),
         vsin=_gap("vsin_handle_bet_pct", "vsin_public_bet_pct"),
         sbd=_gap("sbd_handle_bet_pct", "sbd_public_bet_pct"),
+        sao=_gap("sao_handle_bet_pct", "sao_public_bet_pct"),
     )
 
 
@@ -297,6 +324,7 @@ def check_agreement(
     away_gaps: SourceGaps,
     home_gaps: SourceGaps,
     sources: tuple[str, ...] = MLB_SOURCES,
+    min_agree: int | None = None,
 ) -> Agreement:
     """Count sources with a positive gap on each side.
 
@@ -312,7 +340,8 @@ def check_agreement(
     away_n = len(votes["away"])
     home_n = len(votes["home"])
     conflict = away_n > 0 and home_n > 0
-    min_agree = 1 if len(sources) <= 1 else 2
+    if min_agree is None:
+        min_agree = 1 if len(sources) <= 1 else 2
 
     if conflict and REQUIRE_UNANIMOUS_DIRECTION:
         return Agreement(side=None, agreeing_sources=(), conflict=True)
@@ -327,18 +356,32 @@ def check_agreement(
 # --- Step 3: composite gap ----------------------------------------------------
 
 
-def compute_composite(side_gaps: SourceGaps, agreeing_sources: tuple[str, ...]) -> float:
-    """Weighted composite gap using only sources that agree in direction.
+def compute_composite(
+    side_gaps: SourceGaps,
+    agreeing_sources: tuple[str, ...],
+    mode: str | None = None,
+) -> float:
+    """Weighted gap of sources that agree in direction.
 
     Missing gaps among the agreeing set are skipped (not treated as 0).
+    "sum" is weight * gap added together. "average" divides that sum by the
+    weights of the sources that had a gap, so the threshold stays 15.
     """
+    chosen = COMPOSITE_MODE if mode is None else mode
     gaps = side_gaps.as_dict()
     total = 0.0
+    weight = 0.0
     for source in agreeing_sources:
         gap = gaps.get(source)
         if gap is None:
             continue
-        total += SOURCE_WEIGHTS[source] * gap
+        source_weight = SOURCE_WEIGHTS[source]
+        total += source_weight * gap
+        weight += source_weight
+    if chosen == "average":
+        if weight <= 0:
+            return 0.0
+        return total / weight
     return total
 
 
@@ -375,6 +418,7 @@ def check_rlm(
     home: dict[str, Any],
     sharp_side: Side,
     market: Market = "moneyline",
+    public_field: str = "public_bet_pct",
 ) -> RLMResult:
     """Detect reverse line movement and whether it confirms `sharp_side`.
 
@@ -388,8 +432,8 @@ def check_rlm(
     history first→last (skipped as primary when liquidity is below
     LOW_LIQUIDITY_THRESHOLD). Sources are never mixed into one pair.
     """
-    away_pub = _as_float(away.get("public_bet_pct"))
-    home_pub = _as_float(home.get("public_bet_pct"))
+    away_pub = _as_float(away.get(public_field))
+    home_pub = _as_float(home.get(public_field))
     public_favors: Side | None = None
     if away_pub is not None and home_pub is not None:
         if away_pub > home_pub:
@@ -727,6 +771,12 @@ def assign_tier(
         return None
     if n_agreeing == n_sources and n_sources >= 1 and composite_gap >= TIER_A_THRESHOLD:
         return "A"
+    # Tier B ("all but one agree") stays defined below for a 3+ source slate.
+    # REQUIRE_UNANIMOUS_DIRECTION already drops any opposing vote, and a source
+    # with no gap is not a dissenting vote, so B cannot mean "two against one".
+    # Leave it dormant instead of qualifying on a silent third source.
+    if REQUIRE_UNANIMOUS_DIRECTION:
+        return None
     if (
         n_sources >= 3
         and n_agreeing == n_sources - 1
@@ -933,7 +983,10 @@ def compute_model_confidence(play: dict[str, Any]) -> int:
         n_agree = int(n_agree)
     except (TypeError, ValueError):
         n_agree = 0
-    if n_agree >= 3:
+    # Three agreeing votes. SAO counts only when it actually voted; a missing
+    # SAO gap is not in agreeing_sources, so it does not earn this point.
+    agreeing = play.get("agreeing_sources") or []
+    if n_agree >= 3 and isinstance(agreeing, list) and "sao" in agreeing:
         score += 4
     conf = play.get("exchange_confirmation")
     conf = conf if isinstance(conf, dict) else {}
@@ -1004,6 +1057,7 @@ def build_output(
     tier: Tier | None,
     market: Market,
     sources: tuple[str, ...] = MLB_SOURCES,
+    public_field: str = "public_bet_pct",
 ) -> dict[str, Any]:
     """Assemble one qualifying play as a JSON-serializable dict."""
     logical: Side = "away" if side in {"away", "over"} else "home"
@@ -1062,7 +1116,7 @@ def build_output(
         "line_move": line_move,
         "public_bet_pct": _as_float(side_data.get("public_bet_pct")),
         "handle_bet_pct": _as_float(side_data.get("handle_bet_pct")),
-        "public_favors_bet_pct": None if pub_data is None else _as_float(pub_data.get("public_bet_pct")),
+        "public_favors_bet_pct": None if pub_data is None else _as_float(pub_data.get(public_field)),
         "vsin_public_bet_pct": _as_float(side_data.get("vsin_public_bet_pct")),
         "vsin_handle_bet_pct": _as_float(side_data.get("vsin_handle_bet_pct")),
         "sbd_public_bet_pct": _as_float(side_data.get("sbd_public_bet_pct")),
@@ -1296,10 +1350,51 @@ def _attach_ml_trade_target(play: dict[str, Any], game: dict[str, Any]) -> None:
     play["trade_home_away"] = home_away
 
 
+def _source_has_gap(away_gaps: SourceGaps, home_gaps: SourceGaps, source: str) -> bool:
+    gaps = away_gaps.as_dict()
+    home = home_gaps.as_dict()
+    return gaps.get(source) is not None or home.get(source) is not None
+
+
+def _public_source_for(
+    away: dict[str, Any],
+    home: dict[str, Any],
+    *,
+    primary_down: bool,
+) -> str:
+    if not primary_down:
+        return "primary"
+    for source in ("sbd", "sao"):
+        field = PUBLIC_PCT_FIELDS[source]
+        if _as_float(away.get(field)) is not None or _as_float(home.get(field)) is not None:
+            return source
+    return "sbd"
+
+
+def _slate_primary_unavailable(games: list[dict[str, Any]]) -> bool:
+    """True only when every game on the slate is missing primary bet and handle %."""
+    if not games:
+        return False
+    for game in games:
+        for market in ("moneyline", "spread", "total"):
+            block = game.get(market)
+            if not isinstance(block, dict):
+                continue
+            for side in block.values():
+                if not isinstance(side, dict):
+                    continue
+                if side.get("public_bet_pct") is not None or side.get("handle_bet_pct") is not None:
+                    return False
+    return True
+
+
 def process_game(
     game: dict[str, Any],
     market: Market = "moneyline",
     sources: tuple[str, ...] = MLB_SOURCES,
+    *,
+    primary_down: bool = False,
+    down_note: str | None = None,
 ) -> dict[str, Any] | None:
     """Run steps 1–5, then exchange enrichment.
 
@@ -1320,7 +1415,14 @@ def process_game(
 
     away_gaps = compute_gaps(away)
     home_gaps = compute_gaps(home)
-    agreement = check_agreement(away_gaps, home_gaps, sources=sources)
+    present = tuple(s for s in sources if _source_has_gap(away_gaps, home_gaps, s))
+    floor = 1 if len(sources) <= 1 else 2
+    if primary_down:
+        if "sbd" not in present or "sao" not in present:
+            return None
+        present = tuple(s for s in ("sbd", "sao") if s in present)
+        floor = 2
+    agreement = check_agreement(away_gaps, home_gaps, sources=present, min_agree=floor)
     if agreement.side is None:
         return None
 
@@ -1328,8 +1430,10 @@ def process_game(
     side_data = away if agreement.side == "away" else home
     side_gaps = away_gaps if agreement.side == "away" else home_gaps
     composite_gap = compute_composite(side_gaps, agreement.agreeing_sources)
-    rlm = check_rlm(away, home, agreement.side, market=market)
-    n_sources = len(sources)
+    public_source = _public_source_for(away, home, primary_down=primary_down)
+    public_field = PUBLIC_PCT_FIELDS.get(public_source, "public_bet_pct")
+    rlm = check_rlm(away, home, agreement.side, market=market, public_field=public_field)
+    n_sources = len(present)
     tier = assign_tier(
         agreement.n_agreeing,
         composite_gap,
@@ -1351,6 +1455,7 @@ def process_game(
         tier=tier,
         market=market,
         sources=sources,
+        public_field=public_field,
     )
     reasons = rejection_reasons(
         rlm_confirmed=rlm.rlm_confirmed,
@@ -1370,22 +1475,109 @@ def process_game(
     if not qualified:
         play["tier"] = None
     _attach_ml_trade_target(play, game)
-    return enrich_with_exchange_data(play, game)
+    play = enrich_with_exchange_data(play, game)
+    play["sao_gap"] = side_gaps.as_dict().get("sao")
+    play["sources_voted"] = list(agreement.agreeing_sources)
+    play["primary_status"] = "unavailable" if primary_down else "available"
+    play["public_side_source"] = public_source
+    if primary_down and down_note:
+        play["primary_down_note"] = down_note
+    return play
+
+
+def _market_source_present(block: Any, public_key: str, handle_key: str) -> bool:
+    if not isinstance(block, dict):
+        return False
+    for side in block.values():
+        if not isinstance(side, dict):
+            continue
+        if side.get(public_key) is not None or side.get(handle_key) is not None:
+            return True
+    return False
+
+
+def _correlation_rows(payload: dict[str, Any], markets: tuple[Market, ...]) -> list[dict[str, Any]]:
+    """One row per game/market where both SBD and SAO published a number."""
+    league = payload.get("league")
+    rows: list[dict[str, Any]] = []
+    for game in payload.get("games") or []:
+        if not isinstance(game, dict):
+            continue
+        for market in markets:
+            block = game.get(market)
+            if not _market_source_present(block, "sbd_public_bet_pct", "sbd_handle_bet_pct"):
+                continue
+            if not _market_source_present(block, "sao_public_bet_pct", "sao_handle_bet_pct"):
+                continue
+            left_key = "over" if market == "total" else "away"
+            side = block.get(left_key) if isinstance(block, dict) else None
+            side = side if isinstance(side, dict) else {}
+            gaps = compute_gaps(side)
+            rows.append(
+                {
+                    "league": league,
+                    "date": game.get("date") or payload.get("date"),
+                    "event": game.get("event_id") or game.get("matchup"),
+                    "market": market,
+                    "sbd_gap": gaps.sbd,
+                    "sao_gap": gaps.sao,
+                    "sbd_public": _as_float(side.get("sbd_public_bet_pct")),
+                    "sao_public": _as_float(side.get("sao_public_bet_pct")),
+                }
+            )
+    return rows
+
+
+def correlation_log_path() -> Path:
+    """Same parent search as the sharp candidate log."""
+    for parent in SCRIPT_DIR.parents:
+        if (parent / "json-data").is_dir():
+            return parent / "json-data" / "source_correlation_log.jsonl"
+    return SCRIPT_DIR / "output" / "source_correlation_log.jsonl"
+
+
+def append_correlation_log(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path = correlation_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(_json_ready(row)) + "\n")
+    except OSError as exc:
+        print(f"Warning: source correlation log failed: {exc}", file=sys.stderr)
 
 
 def process_slate(
     payload: dict[str, Any],
     markets: tuple[Market, ...] = ("moneyline",),
     sources: tuple[str, ...] | None = None,
+    *,
+    log_correlation: bool = True,
 ) -> pd.DataFrame:
     """Process every game and return plays sorted by tier (A+ / A / B), then gap desc."""
     active = sources or sources_for_league(payload.get("league"))
+    games = [g for g in (payload.get("games") or []) if isinstance(g, dict)]
+    primary_down = (
+        "primary" in active
+        and "sao" in active
+        and _slate_primary_unavailable(games)
+    )
+    vote_sources = tuple(s for s in ("sbd", "sao") if s in active) if primary_down else active
+    note = primary_down_note(payload.get("league")) if primary_down else None
+    if log_correlation:
+        append_correlation_log(_correlation_rows(payload, markets))
     plays: list[dict[str, Any]] = []
-    for game in payload.get("games") or []:
-        if not isinstance(game, dict):
-            continue
+    for game in games:
         for market in markets:
-            play = process_game(game, market=market, sources=active)
+            play = process_game(
+                game,
+                market=market,
+                sources=vote_sources,
+                primary_down=primary_down,
+                down_note=note,
+            )
             if play is not None:
                 plays.append(play)
 
@@ -1403,15 +1595,26 @@ def config_snapshot(
     markets: tuple[Market, ...],
     sources: tuple[str, ...],
     league: str | None,
+    *,
+    primary_status: str = "available",
+    public_side_source: str | None = None,
 ) -> dict[str, Any]:
     cfg: dict[str, Any] = {
         "market": list(markets) if len(markets) > 1 else markets[0],
         "sources": list(sources),
         "primary_source": primary_source_label(league),
+        "primary_status": primary_status,
+        "composite_mode": COMPOSITE_MODE,
+        "sao_votes": SAO_VOTES,
         "w_primary": W_PRIMARY,
     }
     if "sbd" in sources:
         cfg["w_sbd"] = W_SBD
+    if "sao" in sources:
+        cfg["w_sao"] = SAO_WEIGHT
+    if primary_status == "unavailable":
+        cfg["public_side_source"] = public_side_source or "sbd"
+        cfg["primary_down_note"] = primary_down_note(league)
     cfg["tier_a_threshold"] = TIER_A_THRESHOLD
     cfg["tier_b_threshold"] = TIER_B_THRESHOLD
     cfg["require_unanimous_direction"] = REQUIRE_UNANIMOUS_DIRECTION
@@ -1424,6 +1627,28 @@ def config_snapshot(
     cfg["ml_to_spread_max_fair"] = ML_TO_SPREAD_MAX_FAIR
     cfg["ml_to_spread_high_fair"] = ML_TO_SPREAD_HIGH_FAIR
     return cfg
+
+
+def _slate_public_source(games: list[dict[str, Any]]) -> str:
+    for game in games:
+        for market in ("moneyline", "spread", "total"):
+            if _market_source_present(game.get(market), "sbd_public_bet_pct", "sbd_handle_bet_pct"):
+                return "sbd"
+    return "sao"
+
+
+def _slate_config(payload: dict[str, Any], markets: tuple[Market, ...]) -> dict[str, Any]:
+    league = payload.get("league")
+    sources = sources_for_league(league)
+    games = [g for g in (payload.get("games") or []) if isinstance(g, dict)]
+    primary_down = "primary" in sources and "sao" in sources and _slate_primary_unavailable(games)
+    return config_snapshot(
+        markets,
+        sources,
+        league,
+        primary_status="unavailable" if primary_down else "available",
+        public_side_source=_slate_public_source(games) if primary_down else None,
+    )
 
 
 def slate_to_json(
@@ -1442,7 +1667,7 @@ def slate_to_json(
         "game_count": payload.get("game_count") or len(payload.get("games") or []),
         "play_count": qualified_n,
         "candidate_count": len(plays),
-        "config": config_snapshot(markets, sources_for_league(payload.get("league")), payload.get("league")),
+        "config": _slate_config(payload, markets),
         "plays": plays,
     }
 
@@ -1500,6 +1725,11 @@ def _frame_for_csv(frame: pd.DataFrame) -> pd.DataFrame:
     if "agreeing_sources" in out.columns:
         out = out.copy()
         out["agreeing_sources"] = out["agreeing_sources"].apply(
+            lambda v: ",".join(v) if isinstance(v, list) else v
+        )
+    if "sources_voted" in out.columns:
+        out = out.copy()
+        out["sources_voted"] = out["sources_voted"].apply(
             lambda v: ",".join(v) if isinstance(v, list) else v
         )
     if "exchange_confirmation" not in out.columns:
