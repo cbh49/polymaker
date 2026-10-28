@@ -125,7 +125,8 @@ def order_play(play: SharpPlay) -> SharpPlay | None:
 
     A moneyline card stays a moneyline in the published JSON. When its fair
     is at or under 0.48, or above 0.60, the finder sets trade_market to the
-    team's spread (or skip, when that spread does not exist).
+    team's spread (or skip, when that spread does not exist). NBA under 0.25
+    and NCAAF/NFL under 0.20 are skip, so neither market is ordered.
     """
     raw = play.raw if isinstance(play.raw, dict) else {}
     trade_market = str(raw.get("trade_market") or "").strip().lower()

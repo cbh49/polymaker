@@ -99,8 +99,16 @@ MAX_POINT_LINE_MOVE = 1.0
 # Qualified moneyline outside this no-vig band is bought as that team's spread.
 # At or under 0.48, or above 0.60 (the sharp max_ask). Exactly 0.60 stays a
 # moneyline. The published row stays a moneyline so the card still shows the ML splits.
+# Below the league floor, neither the moneyline nor the spread is traded.
 ML_TO_SPREAD_MAX_FAIR = 0.48
 ML_TO_SPREAD_HIGH_FAIR = 0.60
+# Strictly below this no-vig fair, skip both markets. Leagues not listed still
+# buy the spread down through the 0.48 cutoff. CFB uses the NCAAF floor.
+ML_SKIP_BELOW_FAIR: dict[str, float] = {
+    "NBA": 0.25,
+    "NCAAF": 0.20,
+    "NFL": 0.20,
+}
 
 # Exchange confirmation (enrichment only; never filters plays).
 EXCHANGE_RLM_MIN_PP = 1.0
@@ -1328,16 +1336,31 @@ def _team_spread_quote(
     return line, odds, home_away
 
 
-def _attach_ml_trade_target(play: dict[str, Any], game: dict[str, Any]) -> None:
+def ml_skip_below_fair(league: str | None) -> float | None:
+    """No-vig fair below which a qualified moneyline is not traded at all."""
+    return ML_SKIP_BELOW_FAIR.get(_league_key(league))
+
+
+def _attach_ml_trade_target(
+    play: dict[str, Any],
+    game: dict[str, Any],
+    league: str | None = None,
+) -> None:
     """Buy the team spread when a qualified ML fair is outside the tradable band.
 
     At or under 0.48, or above 0.60 (the sharp max_ask). Exactly 0.60 stays
-    a moneyline. Card fields (market, play_label, open, live) stay the moneyline.
+    a moneyline. NBA under 0.25, and NCAAF/NFL under 0.20, skip both markets.
+    Card fields (market, play_label, open, live) stay the moneyline.
     """
     if play.get("market") != "moneyline" or play.get("qualified") is not True:
         return
     fair = _as_float(play.get("implied_fair_prob"))
     if fair is None or ML_TO_SPREAD_MAX_FAIR < fair <= ML_TO_SPREAD_HIGH_FAIR:
+        return
+    resolved = league if league else game.get("league")
+    floor = ml_skip_below_fair(str(resolved) if resolved else None)
+    if floor is not None and fair <= ML_TO_SPREAD_MAX_FAIR and fair < floor:
+        play["trade_market"] = "skip"
         return
     quote = _team_spread_quote(game, str(play.get("home_away") or ""))
     if quote is None:
@@ -1395,6 +1418,7 @@ def process_game(
     *,
     primary_down: bool = False,
     down_note: str | None = None,
+    league: str | None = None,
 ) -> dict[str, Any] | None:
     """Run steps 1–5, then exchange enrichment.
 
@@ -1474,7 +1498,7 @@ def process_game(
     play["would_be_tier"] = agreement_tier(agreement.n_agreeing, n_sources)
     if not qualified:
         play["tier"] = None
-    _attach_ml_trade_target(play, game)
+    _attach_ml_trade_target(play, game, league=league or game.get("league"))
     play = enrich_with_exchange_data(play, game)
     play["sao_gap"] = side_gaps.as_dict().get("sao")
     play["sources_voted"] = list(agreement.agreeing_sources)
@@ -1577,6 +1601,7 @@ def process_slate(
                 sources=vote_sources,
                 primary_down=primary_down,
                 down_note=note,
+                league=payload.get("league"),
             )
             if play is not None:
                 plays.append(play)
@@ -1626,6 +1651,7 @@ def config_snapshot(
     cfg["max_point_line_move"] = MAX_POINT_LINE_MOVE
     cfg["ml_to_spread_max_fair"] = ML_TO_SPREAD_MAX_FAIR
     cfg["ml_to_spread_high_fair"] = ML_TO_SPREAD_HIGH_FAIR
+    cfg["ml_skip_below_fair"] = dict(ML_SKIP_BELOW_FAIR)
     return cfg
 
 

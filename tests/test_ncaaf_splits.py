@@ -81,6 +81,7 @@ def test_ncaaf_sharp_sources() -> None:
     assert cfg["low_prob_dog_odds_threshold"] == 200.0
     assert cfg["ml_to_spread_max_fair"] == 0.48
     assert cfg["ml_to_spread_high_fair"] == 0.60
+    assert cfg["ml_skip_below_fair"] == {"NBA": 0.25, "NCAAF": 0.20, "NFL": 0.20}
     assert cfg["rlm_source_priority"] == ["eva", "thespread", "polymarket"]
 
 
@@ -1063,7 +1064,7 @@ def test_ml_at_or_under_48_keeps_the_card_and_trades_the_spread() -> None:
             ),
         },
     }
-    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"), league="NCAAF")
     assert play is not None
     assert play["qualified"] is True
     assert play["market"] == "moneyline"
@@ -1108,11 +1109,12 @@ def test_cheap_ml_without_a_spread_is_skipped() -> None:
             ),
         },
     }
-    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"))
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"), league="NCAAF")
     assert play is not None
     assert play["qualified"] is True
     assert play["market"] == "moneyline"
     assert play["play_label"] == "North Carolina +250"
+    assert play["implied_fair_prob"] >= 0.20
     assert play["trade_market"] == "skip"
     assert "trade_line" not in play
 
@@ -1293,6 +1295,101 @@ def test_rich_ml_without_a_spread_is_skipped() -> None:
     assert play["market"] == "moneyline"
     assert play["play_label"] == "Houston Rockets -190"
     assert play["implied_fair_prob"] > 0.60
+    assert play["trade_market"] == "skip"
+    assert "trade_line" not in play
+
+
+def _longshot_ml_with_spread(*, live: int, opened: int, home_live: int, home_open: int) -> dict:
+    """Dog moneyline that shortens, plus a spread quote the bot could buy."""
+    return {
+        "matchup": "UNC @ TCU",
+        "away": "North Carolina",
+        "home": "TCU",
+        "date": "2026-08-29",
+        "moneyline": {
+            "away": _side(
+                public=30,
+                handle=55,
+                vsin_pub=28,
+                vsin_h=50,
+                sbd_pub=32,
+                sbd_h=52,
+                selection="UNC",
+                open=opened,
+                live=live,
+            ),
+            "home": _side(
+                public=70,
+                handle=45,
+                vsin_pub=72,
+                vsin_h=50,
+                sbd_pub=68,
+                sbd_h=48,
+                selection="TCU",
+                open=home_open,
+                live=home_live,
+            ),
+        },
+        "spread": {
+            "away": _side(
+                public=40,
+                handle=40,
+                vsin_pub=40,
+                vsin_h=40,
+                sbd_pub=40,
+                sbd_h=40,
+                selection="UNC",
+                open=10.5,
+                live=10.5,
+                live_odds=-110,
+            ),
+            "home": _side(
+                public=60,
+                handle=60,
+                vsin_pub=60,
+                vsin_h=60,
+                sbd_pub=60,
+                sbd_h=60,
+                selection="TCU",
+                open=-10.5,
+                live=-10.5,
+                live_odds=-110,
+            ),
+        },
+    }
+
+
+def test_nba_ml_under_25_skips_even_when_a_spread_exists() -> None:
+    """+300/-360 de-vigs to about 0.24, under the NBA floor and above the football floor."""
+    game = _longshot_ml_with_spread(live=300, opened=330, home_live=-360, home_open=-400)
+    play = process_game(game, market="moneyline", sources=sources_for_league("NBA"), league="NBA")
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["market"] == "moneyline"
+    assert 0.20 <= play["implied_fair_prob"] < 0.25
+    assert play["trade_market"] == "skip"
+    assert "trade_line" not in play
+
+
+def test_ncaaf_ml_between_20_and_25_still_trades_the_spread() -> None:
+    game = _longshot_ml_with_spread(live=300, opened=330, home_live=-360, home_open=-400)
+    play = process_game(game, market="moneyline", sources=sources_for_league("NCAAF"), league="CFB")
+    assert play is not None
+    assert play["qualified"] is True
+    assert 0.20 <= play["implied_fair_prob"] < 0.25
+    assert play["trade_market"] == "spread"
+    assert play["trade_line"] == 10.5
+    assert play["trade_home_away"] == "away"
+
+
+def test_nfl_ml_under_20_skips_even_when_a_spread_exists() -> None:
+    """+450/-550 de-vigs to about 0.18, under the NCAAF and NFL floor."""
+    game = _longshot_ml_with_spread(live=450, opened=500, home_live=-550, home_open=-600)
+    play = process_game(game, market="moneyline", sources=sources_for_league("NFL"), league="NFL")
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["market"] == "moneyline"
+    assert play["implied_fair_prob"] < 0.20
     assert play["trade_market"] == "skip"
     assert "trade_line" not in play
 
