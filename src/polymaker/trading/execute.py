@@ -730,8 +730,8 @@ def _is_pre_game_play(m: MatchedPlay, buffer_minutes: float) -> bool:
 # NCAAF/NFL game totals (Over/Under) stake this much even at Tier A/A+.
 FOOTBALL_TOTAL_USD = 10.0
 FOOTBALL_TOTAL_LEAGUES = frozenset({"NCAAF", "NFL"})
-# NHL stakes are flat for every tier. Moneyline and spread $15, totals $10.
-NHL_ML_SPREAD_USD = 15.0
+# NHL stakes are flat for every tier. Moneyline and spread $25, totals $10.
+NHL_ML_SPREAD_USD = 25.0
 NHL_TOTAL_USD = 10.0
 # NHL moneyline skips below this. 0.42 still trades.
 NHL_MIN_MONEYLINE_ASK = 0.42
@@ -817,7 +817,7 @@ def _usd_for_play(play: SharpPlay, cfg: SharpTradeConfig, ask: float | None) -> 
     """Tier stake, or to-win that amount when `low_volume_dog_flag` is set.
 
     NCAAF and NFL totals cap Tier A/A+ at $10. NHL moneyline and spread are
-    a flat $15 and NHL totals are a flat $10, with no long-dog to-win shrink.
+    a flat $25 and NHL totals are a flat $10, with no long-dog to-win shrink.
     Other leagues keep the configured tier stake.
     """
     nhl = _nhl_stake(play)
