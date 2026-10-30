@@ -1014,10 +1014,10 @@ def test_nhl_price_gates_and_stakes() -> None:
         tier="A",
         low_volume_dog_flag=True,
     )
-    assert _usd_for_play(ml, cfg, ask=0.52) == 25.0
-    assert _usd_for_play(spread, cfg, ask=0.48) == 25.0
+    assert _usd_for_play(ml, cfg, ask=0.52) == 10.0
+    assert _usd_for_play(spread, cfg, ask=0.48) == 10.0
     assert _usd_for_play(total, cfg, ask=0.51) == 10.0
-    assert _usd_for_play(dog, cfg, ask=0.46) == 25.0
+    assert _usd_for_play(dog, cfg, ask=0.46) == 10.0
 
 
 def test_load_sharp_file_dog_flag(tmp_path: Path) -> None:

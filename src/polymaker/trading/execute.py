@@ -29,7 +29,7 @@ from polymaker.trading.venue_quote import PricedVenue, pick_venue, price_venue
 class SharpTradeConfig:
     """Runtime knobs for sharp auto-buys (overridable via CLI)."""
 
-    usd_tier_a: float = 25.0  # A/A+ stake; NCAAF/NFL totals cap at $10
+    usd_tier_a: float = 25.0  # A/A+ stake; NCAAF/NFL totals and all NHL plays are $10
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # A = Tier A only; B = A+B
     markets: frozenset[str] = frozenset({"moneyline", "spread", "total"})
@@ -730,9 +730,8 @@ def _is_pre_game_play(m: MatchedPlay, buffer_minutes: float) -> bool:
 # NCAAF/NFL game totals (Over/Under) stake this much even at Tier A/A+.
 FOOTBALL_TOTAL_USD = 10.0
 FOOTBALL_TOTAL_LEAGUES = frozenset({"NCAAF", "NFL"})
-# NHL stakes are flat for every tier. Moneyline and spread $25, totals $10.
-NHL_ML_SPREAD_USD = 25.0
-NHL_TOTAL_USD = 10.0
+# NHL stakes are a flat $10 for every tier and market.
+NHL_USD = 10.0
 # NHL moneyline skips below this. 0.42 still trades.
 NHL_MIN_MONEYLINE_ASK = 0.42
 # NHL spread skips below this. 0.45 still trades.
@@ -802,23 +801,18 @@ def stake_to_win(target_profit: float, price: float) -> float:
 
 
 def _nhl_stake(play: SharpPlay) -> float | None:
-    """Flat NHL stake. None for every other league."""
+    """Flat $10 NHL stake. None for every other league."""
     if _normalized_league(play.league) != "NHL":
         return None
-    market = str(play.market or "").strip().lower()
-    if market == "total":
-        return NHL_TOTAL_USD
-    if market in {"moneyline", "spread"}:
-        return NHL_ML_SPREAD_USD
-    return None
+    return NHL_USD
 
 
 def _usd_for_play(play: SharpPlay, cfg: SharpTradeConfig, ask: float | None) -> float:
     """Tier stake, or to-win that amount when `low_volume_dog_flag` is set.
 
-    NCAAF and NFL totals cap Tier A/A+ at $10. NHL moneyline and spread are
-    a flat $25 and NHL totals are a flat $10, with no long-dog to-win shrink.
-    Other leagues keep the configured tier stake.
+    NCAAF and NFL totals cap Tier A/A+ at $10. NHL is a flat $10 on every
+    market and tier, with no long-dog to-win shrink. Other leagues keep
+    the configured tier stake.
     """
     nhl = _nhl_stake(play)
     if nhl is not None:
