@@ -1,8 +1,9 @@
 """Trade a sharp play only when it matches a profitable review system.
 
 Signal keys match review_sharp_trades.extract_signals / pair_keys. A play is
-sent when any of those keys is in the latest trade_systems list (slices with
-at least +0.10 units per bet). The list is read from the published
+sent when any of those keys clears the trading bar: at least 40 decided bets,
++0.10 units per bet, and a Wilson win-rate floor of 0.50. League, market, and
+price-side slices never qualify. The list is read from the published
 sharp_trade_review report, then from config/sharp_trade_systems.json.
 """
 
@@ -18,6 +19,22 @@ from typing import Any
 from polymaker.trading.sharp import SharpPlay, qualifying_trade_data
 
 MIN_UNITS_PER_BET = 0.10
+MIN_TRADE_DECIDED = 40
+MIN_WILSON_LOWER = 0.50
+WILSON_Z = 1.96
+# Keep in sync with review_sharp_trades.EXCLUDED_TRADE_FAMILIES.
+EXCLUDED_TRADE_FAMILIES = frozenset(
+    {
+        "league",
+        "market",
+        "bet_side",
+        "pair:league+market",
+        "pair:market+gap",
+        "favorite_vs_dog",
+        "odds_band",
+        "low_volume_dog",
+    }
+)
 FALLBACK_PATH = Path(__file__).resolve().parents[3] / "config" / "sharp_trade_systems.json"
 
 
@@ -121,6 +138,8 @@ def pair_keys(signals: dict[str, Any]) -> list[str]:
         ("market", "composite_gap", "market+gap"),
         ("league", "market", "league+market"),
         ("contrarian_public", "plus_pp", "contrarian+plus_pp"),
+        ("exchange_edge", "line_move_abs", "exchange_edge+line_move_abs"),
+        ("exchange_edge", "sbd_gap", "exchange_edge+sbd_gap"),
     )
     keys: list[str] = []
     for left, right, label in pairs:
@@ -180,14 +199,61 @@ def signal_keys(play: dict[str, Any], *, league: str | None = None) -> list[str]
     return keys
 
 
-def system_key_set(systems: Sequence[dict[str, Any] | str]) -> set[str]:
-    keys: set[str] = set()
+def slice_family(key: str) -> str:
+    """Family of a review slice key. Pairs keep the pair label, not the bands."""
+    if key.startswith("pair:"):
+        label, _, _ = key[len("pair:") :].partition(":")
+        return f"pair:{label}" if label else "pair:"
+    family, _, _ = key.partition(":")
+    return family
+
+
+def wilson_lower(wins: int, decided: int) -> float | None:
+    if decided <= 0:
+        return None
+    phat = wins / decided
+    z2 = WILSON_Z * WILSON_Z
+    denom = 1 + z2 / decided
+    center = phat + z2 / (2 * decided)
+    margin = WILSON_Z * math.sqrt((phat * (1 - phat) + z2 / (4 * decided)) / decided)
+    return round((center - margin) / denom, 4)
+
+
+def tradable_systems(systems: Sequence[dict[str, Any] | str]) -> list[dict[str, Any]]:
+    """Systems that clear the sample, units, and Wilson bar, and are metrics."""
+    out: list[dict[str, Any]] = []
     for item in systems:
         if isinstance(item, str) and item.strip():
-            keys.add(item.strip())
+            row: dict[str, Any] = {"key": item.strip()}
         elif isinstance(item, dict) and str(item.get("key") or "").strip():
-            keys.add(str(item["key"]).strip())
-    return keys
+            key = str(item["key"]).strip()
+            row = {"key": key, **{k: v for k, v in item.items() if k != "key"}}
+        else:
+            continue
+        if _system_clears_bar(row):
+            out.append(row)
+    return out
+
+
+def _system_clears_bar(row: dict[str, Any]) -> bool:
+    key = str(row.get("key") or "")
+    if slice_family(key) in EXCLUDED_TRADE_FAMILIES:
+        return False
+    per = row.get("units_per_bet")
+    if isinstance(per, bool) or not isinstance(per, (int, float)) or per < MIN_UNITS_PER_BET:
+        return False
+    decided = _as_int(row.get("decided"))
+    wins = _as_int(row.get("wins"))
+    if decided is None or wins is None or decided < MIN_TRADE_DECIDED or wins < 0:
+        return False
+    wilson = row.get("wilson_lower")
+    if isinstance(wilson, bool) or not isinstance(wilson, (int, float)):
+        wilson = wilson_lower(wins, decided)
+    return wilson is not None and float(wilson) >= MIN_WILSON_LOWER
+
+
+def system_key_set(systems: Sequence[dict[str, Any] | str]) -> set[str]:
+    return {str(item["key"]) for item in tradable_systems(systems)}
 
 
 def classify_play(
@@ -279,9 +345,13 @@ def split_slate(
 
 
 def load_trade_systems() -> list[dict[str, Any]]:
-    """Published review systems, or the checked-in fallback."""
+    """Published review systems that clear the bar, or the checked-in fallback.
+
+    An empty published list is a real answer: nothing currently clears the bar.
+    The fallback is only for a missed fetch.
+    """
     remote = _fetch_remote_systems()
-    if remote:
+    if remote is not None:
         return remote
     return _fallback_systems()
 
@@ -431,13 +501,7 @@ def _fallback_systems() -> list[dict[str, Any]]:
 def _clean_systems(systems: Any) -> list[dict[str, Any]] | None:
     if not isinstance(systems, list):
         return None
-    out: list[dict[str, Any]] = []
-    for item in systems:
-        if isinstance(item, str) and item.strip():
-            out.append({"key": item.strip()})
-        elif isinstance(item, dict) and str(item.get("key") or "").strip():
-            out.append({"key": str(item["key"]).strip(), **{k: v for k, v in item.items() if k != "key"}})
-    return out or None
+    return tradable_systems(systems)
 
 
 def _source_key(value: Any) -> str | None:
