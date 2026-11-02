@@ -60,7 +60,8 @@ _SOURCE_FIELDS: dict[str, tuple[str, str]] = {
     "thespread": ("spread", "open"),
 }
 
-# When DraftKings / PlayerProps is empty for the whole slate, SBD + SAO can align.
+# When DraftKings / PlayerProps is empty, SBD can align alone. SAO aligns only
+# when SBD itself is off the slate.
 SAO_FALLBACK_LEAGUES = frozenset({"MLB", "NBA", "NHL", "NCAAF", "NFL"})
 
 
@@ -355,7 +356,8 @@ def evaluate_payload(
             for game in overlap_games(games, day, (), window_days=window)
         )
     ):
-        needed = ("sbd", "sao")
+        sbd = statuses.get("sbd")
+        needed = ("sbd",) if sbd is not None and sbd.on_slate else ("sao",)
         statuses, missing = _collect_statuses(payload, league, needed, day, window)
     overlap = overlap_games(games, day, needed, window_days=window)
     if missing:

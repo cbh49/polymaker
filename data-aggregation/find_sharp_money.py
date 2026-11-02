@@ -22,8 +22,10 @@ Totals use over/under: a rising total confirms Over, a falling total Under.
 A negative total, or a spread at +/-100 or beyond, is an American price
 that leaked into the line field and is ignored.
 WNBA/UFC score DraftKings alone. MLB/NBA/NHL/NCAAF/NFL need PlayerProps or DraftKings
-plus SportsBettingDime, and ScoresAndOdds when SAO_VOTES is on. If the primary
-feed is null on every game, those leagues require SBD and SAO to agree.
+plus SportsBettingDime. ScoresAndOdds is the same bet % and handle % as
+SportsBettingDime, so it votes only on a market where SBD has no gap.
+If the primary feed is null on every game, SBD qualifies alone, and SAO
+qualifies only when SBD is missing.
 Pinnacle is skipped. RLM source order:
 EV Analytics (chart history), then TheSpread open→live, then Polymarket.
 SBD is not scraped for WNBA/UFC. Covers is not scraped for UFC;
@@ -84,8 +86,8 @@ W_PRIMARY = 1.0
 W_SBD = 0.75
 SAO_VOTES = True
 SAO_WEIGHT = 0.75
-# "average" divides the weighted sum by the weights of sources that voted,
-# so a third source does not inflate the gap past the threshold of 15.
+# ScoresAndOdds stands in for SportsBettingDime. It never votes beside it.
+# "average" divides the weighted sum by the weights of sources that voted.
 # "sum" is the previous composite.
 COMPOSITE_MODE = "average"
 
@@ -163,10 +165,19 @@ def sources_for_league(league: str | None, *, sao_votes: bool | None = None) -> 
     return MLB_SOURCES
 
 
-def primary_down_note(league: str | None) -> str:
-    if _league_key(league) == "MLB":
-        return "PlayerProps splits down: SBD + SAO"
-    return "DK splits down: SBD + SAO"
+def primary_down_note(league: str | None, consensus: str | None = None) -> str:
+    """Name the consensus feed used while PlayerProps or DraftKings is absent.
+
+    SBD is that feed. SAO is named only when it filled in for a missing SBD gap.
+    """
+    feed = "PlayerProps" if _league_key(league) == "MLB" else "DK"
+    if consensus == "sao":
+        who = "SAO"
+    elif consensus == "sbd":
+        who = "SBD"
+    else:
+        who = "SBD, else SAO"
+    return f"{feed} splits down: {who}"
 
 
 def primary_source_label(league: str | None) -> str:
@@ -911,7 +922,9 @@ def _spread_composite_on_side(
     if not isinstance(away, dict) or not isinstance(home, dict):
         return None
     gaps = compute_gaps(away if logical_side == "away" else home)
-    present = tuple(s for s in sources if gaps.as_dict().get(s) is not None)
+    present = _consensus_sources(
+        tuple(s for s in sources if gaps.as_dict().get(s) is not None)
+    )
     if not present:
         return None
     return compute_composite(gaps, present)
@@ -986,16 +999,6 @@ def compute_model_confidence(play: dict[str, Any]) -> int:
     score = 78 if play.get("tier") == "A+" else 70
     gap = _as_float(play.get("composite_gap")) or 0.0
     score += min(12, int(gap / 10.0))
-    n_agree = play.get("n_sources_agreeing") or 0
-    try:
-        n_agree = int(n_agree)
-    except (TypeError, ValueError):
-        n_agree = 0
-    # Three agreeing votes. SAO counts only when it actually voted; a missing
-    # SAO gap is not in agreeing_sources, so it does not earn this point.
-    agreeing = play.get("agreeing_sources") or []
-    if n_agree >= 3 and isinstance(agreeing, list) and "sao" in agreeing:
-        score += 4
     conf = play.get("exchange_confirmation")
     conf = conf if isinstance(conf, dict) else {}
     edge = _as_float(conf.get("exchange_edge_pct"))
@@ -1373,6 +1376,13 @@ def _attach_ml_trade_target(
     play["trade_home_away"] = home_away
 
 
+def _consensus_sources(present: tuple[str, ...]) -> tuple[str, ...]:
+    """SportsBettingDime is the consensus vote. ScoresAndOdds fills a missing SBD gap."""
+    if "sbd" in present and "sao" in present:
+        return tuple(source for source in present if source != "sao")
+    return present
+
+
 def _source_has_gap(away_gaps: SourceGaps, home_gaps: SourceGaps, source: str) -> bool:
     gaps = away_gaps.as_dict()
     home = home_gaps.as_dict()
@@ -1439,13 +1449,16 @@ def process_game(
 
     away_gaps = compute_gaps(away)
     home_gaps = compute_gaps(home)
-    present = tuple(s for s in sources if _source_has_gap(away_gaps, home_gaps, s))
+    present = _consensus_sources(
+        tuple(s for s in sources if _source_has_gap(away_gaps, home_gaps, s))
+    )
     floor = 1 if len(sources) <= 1 else 2
     if primary_down:
-        if "sbd" not in present or "sao" not in present:
+        # PlayerProps / DraftKings is absent. One consensus feed is enough.
+        present = tuple(s for s in present if s in {"sbd", "sao"})
+        if not present:
             return None
-        present = tuple(s for s in ("sbd", "sao") if s in present)
-        floor = 2
+        floor = 1
     agreement = check_agreement(away_gaps, home_gaps, sources=present, min_agree=floor)
     if agreement.side is None:
         return None
@@ -1504,7 +1517,10 @@ def process_game(
     play["sources_voted"] = list(agreement.agreeing_sources)
     play["primary_status"] = "unavailable" if primary_down else "available"
     play["public_side_source"] = public_source
-    if primary_down and down_note:
+    if primary_down:
+        consensus = "sao" if "sao" in agreement.agreeing_sources else "sbd"
+        play["primary_down_note"] = primary_down_note(league or game.get("league"), consensus)
+    elif down_note:
         play["primary_down_note"] = down_note
     return play
 

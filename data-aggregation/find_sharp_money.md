@@ -21,16 +21,16 @@ Games that fail step 1 are dropped. Games that pass step 1 and fail step 2 or 3 
 | League | Who votes | Primary feed |
 | --- | --- | --- |
 | WNBA, UFC | DraftKings only | `public_bet_pct` / `handle_bet_pct` |
-| MLB | PlayerProps + SportsBettingDime + ScoresAndOdds | same fields, plus `sbd_*` and `sao_*` |
-| NBA, NHL, NCAAF, NFL | DraftKings + SportsBettingDime + ScoresAndOdds | same fields, plus `sbd_*` and `sao_*` |
+| MLB | PlayerProps + SportsBettingDime | same fields, plus `sbd_*`. `sao_*` only if `sbd_*` is missing |
+| NBA, NHL, NCAAF, NFL | DraftKings + SportsBettingDime | same fields, plus `sbd_*`. `sao_*` only if `sbd_*` is missing |
 
-`CFB` is treated as `NCAAF`. SportsBettingDime and ScoresAndOdds are not scraped for WNBA or UFC, so those slates qualify on the single DraftKings vote. Set `SAO_VOTES = False` to drop ScoresAndOdds from the vote.
+`CFB` is treated as `NCAAF`. SportsBettingDime and ScoresAndOdds are not scraped for WNBA or UFC, so those slates qualify on the single DraftKings vote. ScoresAndOdds publishes the same bet % and handle % as SportsBettingDime, so it does not vote on a market that already has a SportsBettingDime gap. It replaces SportsBettingDime on a market where that gap is missing. Set `SAO_VOTES = False` to drop that fallback.
 
-If DraftKings (or PlayerProps, for MLB) is null on every game, the league does not wait on that feed. SportsBettingDime and ScoresAndOdds both have to exist and agree. The public side then comes from SportsBettingDime, then ScoresAndOdds. Plays and alerts say `DK splits down: SBD + SAO` (or PlayerProps, for MLB).
+If DraftKings (or PlayerProps, for MLB) is null on every game, the league does not wait on that feed. SportsBettingDime qualifies alone. ScoresAndOdds qualifies alone only when SportsBettingDime is missing. The public side comes from whichever of those voted. Plays and alerts say `DK splits down: SBD` or `DK splits down: SAO` (PlayerProps, for MLB).
 
 VSiN gaps are still copied onto the output row (`vsin_gap`). `sao_gap` is copied the same way, whether or not ScoresAndOdds voted. VSiN does not vote. Pinnacle is not a source.
 
-Weights, applied only to sources that agree: primary `1.0`, SportsBettingDime `0.75`, ScoresAndOdds `0.75`. The default composite is a weighted **average** of the gaps that agreed (`COMPOSITE_MODE = "average"`), so a third source does not inflate the number. `COMPOSITE_MODE = "sum"` is the previous weighted sum. The threshold stays 15 either way. A missing source is not a vote against, but it also does not count, so one source alone cannot qualify MLB/NBA/NHL/NCAAF/NFL.
+Weights, applied only to sources that agree: primary `1.0`, SportsBettingDime `0.75`, ScoresAndOdds `0.75` when it is standing in for SportsBettingDime. The default composite is a weighted **average** of the gaps that agreed (`COMPOSITE_MODE = "average"`). `COMPOSITE_MODE = "sum"` is the previous weighted sum. The threshold stays 15 either way. A missing source is not a vote against, but it also does not count, so one source alone cannot qualify MLB/NBA/NHL/NCAAF/NFL while the primary feed is up. When that feed is down for the whole slate, the consensus fallback qualifies on its own.
 
 Any source that votes the other side throws the game out (`REQUIRE_UNANIMOUS_DIRECTION`).
 
@@ -80,7 +80,7 @@ Tier A becomes **A+** when all three are true: exchange edge ≥ 1.5, Polymarket
 
 A cheap moneyline below the league floor skips both markets, even when a spread number exists. NBA skips under 0.25. NCAAF and NFL (and CFB) skip under 0.20. Exactly on the floor still buys the spread. Other leagues still buy the spread all the way down through 0.48.
 
-**Model confidence** is a 70–100 display score. It starts at 70 (78 for A+), then adds for a large gap, three agreeing sources, exchange edge, exchange line movement, and normal liquidity, and subtracts for a line-source conflict, a longshot dog, moneyline/spread divergence, and low Polymarket liquidity.
+**Model confidence** is a 70–100 display score. It starts at 70 (78 for A+), then adds for a large gap, exchange edge, exchange line movement, and normal liquidity, and subtracts for a line-source conflict, a longshot dog, moneyline/spread divergence, and low Polymarket liquidity.
 
 ## What gets written
 

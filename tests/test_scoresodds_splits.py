@@ -164,12 +164,22 @@ def test_dk_unavailable_banner_returns_empty_without_retry(monkeypatch) -> None:
     assert len(calls) == 1
 
 
-def test_primary_unavailable_requires_sbd_and_sao_to_agree() -> None:
-    def without_primary(game: dict, *, sao_away: int, sao_home: int, include_sao: bool = True) -> dict:
+def test_primary_unavailable_uses_sbd_and_sao_only_as_fallback() -> None:
+    def without_primary(
+        game: dict,
+        *,
+        sao_away: int,
+        sao_home: int,
+        include_sao: bool = True,
+        include_sbd: bool = True,
+    ) -> dict:
         copied = json.loads(json.dumps(game))
         for side in copied["moneyline"].values():
             side.pop("public_bet_pct", None)
             side.pop("handle_bet_pct", None)
+            if not include_sbd:
+                side.pop("sbd_public_bet_pct", None)
+                side.pop("sbd_handle_bet_pct", None)
         if include_sao:
             copied["moneyline"]["away"]["sao_public_bet_pct"] = sao_away
             copied["moneyline"]["away"]["sao_handle_bet_pct"] = sao_away + 30
@@ -191,33 +201,65 @@ def test_primary_unavailable_requires_sbd_and_sao_to_agree() -> None:
     assert play["qualified"] is True
     assert play["primary_status"] == "unavailable"
     assert play["public_side_source"] == "sbd"
-    assert play["sources_voted"] == ["sbd", "sao"]
-    assert play["primary_down_note"] == "DK splits down: SBD + SAO"
+    assert play["sources_voted"] == ["sbd"]
+    assert play["primary_down_note"] == "DK splits down: SBD"
     assert play["sao_gap"] == 30
 
     flipped = without_primary(base, sao_away=80, sao_home=20)
     flipped["moneyline"]["away"]["sao_handle_bet_pct"] = 50
     flipped["moneyline"]["home"]["sao_handle_bet_pct"] = 50
-    assert (
-        process_game(
-            flipped,
-            market="moneyline",
-            sources=("sbd", "sao"),
-            primary_down=True,
-        )
-        is None
+    flipped_play = process_game(
+        flipped,
+        market="moneyline",
+        sources=("sbd", "sao"),
+        primary_down=True,
     )
+    assert flipped_play is not None
+    assert flipped_play["sources_voted"] == ["sbd"]
+
     only_sbd = without_primary(base, sao_away=20, sao_home=80, include_sao=False)
-    assert (
-        process_game(
-            only_sbd,
-            market="moneyline",
-            sources=("sbd", "sao"),
-            primary_down=True,
-        )
-        is None
+    only_sbd_play = process_game(
+        only_sbd,
+        market="moneyline",
+        sources=("sbd", "sao"),
+        primary_down=True,
     )
+    assert only_sbd_play is not None
+    assert only_sbd_play["sources_voted"] == ["sbd"]
+    assert only_sbd_play["qualified"] is True
+
+    only_sao = without_primary(base, sao_away=20, sao_home=80, include_sbd=False)
+    only_sao_play = process_game(
+        only_sao,
+        market="moneyline",
+        sources=("sbd", "sao"),
+        primary_down=True,
+    )
+    assert only_sao_play is not None
+    assert only_sao_play["sources_voted"] == ["sao"]
+    assert only_sao_play["primary_down_note"] == "DK splits down: SAO"
+    assert only_sao_play["qualified"] is True
     assert sharp._slate_primary_unavailable(slate["games"]) is True
+
+
+def test_sao_does_not_vote_beside_sbd() -> None:
+    game = _game()
+    game["moneyline"]["away"]["sao_public_bet_pct"] = 10
+    game["moneyline"]["away"]["sao_handle_bet_pct"] = 90
+    game["moneyline"]["home"]["sao_public_bet_pct"] = 90
+    game["moneyline"]["home"]["sao_handle_bet_pct"] = 10
+    both = process_game(game, market="moneyline", sources=sources_for_league("NFL"))
+    assert both is not None
+    assert both["sources_voted"] == ["primary", "sbd"]
+    assert both["composite_gap"] == 30.0
+
+    for side in game["moneyline"].values():
+        side.pop("sbd_public_bet_pct", None)
+        side.pop("sbd_handle_bet_pct", None)
+    fallback = process_game(game, market="moneyline", sources=sources_for_league("NFL"))
+    assert fallback is not None
+    assert fallback["sources_voted"] == ["primary", "sao"]
+    assert fallback["composite_gap"] == round(90 / 1.75, 4)
 
 
 def test_alignment_uses_sbd_and_sao_when_primary_is_empty() -> None:
@@ -250,6 +292,19 @@ def test_alignment_uses_sbd_and_sao_when_primary_is_empty() -> None:
             "moneyline": {"away": {"sbd_handle_bet_pct": 50}, "home": {"sbd_handle_bet_pct": 50}},
         }
     ]
+    assert evaluate_payload(payload, slate_day=slate_day).aligned is True
+
+    payload["sources"]["sportsbettingdime"] = {"native_dates": [], "game_count": 0}
+    payload["games"] = [
+        {
+            "date": "2026-11-01",
+            "moneyline": {"away": {"sao_handle_bet_pct": 40}, "home": {"sao_handle_bet_pct": 60}},
+        }
+    ]
+    assert evaluate_payload(payload, slate_day=slate_day).aligned is True
+
+    payload["sources"]["scoresandodds"] = {"native_dates": [], "game_count": 0}
+    payload["games"] = [{"date": "2026-11-01", "moneyline": {"away": {}, "home": {}}}]
     assert evaluate_payload(payload, slate_day=slate_day).aligned is False
 
 
