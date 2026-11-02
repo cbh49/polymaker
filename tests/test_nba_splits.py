@@ -134,6 +134,62 @@ def test_dk_nba_abbr_nickname_and_drops_other_sports() -> None:
     assert games[0]["home"] == "Los Angeles Lakers"
 
 
+def test_dk_reads_market_label_when_column_header_moved() -> None:
+    """Current DK cards put the market name above the rows, not in .tb-se-head."""
+    html = (
+        '<div class="tb-se">'
+        '<div class="tb-se-title">'
+        '<a href="https://sportsbook.draftkings.com/event/34936963">OKC Thunder @ CLE Cavaliers</a>'
+        "<span>Mon 11/2 · 7:10 PM ET</span>"
+        "</div>"
+        '<div class="tb-se-head">Selection Odds Handle Bets</div>'
+        '<div class="tb-market-wrap">'
+        "<div>"
+        '<div class="mb-1 text-brand-orange">Moneyline</div>'
+        '<div class="tb-sm">'
+        '<div class="tb-sodd">'
+        '<div class="tb-slipline">CLE Cavaliers</div>'
+        "<div><a>−179</a></div><div>54%</div><div>75%</div>"
+        "</div>"
+        '<div class="tb-sodd">'
+        '<div class="tb-slipline">OKC Thunder</div>'
+        "<div><a>+150</a></div><div>46%</div><div>25%</div>"
+        "</div>"
+        "</div></div>"
+        "<div>"
+        '<div class="mb-1 text-brand-orange">Spread</div>'
+        '<div class="tb-sm">'
+        '<div class="tb-sodd">'
+        '<div class="tb-slipline">CLE Cavaliers -4.5</div>'
+        "<div><a>−105</a></div><div>67%</div><div>58%</div>"
+        "</div>"
+        '<div class="tb-sodd">'
+        '<div class="tb-slipline">OKC Thunder +4.5</div>'
+        "<div><a>−115</a></div><div>33%</div><div>42%</div>"
+        "</div>"
+        "</div></div>"
+        "</div></div>"
+    )
+    games = parse_games(
+        html,
+        [],
+        league="NBA",
+        canonical_name_fn=canonical_name,
+        canonical_abbr_fn=canonical_abbr,
+        names_match_fn=names_match,
+        match_matchup_fn=lambda *_args, **_kw: None,
+        day=date(2026, 11, 2),
+    )
+    assert len(games) == 1
+    assert games[0]["matchup"] == "OKC @ CLE"
+    assert games[0]["date"] == "2026-11-02"
+    assert games[0]["moneyline"]["home"]["public_bet_pct"] == 75
+    assert games[0]["moneyline"]["home"]["handle_bet_pct"] == 54
+    assert games[0]["moneyline"]["away"]["public_bet_pct"] == 25
+    assert games[0]["spread"]["home"]["live"] == -4.5
+    assert games[0]["spread"]["home"]["public_bet_pct"] == 58
+
+
 def _ml_game(day: str) -> dict:
     return {
         "matchup": "MIL @ WAS",
