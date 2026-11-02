@@ -70,7 +70,7 @@ def test_nfl_sharp_sources() -> None:
 
 
 def test_nfl_source_urls() -> None:
-    assert "tb_eg=NF" in DK_URLS["NFL"]
+    assert "tb_eg=88808" in DK_URLS["NFL"]
     assert "n7days" in DK_URLS["NFL"]
     assert EVA_URLS["NFL"].endswith("/nfl/odds")
     assert SBD_URLS["NFL"].endswith("/nfl/public-betting-trends/")

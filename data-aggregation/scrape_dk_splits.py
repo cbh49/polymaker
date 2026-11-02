@@ -9,7 +9,7 @@ Sources:
   WNBA:  ...?tb_eg=WNBA&tb_edate=today&tb_emt=0&itm_content=WNBA
   UFC:   ...?tb_eg=UFC&tb_edate=n30days&tb_emt=0&itm_content=UFC
   NCAAF: ...?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football
-  NFL:   ...?tb_eg=NF&tb_edate=n7days&tb_emt=0
+  NFL:   ...?tb_eg=88808&tb_edate=n7days&tb_emt=0
   NHL:   ...?tb_eg=42133&tb_edate=n7days&tb_emt=0&itm_content=NHL
 
 The page is server-rendered (and 403s to plain requests), so HTML is
@@ -79,7 +79,7 @@ PAGE_URLS = {
     ),
     "NFL": (
         "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
-        "?tb_eg=NF&tb_edate=n7days&tb_emt=0"
+        "?tb_eg=88808&tb_edate=n7days&tb_emt=0"
     ),
     "NHL": (
         "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
@@ -247,6 +247,39 @@ def _assign_team_rows(
     return away_row, home_row
 
 
+def _market_name(block: Any) -> str | None:
+    """Name of the market inside one card block.
+
+    Older cards put Moneyline / Spread / Total / Puck Line in `.tb-se-head`.
+    The current card uses that class for the column header
+    ("Selection Odds Handle Bets") and puts the market name in the label
+    above the rows.
+    """
+    texts: list[str] = []
+    head = block.select_one(".tb-se-head")
+    if head is not None:
+        texts.append(head.get_text(" ", strip=True))
+    for el in block.find_all(True, recursive=False):
+        if el is head:
+            continue
+        classes = el.get("class") or []
+        if "tb-sm" in classes or "tb-sodd" in classes:
+            break
+        text = el.get_text(" ", strip=True)
+        if text:
+            texts.append(text)
+    for text in texts:
+        lowered = text.lower()
+        if lowered.startswith("selection"):
+            continue
+        market_name = lowered.split()[0]
+        if market_name in {"puck", "puckline"}:
+            return "spread"
+        if market_name in {"moneyline", "spread", "total"}:
+            return market_name
+    return None
+
+
 def parse_game(
     card: Any,
     matchups: list[dict[str, Any]],
@@ -277,13 +310,9 @@ def parse_game(
 
     markets: dict[str, list[dict[str, Any]]] = {}
     for block in card.select(".tb-market-wrap > div"):
-        head = block.select_one(".tb-se-head")
-        if not head:
+        market_name = _market_name(block)
+        if not market_name:
             continue
-        market_name = head.get_text(" ", strip=True).split()[0].lower()
-        # NHL cards label the spread "Puck Line".
-        if market_name in {"puck", "puckline"}:
-            market_name = "spread"
         sides = []
         for row in block.select(".tb-sodd"):
             parsed = _row_side(row)
