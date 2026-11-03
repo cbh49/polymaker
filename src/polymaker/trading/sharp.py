@@ -82,6 +82,8 @@ def load_sharp_file(path: str | Path) -> list[SharpPlay]:
     league = str(data.get("league") or "").strip().upper() or _league_from_name(p.name)
     if league == "CFB":
         league = "NCAAF"
+    if league == "CBB":
+        league = "NCAAB"
     plays_raw = data.get("plays") or []
     if not isinstance(plays_raw, list):
         raise ValueError(f"plays must be a list in {p}")
@@ -126,7 +128,7 @@ def order_play(play: SharpPlay) -> SharpPlay | None:
     A moneyline card stays a moneyline in the published JSON. When its fair
     is at or under 0.48, or above 0.60, the finder sets trade_market to the
     team's spread (or skip, when that spread does not exist). NBA under 0.25
-    and NCAAF/NFL under 0.20 are skip, so neither market is ordered.
+    and NCAAF/NCAAB/NFL under 0.20 are skip, so neither market is ordered.
     """
     raw = play.raw if isinstance(play.raw, dict) else {}
     trade_market = str(raw.get("trade_market") or "").strip().lower()
@@ -180,6 +182,8 @@ def load_sharp_plays(paths: Sequence[str | Path]) -> list[SharpPlay]:
 
 def _league_from_name(name: str) -> str:
     lower = name.lower()
+    if "ncaab" in lower or "cbb" in lower:
+        return "NCAAB"
     if "wnba" in lower:
         return "WNBA"
     if "nba" in lower:

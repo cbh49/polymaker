@@ -75,18 +75,22 @@ DEFAULT_OUT = {
     "WNBA": SCRIPT_DIR / "output" / "polymarket_wnba_odds.json",
     "UFC": SCRIPT_DIR / "output" / "polymarket_ufc_odds.json",
     "NCAAF": SCRIPT_DIR / "output" / "polymarket_ncaaf_odds.json",
+    "NCAAB": SCRIPT_DIR / "output" / "polymarket_ncaab_odds.json",
     "NBA": SCRIPT_DIR / "output" / "polymarket_nba_odds.json",
     "NFL": SCRIPT_DIR / "output" / "polymarket_nfl_odds.json",
     "NHL": SCRIPT_DIR / "output" / "polymarket_nhl_odds.json",
 }
 
 # Polymarket ticker/series is CFB; NCAAF is the league name we expose.
+# Men's college basketball event slugs use `cbb-`; the live series is `ncaa-cbb`.
 _POLY_EVENT_PREFIX = {
     "MLB": "mlb",
     "WNBA": "wnba",
     "UFC": "ufc",
     "NCAAF": "cfb",
     "CFB": "cfb",
+    "NCAAB": "cbb",
+    "CBB": "cbb",
     "NBA": "nba",
     "NFL": "nfl",
     "NHL": "nhl",
@@ -108,6 +112,8 @@ def normalize_league(league: str) -> str:
     key = (league or "MLB").strip().upper()
     if key == "CFB":
         return "NCAAF"
+    if key == "CBB":
+        return "NCAAB"
     return key
 
 
@@ -122,9 +128,13 @@ def poly_series_slugs(league: str, day: date | None = None) -> tuple[str, ...]:
     NBA event slugs use the `nba-` prefix. The bare `nba` series is empty;
     the live board is `nba-YYYY`, tried after the untagged slug.
     NHL is the same: bare `nhl` is empty and the live board is `nhl-YYYY`.
+    Men's college basketball event slugs start with `cbb-`. The live board
+    is the `ncaa-cbb` series; the older `cbb` series has no open games.
     """
     prefix = poly_event_prefix(league)
     year = (day or datetime.now(PAGE_TZ).date()).year
+    if prefix == "cbb":
+        return ("ncaa-cbb", "cbb")
     if prefix in {"nba", "nhl"}:
         return (prefix, f"{prefix}-{year}", f"{prefix}-{year - 1}", f"{prefix}-{year + 1}")
     if prefix not in {"cfb", "nfl"}:
@@ -135,7 +145,7 @@ def poly_series_slugs(league: str, day: date | None = None) -> tuple[str, ...]:
 def _event_date_max_delta(league: str) -> int:
     # CFB/NFL/UFC slates cluster on weekends; ±1 day would drop Saturday from a Thursday run.
     key = normalize_league(league)
-    if key in {"NBA", "NHL"}:
+    if key in {"NBA", "NHL", "NCAAB"}:
         return 7
     if key in {"NCAAF", "NFL"}:
         return 4
@@ -404,6 +414,44 @@ def _match_cfb_event(
     dates: list[date],
 ) -> dict[str, Any] | None:
     return _match_named_event(events, away, home, dates, fighter_mode=False)
+
+
+def _cbb_side_match(query: str, labels: list[str], slug_code: str = "") -> bool:
+    """School-name match. Slug tokens are equal only, so `fl` is not `nfl`."""
+    from cbb_team_map import names_match, poly_code
+
+    code = (slug_code or "").strip().lower()
+    query_code = (poly_code(query) or "").lower()
+    if code and query_code and code == query_code:
+        return True
+    return any(names_match(query, label) for label in labels)
+
+
+def _match_cbb_event(
+    events: list[dict[str, Any]],
+    away: str,
+    home: str,
+    dates: list[date],
+) -> dict[str, Any] | None:
+    date_set = {d.isoformat() for d in dates}
+    fallback: dict[str, Any] | None = None
+    for event in events:
+        names = _moneyline_outcomes(event)
+        if len(names) < 2:
+            continue
+        slug_m = _EVENT_SLUG_RE.match(str(event.get("slug") or ""))
+        away_code = slug_m.group("away") if slug_m else ""
+        home_code = slug_m.group("home") if slug_m else ""
+        if not (
+            _cbb_side_match(away, names, away_code) and _cbb_side_match(home, names, home_code)
+        ):
+            continue
+        event_day = str(event.get("eventDate") or "")[:10]
+        if event_day and event_day in date_set:
+            return event
+        if fallback is None:
+            fallback = event
+    return fallback
 
 
 def _total_index(outcomes: list[Any], side: str) -> int | None:
@@ -979,7 +1027,7 @@ def scrape(
                     (date.fromisoformat(event_day) - window).days
                 ) > max_delta:
                     continue
-                if league in {"UFC", "NCAAF"}:
+                if league in {"UFC", "NCAAF", "NCAAB"}:
                     names = _moneyline_outcomes(event)
                     if len(names) < 2:
                         continue
@@ -1060,13 +1108,13 @@ def scrape(
                 built.append(dest)
         else:
             named_events: list[dict[str, Any]] | None = None
-            if league in {"UFC", "NCAAF", "NFL"}:
+            if league in {"UFC", "NCAAF", "NCAAB", "NFL"}:
                 named_events = iter_series_events(session, league, day=day)
                 if league == "NFL":
                     series_index = _index_series_events(named_events or [])
                     props_index = _index_player_prop_events(named_events or [])
             for game in dest_games:
-                if league in {"UFC", "NCAAF"}:
+                if league in {"UFC", "NCAAF", "NCAAB"}:
                     away_name = str(game.get("away") or game.get("away_abbr") or "")
                     home_name = str(game.get("home") or game.get("home_abbr") or "")
                     if not away_name or not home_name:
@@ -1074,7 +1122,12 @@ def scrape(
                     away_ref = _NameRef(away_name)
                     home_ref = _NameRef(home_name)
                     dates = candidate_event_dates(game, day)
-                    matcher = _match_ufc_event if league == "UFC" else _match_cfb_event
+                    if league == "UFC":
+                        matcher = _match_ufc_event
+                    elif league == "NCAAB":
+                        matcher = _match_cbb_event
+                    else:
+                        matcher = _match_cfb_event
                     event = matcher(named_events or [], away_name, home_name, dates)
                     if event is None:
                         continue
@@ -1225,7 +1278,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Scrape Polymarket moneyline/spread/total prices (NFL also pulls player props)"
     )
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "NBA", "NHL", "UFC", "NCAAF", "CFB", "NFL"])
+    parser.add_argument(
+        "--league",
+        default="MLB",
+        choices=["MLB", "WNBA", "NBA", "NHL", "UFC", "NCAAF", "CFB", "NCAAB", "CBB", "NFL"],
+    )
     parser.add_argument("--date", default=None, help="Slate date YYYY-MM-DD")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()

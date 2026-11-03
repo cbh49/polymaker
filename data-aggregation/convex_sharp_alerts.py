@@ -71,6 +71,8 @@ def _league_key(value: Any) -> str:
     key = _as_str(value).upper()
     if key == "CFB":
         return "NCAAF"
+    if key == "CBB":
+        return "NCAAB"
     return key
 
 
@@ -351,6 +353,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     paths = args.input or [
         SCRIPT_DIR / "output" / "ncaaf_sharp_money.json",
+        SCRIPT_DIR / "output" / "ncaab_sharp_money.json",
         SCRIPT_DIR / "output" / "nba_sharp_money.json",
         SCRIPT_DIR / "output" / "nfl_sharp_money.json",
         SCRIPT_DIR / "output" / "mlb_sharp_money.json",

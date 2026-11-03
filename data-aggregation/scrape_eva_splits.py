@@ -6,12 +6,13 @@ Source pages:
   MLB:   https://evanalytics.com/mlb/odds
   WNBA:  https://evanalytics.com/wnba/odds
   NCAAF: https://evanalytics.com/ncaaf/odds
+  NCAAB: https://evanalytics.com/ncaab/odds
   NBA:   https://evanalytics.com/nba/odds
   NFL:   https://evanalytics.com/nfl/odds
   NHL:   https://evanalytics.com/nhl/odds
 
 Line History charts are loaded from:
-  POST /modules/odds/data/chart.php?sport=mlb|wnba|nba|ncaaf|nfl|nhl&gid=...&tid=...&cid=...&parent_cid=...
+  POST /modules/odds/data/chart.php?sport=mlb|wnba|nba|ncaaf|ncaab|nfl|nhl&gid=...&tid=...&cid=...&parent_cid=...
 
 Only the full-game board (category "Game Line") is kept so the series map
 onto moneyline / spread / total in the combined splits JSON.
@@ -52,6 +53,7 @@ DEFAULT_OUT = {
     "MLB": SCRIPT_DIR / "output" / "eva_betting_splits.json",
     "WNBA": SCRIPT_DIR / "output" / "eva_wnba_betting_splits.json",
     "NCAAF": SCRIPT_DIR / "output" / "eva_ncaaf_betting_splits.json",
+    "NCAAB": SCRIPT_DIR / "output" / "eva_ncaab_betting_splits.json",
     "NBA": SCRIPT_DIR / "output" / "eva_nba_betting_splits.json",
     "NFL": SCRIPT_DIR / "output" / "eva_nfl_betting_splits.json",
     "NHL": SCRIPT_DIR / "output" / "eva_nhl_betting_splits.json",
@@ -61,13 +63,22 @@ PAGE_URLS = {
     "MLB": "https://evanalytics.com/mlb/odds",
     "WNBA": "https://evanalytics.com/wnba/odds",
     "NCAAF": "https://evanalytics.com/ncaaf/odds",
+    "NCAAB": "https://evanalytics.com/ncaab/odds",
     "NBA": "https://evanalytics.com/nba/odds",
     "NFL": "https://evanalytics.com/nfl/odds",
     "NHL": "https://evanalytics.com/nhl/odds",
 }
 CHART_URL = "https://evanalytics.com/modules/odds/data/chart.php"
 CHART_TZ = ZoneInfo("America/New_York")
-SPORT_CODES = {"MLB": "mlb", "WNBA": "wnba", "NBA": "nba", "NCAAF": "ncaaf", "NFL": "nfl", "NHL": "nhl"}
+SPORT_CODES = {
+    "MLB": "mlb",
+    "WNBA": "wnba",
+    "NBA": "nba",
+    "NCAAF": "ncaaf",
+    "NCAAB": "ncaab",
+    "NFL": "nfl",
+    "NHL": "nhl",
+}
 # SYN to evanalytics.com can sit in SYN_SENT past requests' timeout and stall
 # the whole NCAAF/WNBA/MLB aggregator with no log output. Cap each call and
 # skip remaining charts after a couple of consecutive hangs.
@@ -371,6 +382,10 @@ def _canonical_abbr(abbr: str, league: str, abbr_map: dict[str, str]) -> str:
         from cfb_team_map import canonical_abbr
 
         return canonical_abbr(raw) or raw
+    if league == "NCAAB":
+        from cbb_team_map import canonical_abbr
+
+        return canonical_abbr(raw) or raw
     if league == "NFL":
         from nfl_team_map import canonical_abbr
 
@@ -393,6 +408,10 @@ def _canonical_name(name: str | None, abbr: str, league: str, abbr_map: dict[str
         return canonical_name(name or abbr) or name or team_name_from_abbr(abbr, abbr_map)
     if league == "NCAAF":
         from cfb_team_map import canonical_name
+
+        return canonical_name(name or abbr) or name or team_name_from_abbr(abbr, abbr_map)
+    if league == "NCAAB":
+        from cbb_team_map import canonical_name
 
         return canonical_name(name or abbr) or name or team_name_from_abbr(abbr, abbr_map)
     if league == "NFL":
@@ -481,6 +500,8 @@ def scrape(
     league = (league or "MLB").strip().upper()
     if league == "CFB":
         league = "NCAAF"
+    if league == "CBB":
+        league = "NCAAB"
     if league not in PAGE_URLS:
         raise ValueError(f"Unsupported EVA league: {league}")
     page_url = PAGE_URLS[league]
@@ -573,7 +594,11 @@ def merge_eva_into_game(game: dict[str, Any], eva_game: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape EV Analytics line movement")
-    parser.add_argument("--league", default="MLB", choices=["MLB", "WNBA", "NBA", "NCAAF", "CFB", "NFL", "NHL"])
+    parser.add_argument(
+        "--league",
+        default="MLB",
+        choices=["MLB", "WNBA", "NBA", "NCAAF", "CFB", "NCAAB", "CBB", "NFL", "NHL"],
+    )
     parser.add_argument(
         "--date",
         default=None,

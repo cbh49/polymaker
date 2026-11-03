@@ -15,6 +15,8 @@ def normalize_league(league: str) -> str:
     key = (league or "").strip().lower()
     if key == "cfb":
         return "ncaaf"
+    if key == "cbb":
+        return "ncaab"
     return key
 
 

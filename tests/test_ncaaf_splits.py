@@ -81,7 +81,7 @@ def test_ncaaf_sharp_sources() -> None:
     assert cfg["low_prob_dog_odds_threshold"] == 200.0
     assert cfg["ml_to_spread_max_fair"] == 0.48
     assert cfg["ml_to_spread_high_fair"] == 0.60
-    assert cfg["ml_skip_below_fair"] == {"NBA": 0.25, "NCAAF": 0.20, "NFL": 0.20}
+    assert cfg["ml_skip_below_fair"] == {"NBA": 0.25, "NCAAF": 0.20, "NCAAB": 0.20, "NFL": 0.20}
     assert cfg["rlm_source_priority"] == ["eva", "thespread", "polymarket"]
 
 

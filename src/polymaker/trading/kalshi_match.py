@@ -10,6 +10,7 @@ from typing import Any
 from polymaker.catalog.sports import LINE_MATCH_TOLERANCE
 from polymaker.trading.event_key import normalize_league
 from polymaker.trading.match import (
+    _cbb_names_match,
     _cfb_names_match,
     _dummy_team,
     _fighter_names_match,
@@ -46,6 +47,11 @@ GAME_LINE_SERIES: dict[str, dict[str, tuple[str, ...]]] = {
         "moneyline": ("KXCFBGAME", "KXNCAAFGAME"),
         "spread": ("KXCFBSPREAD", "KXNCAAFSPREAD"),
         "total": ("KXCFBTOTAL", "KXNCAAFTOTAL"),
+    },
+    "ncaab": {
+        "moneyline": ("KXNCAAMBGAME",),
+        "spread": ("KXNCAAMBSPREAD",),
+        "total": ("KXNCAAMBTOTAL",),
     },
     "wnba": {
         "moneyline": ("KXWNBAGAME",),
@@ -391,6 +397,12 @@ def _event_matches_teams(
         if len(names) >= 2:
             return any(_cfb_names_match(away.full_name, n) for n in names) and any(
                 _cfb_names_match(home.full_name, n) for n in names
+            )
+        return False
+    if league == "ncaab":
+        if len(names) >= 2:
+            return any(_cbb_names_match(away.full_name, n) for n in names) and any(
+                _cbb_names_match(home.full_name, n) for n in names
             )
         return False
 

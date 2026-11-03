@@ -319,6 +319,11 @@ def _cfb_team_map():
     return _load_agg_module("cfb_team_map")
 
 
+def _cbb_team_map():
+    """Lazy-load data-aggregation/cbb_team_map.py (men's college basketball)."""
+    return _load_agg_module("cbb_team_map")
+
+
 def _nhl_team_map():
     """Lazy-load data-aggregation/nhl_team_map.py (canonical NHL names)."""
     return _load_agg_module("nhl_team_map")
@@ -365,6 +370,13 @@ def resolve_team(league: str, abbr_or_name: str) -> TeamRef | None:
         name = cfb.canonical_name(raw) or raw
         abbr = cfb.canonical_abbr(raw) or upper
         code = cfb.poly_code(raw) or str(abbr).lower()
+        return TeamRef(str(abbr), code, name)
+
+    if league_l in {"ncaab", "cbb"}:
+        cbb = _cbb_team_map()
+        name = cbb.canonical_name(raw) or raw
+        abbr = cbb.canonical_abbr(raw) or upper
+        code = cbb.poly_code(raw) or str(abbr).lower()
         return TeamRef(str(abbr), code, name)
 
     if league_l == "nfl":

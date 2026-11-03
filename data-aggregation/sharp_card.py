@@ -47,6 +47,8 @@ LEAGUE_COLOR = {
     "NFL": (134, 239, 172),
     "NCAAF": (253, 230, 138),
     "CFB": (253, 230, 138),
+    "NCAAB": (253, 186, 116),
+    "CBB": (253, 186, 116),
     "MLB": (147, 197, 253),
     "WNBA": (249, 168, 212),
     "NBA": (251, 146, 60),
@@ -296,6 +298,8 @@ def team_mark(team: str, league: str) -> dict[str, str] | None:
     code = (league or "").strip().upper()
     if code == "CFB":
         code = "NCAAF"
+    if code == "CBB":
+        code = "NCAAB"
     index = _logo_index()
     if code == "NFL":
         return _lookup_named(index["nfl"], team)
@@ -433,6 +437,8 @@ def card_copy(play: dict[str, Any], *, league: str | None = None) -> dict[str, A
     league_s = str(league or play.get("league") or "").strip().upper()
     if league_s == "CFB":
         league_s = "NCAAF"
+    if league_s == "CBB":
+        league_s = "NCAAB"
     bet = _bet_text(play, market)
     public_name = str(play.get("public_favors_name") or "").strip() or "Public"
     public_pct = _as_float(play.get("public_favors_bet_pct"))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production MLB/WNBA/NBA/NHL/NCAAF/NFL sharp-money loop.
+"""Production MLB/WNBA/NBA/NHL/NCAAF/NCAAB/NFL sharp-money loop.
 
 Scrapes splits, trades only when every required source is on today's Pacific
 slate, then refreshes the Polymarket watch list. Live CLOB buys require
@@ -9,6 +9,7 @@ Usage (from trading-bot/):
   uv run python scripts/run_sharp_pipeline.py
   uv run python scripts/run_sharp_pipeline.py --dry-run
   uv run python scripts/run_sharp_pipeline.py --league ncaaf --date 2026-08-29
+  uv run python scripts/run_sharp_pipeline.py --league ncaab --date 2026-11-02
   uv run python scripts/run_sharp_pipeline.py --league nfl --date 2026-09-14
   uv run python scripts/run_sharp_pipeline.py --league nba --date 2026-10-21
   uv run python scripts/run_sharp_pipeline.py --league nhl --date 2026-10-25
@@ -174,13 +175,13 @@ def _refresh_watch_list(config_dir: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="MLB/WNBA/NBA/NHL/NCAAF/NFL sharp-money scrape + trade")
+    parser = argparse.ArgumentParser(description="MLB/WNBA/NBA/NHL/NCAAF/NCAAB/NFL sharp-money scrape + trade")
     parser.add_argument("--date", default=None, help="Slate date YYYY-MM-DD (default: today Pacific)")
     parser.add_argument(
         "--league",
         default="all",
-        choices=["mlb", "wnba", "nba", "nhl", "ncaaf", "cfb", "nfl", "both", "all"],
-        help="both = mlb+wnba; all = mlb+wnba+nba+nhl+ncaaf+nfl (cfb is an alias for ncaaf)",
+        choices=["mlb", "wnba", "nba", "nhl", "ncaaf", "cfb", "ncaab", "cbb", "nfl", "both", "all"],
+        help="both = mlb+wnba; all = mlb+wnba+nba+nhl+ncaaf+ncaab+nfl (cfb/cbb alias ncaaf/ncaab)",
     )
     parser.add_argument("--config-dir", default="config")
     parser.add_argument(
@@ -203,6 +204,8 @@ def main() -> int:
     print(f"Sharp pipeline {mode} slate={day.isoformat()} league={args.league}")
 
     league = "ncaaf" if args.league == "cfb" else args.league
+    if league == "cbb":
+        league = "ncaab"
     wanted = []
     if league in {"mlb", "both", "all"}:
         wanted.append("mlb")
@@ -210,6 +213,8 @@ def main() -> int:
         wanted.append("wnba")
     if league in {"ncaaf", "all"}:
         wanted.append("ncaaf")
+    if league in {"ncaab", "all"}:
+        wanted.append("ncaab")
     if league in {"nba", "all"}:
         wanted.append("nba")
     if league in {"nhl", "all"}:
@@ -225,6 +230,8 @@ def main() -> int:
         scrape_ok["wnba"] = _run_scraper("scrape_wnba_betting_splits.py", date_args)
     if "ncaaf" in wanted:
         scrape_ok["ncaaf"] = _run_scraper("scrape_ncaaf_betting_splits.py", date_args)
+    if "ncaab" in wanted:
+        scrape_ok["ncaab"] = _run_scraper("scrape_ncaab_betting_splits.py", date_args)
     if "nba" in wanted:
         scrape_ok["nba"] = _run_scraper("scrape_nba_betting_splits.py", date_args)
     if "nhl" in wanted:
@@ -254,6 +261,12 @@ def main() -> int:
             _AGG / "output" / "ncaaf_betting_splits.json",
             _AGG / "output" / "ncaaf_sharp_money.json",
             _AGG / "output" / "ncaaf_sharp_money.csv",
+            "all",
+        ),
+        "ncaab": (
+            _AGG / "output" / "ncaab_betting_splits.json",
+            _AGG / "output" / "ncaab_sharp_money.json",
+            _AGG / "output" / "ncaab_sharp_money.csv",
             "all",
         ),
         "nba": (

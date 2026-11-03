@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Scrape public-betting line movement from TheSpread.com (WNBA, NBA, NHL, UFC, NCAAF, or NFL).
+Scrape public-betting line movement from TheSpread.com (WNBA, NBA, NHL, UFC, NCAAF, NCAAB, or NFL).
 
 SportsBettingDime does not publish WNBA/UFC splits; this is the stand-in
 for scrape_sbd_splits.py, used for open → current line movement (RLM).
@@ -10,6 +10,7 @@ Sources:
   WNBA:  https://www.thespread.com/wnba-public-betting-chart/
   UFC:   https://www.thespread.com/mma-odds/
   NCAAF: https://www.thespread.com/ncaa-college-football-public-betting-chart/
+  NCAAB: https://www.thespread.com/ncaa-college-basketball-public-betting-chart/
   NBA:   https://www.thespread.com/nba-basketball-public-betting-chart/
   NHL:   https://www.thespread.com/nhl-hockey-public-betting-chart/
   NFL:   https://www.thespread.com/nfl-odds/
@@ -54,6 +55,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "thespread_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "thespread_ufc_betting_splits.json"
 DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "thespread_ncaaf_betting_splits.json"
+DEFAULT_NCAAB_OUT = SCRIPT_DIR / "output" / "thespread_ncaab_betting_splits.json"
 DEFAULT_NBA_OUT = SCRIPT_DIR / "output" / "thespread_nba_betting_splits.json"
 DEFAULT_NHL_OUT = SCRIPT_DIR / "output" / "thespread_nhl_betting_splits.json"
 DEFAULT_NFL_OUT = SCRIPT_DIR / "output" / "thespread_nfl_betting_splits.json"
@@ -62,6 +64,7 @@ PAGE_URLS = {
     "WNBA": "https://www.thespread.com/wnba-public-betting-chart/",
     "UFC": "https://www.thespread.com/mma-odds/",
     "NCAAF": "https://www.thespread.com/ncaa-college-football-public-betting-chart/",
+    "NCAAB": "https://www.thespread.com/ncaa-college-basketball-public-betting-chart/",
     "NBA": "https://www.thespread.com/nba-basketball-public-betting-chart/",
     "NHL": "https://www.thespread.com/nhl-hockey-public-betting-chart/",
     "NFL": "https://www.thespread.com/nfl-odds/",
@@ -725,6 +728,8 @@ def scrape(
     league = (league or "WNBA").strip().upper()
     if league == "CFB":
         league = "NCAAF"
+    if league == "CBB":
+        league = "NCAAB"
     day = day or datetime.now(PAGE_TZ).date()
     page_url = url or PAGE_URLS.get(league, PAGE_URL)
     if league == "UFC":
@@ -758,6 +763,34 @@ def scrape(
             if html
             else []
         )
+    elif league == "NCAAB":
+        from cbb_team_map import canonical_abbr as cbb_canonical_abbr
+        from cbb_team_map import canonical_name as cbb_canonical_name
+        from cbb_team_map import match_matchup as cbb_match_matchup
+
+        matchups = load_matchups(matchups_path) if matchups_path and matchups_path.exists() else []
+        html = _fetch_thespread_html(page_url, ".datarow, .tse-game", headed=headed)
+        allowed_mds = {_md_for_day(day + timedelta(days=offset)) for offset in range(0, 8)}
+        allowed_days = {day + timedelta(days=offset) for offset in range(0, 8)}
+        games = []
+        if html:
+            games = parse_games(
+                html,
+                day,
+                matchups,
+                canonical_name_fn=cbb_canonical_name,
+                canonical_abbr_fn=cbb_canonical_abbr,
+                match_matchup_fn=cbb_match_matchup,
+                allowed_mds=allowed_mds,
+            )
+            if not games:
+                games = parse_tse_football_games(
+                    html,
+                    day,
+                    canonical_name_fn=cbb_canonical_name,
+                    canonical_abbr_fn=cbb_canonical_abbr,
+                    allowed_days=allowed_days,
+                )
     elif league == "NFL":
         from nfl_team_map import canonical_abbr as nfl_canonical_abbr
         from nfl_team_map import canonical_name as nfl_canonical_name
@@ -859,7 +892,11 @@ def scrape(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape TheSpread public betting / MMA odds")
-    parser.add_argument("--league", default="WNBA", choices=["WNBA", "NBA", "NHL", "UFC", "NCAAF", "CFB", "NFL"])
+    parser.add_argument(
+        "--league",
+        default="WNBA",
+        choices=["WNBA", "NBA", "NHL", "UFC", "NCAAF", "CFB", "NCAAB", "CBB", "NFL"],
+    )
     parser.add_argument(
         "--date",
         default=None,
@@ -882,9 +919,12 @@ def main() -> None:
     league = (args.league or "WNBA").strip().upper()
     if league == "CFB":
         league = "NCAAF"
+    if league == "CBB":
+        league = "NCAAB"
     out = args.out or {
         "UFC": DEFAULT_UFC_OUT,
         "NCAAF": DEFAULT_NCAAF_OUT,
+        "NCAAB": DEFAULT_NCAAB_OUT,
         "NBA": DEFAULT_NBA_OUT,
         "NHL": DEFAULT_NHL_OUT,
         "NFL": DEFAULT_NFL_OUT,

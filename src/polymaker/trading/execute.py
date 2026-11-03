@@ -127,6 +127,8 @@ def filter_plays(
     league_l = league.strip().upper() if league else None
     if league_l == "CFB":
         league_l = "NCAAF"
+    if league_l == "CBB":
+        league_l = "NCAAB"
     out: list[SharpPlay] = []
     for p in plays:
         if league_l and league_l not in {"BOTH", "ALL"} and p.league.upper() != league_l:
@@ -145,6 +147,8 @@ def default_sharp_paths(cfg: Config, *, league: str | None = None) -> list[Path]
     league_l = (league or "both").strip().lower()
     if league_l == "cfb":
         league_l = "ncaaf"
+    if league_l == "cbb":
+        league_l = "ncaab"
     if league_l == "mlb":
         return [Path(sharp.mlb_path)]
     if league_l == "wnba":
@@ -153,6 +157,8 @@ def default_sharp_paths(cfg: Config, *, league: str | None = None) -> list[Path]
         return [Path(sharp.ufc_path)]
     if league_l == "ncaaf":
         return [Path(sharp.ncaaf_path)]
+    if league_l == "ncaab":
+        return [Path(sharp.ncaab_path)]
     if league_l == "nfl":
         return [Path(sharp.nfl_path)]
     if league_l == "nba":
@@ -166,6 +172,7 @@ def default_sharp_paths(cfg: Config, *, league: str | None = None) -> list[Path]
         Path(sharp.nhl_path),
         Path(sharp.ufc_path),
         Path(sharp.ncaaf_path),
+        Path(sharp.ncaab_path),
         Path(sharp.nfl_path),
     ]
 
@@ -744,6 +751,8 @@ def _normalized_league(league: str | None) -> str:
     key = str(league or "").strip().upper()
     if key == "CFB":
         return "NCAAF"
+    if key == "CBB":
+        return "NCAAB"
     return key
 
 

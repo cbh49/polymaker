@@ -49,7 +49,7 @@ def scan(
     series: str | None = typer.Option(
         None,
         "--series",
-        help="comma-separated sports series slugs (default: mlb,wnba,nba,nba-2026,ufc,cfb-2026,nfl-2026 from config)",
+        help="comma-separated sports series slugs (default: mlb,wnba,nba,nba-2026,ufc,cfb-2026,ncaa-cbb,nfl-2026 from config)",
     ),
     look_ahead_days: int | None = typer.Option(None, help="keep games with eventDate today..+N days UTC"),
     include_live: bool = typer.Option(
@@ -253,13 +253,14 @@ def match_sharp(
     wnba: str | None = typer.Option(None, "--wnba", help="override wnba_sharp_money.json path"),
     ufc: str | None = typer.Option(None, "--ufc", help="override ufc_sharp_money.json path"),
     ncaaf: str | None = typer.Option(None, "--ncaaf", help="override ncaaf_sharp_money.json path"),
+    ncaab: str | None = typer.Option(None, "--ncaab", help="override ncaab_sharp_money.json path"),
     nba: str | None = typer.Option(None, "--nba", help="override nba_sharp_money.json path"),
     nhl: str | None = typer.Option(None, "--nhl", help="override nhl_sharp_money.json path"),
     nfl: str | None = typer.Option(None, "--nfl", help="override nfl_sharp_money.json path"),
     league: str = typer.Option(
         "both",
         "--league",
-        help="mlb | wnba | nba | nhl | ufc | ncaaf | nfl | both (which sharp file(s) / plays to use)",
+        help="mlb | wnba | nba | nhl | ufc | ncaaf | ncaab | nfl | both (which sharp file(s) / plays to use)",
     ),
     refresh: bool = typer.Option(
         False,
@@ -268,7 +269,7 @@ def match_sharp(
     ),
     tier: str | None = typer.Option(None, "--tier", help="min tier: A or B (default from config)"),
 ) -> None:
-    """Match sharp-money plays to Polymarket MLB/WNBA/NBA/NHL/UFC/NCAAF/NFL markets (no orders)."""
+    """Match sharp-money plays to Polymarket MLB/WNBA/NBA/NHL/UFC/NCAAF/NCAAB/NFL markets (no orders)."""
     from polymaker.trading.execute import filter_plays, load_configured_plays
     from polymaker.trading.match import match_sharp_plays
     from polymaker.trading.review_gate import filter_sharp_plays, load_trade_systems
@@ -276,7 +277,7 @@ def match_sharp(
 
     league_key = _normalize_league(league)
     cfg = Config.load(config_dir)
-    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, nfl, league_key, nba=nba, nhl=nhl)
+    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, nfl, league_key, nba=nba, nhl=nhl, ncaab=ncaab)
 
     try:
         plays = load_configured_plays(cfg, paths, league=league_key)
@@ -322,13 +323,14 @@ def trade_sharp(
     wnba: str | None = typer.Option(None, "--wnba", help="override wnba_sharp_money.json path"),
     ufc: str | None = typer.Option(None, "--ufc", help="override ufc_sharp_money.json path"),
     ncaaf: str | None = typer.Option(None, "--ncaaf", help="override ncaaf_sharp_money.json path"),
+    ncaab: str | None = typer.Option(None, "--ncaab", help="override ncaab_sharp_money.json path"),
     nba: str | None = typer.Option(None, "--nba", help="override nba_sharp_money.json path"),
     nhl: str | None = typer.Option(None, "--nhl", help="override nhl_sharp_money.json path"),
     nfl: str | None = typer.Option(None, "--nfl", help="override nfl_sharp_money.json path"),
     league: str = typer.Option(
         "both",
         "--league",
-        help="mlb | wnba | nba | nhl | ufc | ncaaf | nfl | both (which sharp file(s) / plays to use)",
+        help="mlb | wnba | nba | nhl | ufc | ncaaf | ncaab | nfl | both (which sharp file(s) / plays to use)",
     ),
     refresh: bool = typer.Option(
         True,
@@ -356,7 +358,7 @@ def trade_sharp(
 
     league_key = _normalize_league(league)
     cfg = Config.load(config_dir)
-    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, nfl, league_key, nba=nba, nhl=nhl)
+    paths = _sharp_path_overrides(mlb, wnba, ufc, ncaaf, nfl, league_key, nba=nba, nhl=nhl, ncaab=ncaab)
 
     try:
         plays = load_configured_plays(cfg, paths, league=league_key)
@@ -428,8 +430,10 @@ def _normalize_league(league: str) -> str:
     key = league.strip().lower()
     if key == "cfb":
         key = "ncaaf"
-    if key not in {"mlb", "wnba", "nba", "nhl", "ufc", "ncaaf", "nfl", "both"}:
-        console.print("[red]--league must be mlb, wnba, nba, nhl, ufc, ncaaf, nfl, or both[/red]")
+    if key == "cbb":
+        key = "ncaab"
+    if key not in {"mlb", "wnba", "nba", "nhl", "ufc", "ncaaf", "ncaab", "nfl", "both"}:
+        console.print("[red]--league must be mlb, wnba, nba, nhl, ufc, ncaaf, ncaab, nfl, or both[/red]")
         raise typer.Exit(1)
     return key
 
@@ -443,8 +447,9 @@ def _sharp_path_overrides(
     league: str,
     nba: str | None = None,
     nhl: str | None = None,
+    ncaab: str | None = None,
 ) -> list[str] | None:
-    """Explicit --mlb/--wnba/--nba/--nhl/--ufc/--ncaaf/--nfl paths win; otherwise None → config defaults by league."""
+    """Explicit --mlb/--wnba/--nba/--nhl/--ufc/--ncaaf/--ncaab/--nfl paths win; otherwise None → config defaults by league."""
     if (
         mlb is None
         and wnba is None
@@ -452,6 +457,7 @@ def _sharp_path_overrides(
         and nhl is None
         and ufc is None
         and ncaaf is None
+        and ncaab is None
         and nfl is None
     ):
         return None
@@ -468,6 +474,8 @@ def _sharp_path_overrides(
         paths.append(ufc)
     if league in {"ncaaf", "both"} and ncaaf:
         paths.append(ncaaf)
+    if league in {"ncaab", "both"} and ncaab:
+        paths.append(ncaab)
     if league in {"nfl", "both"} and nfl:
         paths.append(nfl)
     # If user passed only one override while league=both, still use it.
@@ -484,6 +492,8 @@ def _sharp_path_overrides(
             paths.append(ufc)
         if ncaaf:
             paths.append(ncaaf)
+        if ncaab:
+            paths.append(ncaab)
         if nfl:
             paths.append(nfl)
     return paths or None

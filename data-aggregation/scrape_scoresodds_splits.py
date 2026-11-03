@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scrape ScoresAndOdds consensus bet % and money % for MLB, NBA, NHL, NCAAF, and NFL.
+"""Scrape ScoresAndOdds consensus bet % and money % for MLB, NBA, NHL, NCAAF, NCAAB, and NFL.
 
 Pages (server-rendered, one request per league):
   https://www.scoresandodds.com/{league}/consensus-picks
@@ -48,6 +48,7 @@ PAGE_URLS = {
     "NBA": "https://www.scoresandodds.com/nba/consensus-picks",
     "NHL": "https://www.scoresandodds.com/nhl/consensus-picks",
     "NCAAF": "https://www.scoresandodds.com/ncaaf/consensus-picks",
+    "NCAAB": "https://www.scoresandodds.com/ncaab/consensus-picks",
     "NFL": "https://www.scoresandodds.com/nfl/consensus-picks",
 }
 DEFAULT_OUT = {
@@ -55,6 +56,7 @@ DEFAULT_OUT = {
     "NBA": SCRIPT_DIR / "output" / "sao_nba_betting_splits.json",
     "NHL": SCRIPT_DIR / "output" / "sao_nhl_betting_splits.json",
     "NCAAF": SCRIPT_DIR / "output" / "sao_ncaaf_betting_splits.json",
+    "NCAAB": SCRIPT_DIR / "output" / "sao_ncaab_betting_splits.json",
     "NFL": SCRIPT_DIR / "output" / "sao_nfl_betting_splits.json",
 }
 _PCT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
@@ -79,6 +81,8 @@ def abbr_map_for(league: str) -> dict[str, tuple[str, str]]:
     key = league.upper()
     if key == "CFB":
         key = "NCAAF"
+    if key == "CBB":
+        key = "NCAAB"
     if key == "NFL":
         from nfl_team_map import ABBR_ALIASES, ABBR_TO_NAME
     elif key == "NBA":
@@ -87,6 +91,8 @@ def abbr_map_for(league: str) -> dict[str, tuple[str, str]]:
         from nhl_team_map import ABBR_ALIASES, ABBR_TO_NAME
     elif key == "NCAAF":
         from cfb_team_map import ABBR_ALIASES, ABBR_TO_NAME
+    elif key == "NCAAB":
+        from cbb_team_map import ABBR_ALIASES, ABBR_TO_NAME
     elif key == "MLB":
         from mlb_team_map import ABBR_ALIASES, ABBR_TO_NAME
     else:
@@ -268,7 +274,11 @@ def parse_games(
     abbr_map: dict[str, tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Parse one consensus page into games. Unmatched abbreviations are logged and skipped."""
-    league_key = "NCAAF" if league.upper() == "CFB" else league.upper()
+    league_key = (league or "").strip().upper()
+    if league_key == "CFB":
+        league_key = "NCAAF"
+    if league_key == "CBB":
+        league_key = "NCAAB"
     stamp = scraped_at or datetime.now(timezone.utc).isoformat()
     mapping = abbr_map if abbr_map is not None else abbr_map_for(league_key)
     soup = BeautifulSoup(html, "html.parser")
@@ -354,6 +364,8 @@ def scrape(
     league_key = (league or "NFL").strip().upper()
     if league_key == "CFB":
         league_key = "NCAAF"
+    if league_key == "CBB":
+        league_key = "NCAAB"
     page_url = url or PAGE_URLS.get(league_key, "")
     if not page_url:
         print(f"Warning: ScoresAndOdds has no page for {league_key}", file=sys.stderr, flush=True)
@@ -456,13 +468,21 @@ def attach_sao_games(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape ScoresAndOdds consensus splits")
-    parser.add_argument("--league", default="NFL", choices=["MLB", "NBA", "NHL", "NCAAF", "CFB", "NFL"])
+    parser.add_argument(
+        "--league",
+        default="NFL",
+        choices=["MLB", "NBA", "NHL", "NCAAF", "CFB", "NCAAB", "CBB", "NFL"],
+    )
     parser.add_argument("--date", default=None, help="Slate date YYYY-MM-DD (Pacific). Keeps games on or after this day.")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--url", default=None)
     args = parser.parse_args()
     day = date.fromisoformat(args.date) if args.date else datetime.now(PAGE_TZ).date()
-    league = "NCAAF" if args.league == "CFB" else args.league
+    league = args.league.strip().upper()
+    if league == "CFB":
+        league = "NCAAF"
+    if league == "CBB":
+        league = "NCAAB"
     result = scrape(day=day, league=league, url=args.url)
     out = args.out or DEFAULT_OUT[league]
     out.parent.mkdir(parents=True, exist_ok=True)

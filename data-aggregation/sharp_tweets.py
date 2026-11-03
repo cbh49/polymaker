@@ -86,6 +86,8 @@ def tweet_play_key(play: dict[str, Any], league: str | None) -> str:
     league_s = str(league or play.get("league") or "").strip().upper() or "?"
     if league_s == "CFB":
         league_s = "NCAAF"
+    if league_s == "CBB":
+        league_s = "NCAAB"
     date_s = str(play.get("date") or "").strip() or "?"
     event = str(play.get("event_id") or play.get("matchup") or "").strip() or "?"
     market = str(play.get("market") or "").strip().lower() or "?"
@@ -97,6 +99,8 @@ def _normalize_league(value: str | None) -> str:
     key = str(value or "").strip().upper()
     if key == "CFB":
         return "NCAAF"
+    if key == "CBB":
+        return "NCAAB"
     return key or "SHARP"
 
 

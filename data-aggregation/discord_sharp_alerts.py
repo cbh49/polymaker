@@ -523,6 +523,8 @@ def post_sharp_alerts(
     league = str(output.get("league") or "").strip().upper()
     if league == "CFB":
         league = "NCAAF"
+    if league == "CBB":
+        league = "NCAAB"
     config = output.get("config") if isinstance(output.get("config"), dict) else {}
     plays = alert_plays(list(output.get("plays") or []))
     if not plays:

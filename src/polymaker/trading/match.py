@@ -163,7 +163,9 @@ async def _match_one(
     league = play.league.lower()
     if league == "cfb":
         league = "ncaaf"
-    slug_league = "cfb" if league == "ncaaf" else league
+    if league == "cbb":
+        league = "ncaab"
+    slug_league = "cfb" if league == "ncaaf" else ("cbb" if league == "ncaab" else league)
 
     play_line = _play_line_number(play)
     target_line = _play_target_line(play, away=away, home=home, side=side)
@@ -218,7 +220,7 @@ async def _match_one(
         tried = ", ".join(d.isoformat() for d in event_dates) or "no-date"
         if pick_detail and ("mismatch" in pick_detail or pick_detail.startswith("no open ")):
             detail = pick_detail
-        elif league in {"ufc", "ncaaf"}:
+        elif league in {"ufc", "ncaaf", "ncaab"}:
             detail = (
                 f"no open {play.market} for {away.full_name} vs {home.full_name} on {tried}"
             )
@@ -429,6 +431,18 @@ async def _find_event(
             gamma, _year_tagged_series_slugs("cfb", event_dates), series_cache
         )
         return _find_ncaaf_event(
+            events,
+            away_name=away.full_name,
+            home_name=home.full_name,
+            away_code=away.poly_code,
+            home_code=home.poly_code,
+            event_dates=event_dates,
+        )
+    if league == "ncaab":
+        events = await _series_events_for_slugs(
+            gamma, ("ncaa-cbb", "cbb"), series_cache
+        )
+        return _find_ncaab_event(
             events,
             away_name=away.full_name,
             home_name=home.full_name,
@@ -793,6 +807,20 @@ def _cfb_names_match(a: str, b: str) -> bool:
     return bool(names_match(a, b))
 
 
+def _cbb_names_match(a: str, b: str) -> bool:
+    try:
+        from cbb_team_map import names_match
+    except ImportError:
+        import sys
+        from pathlib import Path
+
+        agg = Path(__file__).resolve().parents[3] / "data-aggregation"
+        if str(agg) not in sys.path:
+            sys.path.insert(0, str(agg))
+        from cbb_team_map import names_match
+    return bool(names_match(a, b))
+
+
 def _find_ncaaf_event(
     events: list[dict[str, Any]],
     *,
@@ -819,6 +847,45 @@ def _find_ncaaf_event(
             len(names) >= 2
             and any(_cfb_names_match(away_name, n) for n in names)
             and any(_cfb_names_match(home_name, n) for n in names)
+        )
+        if not codes_ok and not names_ok:
+            continue
+        if _known_not_pre_game(event):
+            continue
+        event_date = str(event.get("eventDate") or "")[:10]
+        if date_set and event_date in date_set:
+            return event
+        if fallback is None:
+            fallback = event
+    return fallback
+
+
+def _find_ncaab_event(
+    events: list[dict[str, Any]],
+    *,
+    away_name: str,
+    home_name: str,
+    away_code: str,
+    home_code: str,
+    event_dates: list[date],
+) -> dict[str, Any] | None:
+    """Match a men's college basketball game by slug token or school name."""
+    date_set = {d.isoformat() for d in event_dates}
+    fallback: dict[str, Any] | None = None
+    for event in events:
+        slug = str(event.get("slug") or "")
+        m = EVENT_SLUG_RE.match(slug)
+        codes_ok = (
+            m is not None
+            and m.group("league") == "cbb"
+            and m.group("away") == away_code
+            and m.group("home") == home_code
+        )
+        names = _ufc_event_fighter_names(event)
+        names_ok = (
+            len(names) >= 2
+            and any(_cbb_names_match(away_name, n) for n in names)
+            and any(_cbb_names_match(home_name, n) for n in names)
         )
         if not codes_ok and not names_ok:
             continue

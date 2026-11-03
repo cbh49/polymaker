@@ -319,6 +319,7 @@ def export_watch_list(
             Path(cfg.sharp.wnba_path),
             Path(cfg.sharp.ufc_path),
             Path(cfg.sharp.ncaaf_path),
+            Path(cfg.sharp.ncaab_path),
             Path(cfg.sharp.nba_path),
             Path(cfg.sharp.nfl_path),
         ]

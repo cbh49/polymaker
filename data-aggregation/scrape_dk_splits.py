@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Scrape DraftKings Network betting splits for WNBA, UFC, NCAAF, NFL, NBA, or NHL.
+Scrape DraftKings Network betting splits for WNBA, UFC, NCAAF, NCAAB, NFL, NBA, or NHL.
 
 PlayerProps.ai does not publish WNBA/UFC/NCAAF/NFL splits; this is the stand-in
 for scrape_playerprops_splits.py.
@@ -9,6 +9,7 @@ Sources:
   WNBA:  ...?tb_eg=WNBA&tb_edate=today&tb_emt=0&itm_content=WNBA
   UFC:   ...?tb_eg=UFC&tb_edate=n30days&tb_emt=0&itm_content=UFC
   NCAAF: ...?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football
+  NCAAB: ...?tb_eg=92483&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Basketball
   NFL:   ...?tb_eg=88808&tb_edate=n7days&tb_emt=0
   NHL:   ...?tb_eg=42133&tb_edate=n7days&tb_emt=0&itm_content=NHL
 
@@ -55,6 +56,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "output" / "dk_wnba_betting_splits.json"
 DEFAULT_UFC_OUT = SCRIPT_DIR / "output" / "dk_ufc_betting_splits.json"
 DEFAULT_NCAAF_OUT = SCRIPT_DIR / "output" / "dk_ncaaf_betting_splits.json"
+DEFAULT_NCAAB_OUT = SCRIPT_DIR / "output" / "dk_ncaab_betting_splits.json"
 DEFAULT_NBA_OUT = SCRIPT_DIR / "output" / "dk_nba_betting_splits.json"
 DEFAULT_NFL_OUT = SCRIPT_DIR / "output" / "dk_nfl_betting_splits.json"
 DEFAULT_NHL_OUT = SCRIPT_DIR / "output" / "dk_nhl_betting_splits.json"
@@ -73,6 +75,10 @@ PAGE_URLS = {
     "NCAAF": (
         "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
         "?tb_eg=NCAA+Football&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Football"
+    ),
+    "NCAAB": (
+        "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
+        "?tb_eg=92483&tb_edate=n7days&tb_emt=0&itm_content=NCAA+Basketball"
     ),
     "NBA": (
         "https://dknetwork.draftkings.com/draftkings-sportsbook-betting-splits/"
@@ -512,6 +518,8 @@ def scrape(
     league = (league or "WNBA").strip().upper()
     if league == "CFB":
         league = "NCAAF"
+    if league == "CBB":
+        league = "NCAAB"
     day = day or datetime.now(PAGE_TZ).date()
     page_url = url or PAGE_URLS.get(league, PAGE_URL)
     match_matchup_fn = wnba_match_matchup
@@ -538,6 +546,19 @@ def scrape(
         names_match_fn = cfb_names_match
         match_matchup_fn = cfb_match_matchup
         max_pages = 8
+        allowed_days = None
+    elif league == "NCAAB":
+        from cbb_team_map import canonical_abbr as cbb_canonical_abbr
+        from cbb_team_map import canonical_name as cbb_canonical_name
+        from cbb_team_map import match_matchup as cbb_match_matchup
+        from cbb_team_map import names_match as cbb_names_match
+
+        matchups = []
+        canonical_name_fn = cbb_canonical_name
+        canonical_abbr_fn = cbb_canonical_abbr
+        names_match_fn = cbb_names_match
+        match_matchup_fn = cbb_match_matchup
+        max_pages = 12
         allowed_days = None
     elif league == "NFL":
         from nfl_team_map import canonical_abbr as nfl_canonical_abbr
@@ -678,7 +699,11 @@ def scrape(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape DraftKings betting splits")
-    parser.add_argument("--league", default="WNBA", choices=["WNBA", "NBA", "UFC", "NCAAF", "CFB", "NFL", "NHL"])
+    parser.add_argument(
+        "--league",
+        default="WNBA",
+        choices=["WNBA", "NBA", "UFC", "NCAAF", "CFB", "NCAAB", "CBB", "NFL", "NHL"],
+    )
     parser.add_argument(
         "--date",
         default=None,
@@ -701,9 +726,12 @@ def main() -> None:
     league = (args.league or "WNBA").strip().upper()
     if league == "CFB":
         league = "NCAAF"
+    if league == "CBB":
+        league = "NCAAB"
     out = args.out or {
         "UFC": DEFAULT_UFC_OUT,
         "NCAAF": DEFAULT_NCAAF_OUT,
+        "NCAAB": DEFAULT_NCAAB_OUT,
         "NBA": DEFAULT_NBA_OUT,
         "NFL": DEFAULT_NFL_OUT,
         "NHL": DEFAULT_NHL_OUT,

@@ -6,6 +6,7 @@ spreads and totals are nested markets under that event. Gamma's `startDate` is
 listing time — game day is `eventDate`; tip-off is `startTime`.
 CFB, NFL, NBA, and NHL series slugs are year-tagged
 (`cfb-2026`, `nfl-2026`, `nba-2026`, `nhl-2026`).
+Men's college basketball event slugs start with `cbb-`; the live series is `ncaa-cbb`.
 The bare `nba` and `nhl` series are empty; event slugs still start with `nba-` / `nhl-`.
 """
 
@@ -28,6 +29,8 @@ def default_sports_series_slugs(today: date | None = None) -> tuple[str, ...]:
         f"nhl-{year}",
         "ufc",
         f"cfb-{year}",
+        "ncaa-cbb",
+        "cbb",
         f"nfl-{year}",
     )
 
@@ -45,8 +48,8 @@ LINE_MATCH_TOLERANCE = 1.0
 
 # Moneyline / event: mlb-atl-cws-2026-08-20 / wnba-wsh-gsv-2026-07-20
 # / nba-mil-was-2026-10-21 / nhl-nyi-dal-2026-10-25 / ufc-ant-gre3-2026-08-22
-# / cfb-hawaii-stan-2026-08-29 / nfl-dal-nyg-2026-09-14
-_LEAGUE = r"mlb|wnba|nba|nhl|ufc|cfb|nfl"
+# / cfb-hawaii-stan-2026-08-29 / cbb-army-duke-2026-11-02 / nfl-dal-nyg-2026-09-14
+_LEAGUE = r"mlb|wnba|nba|nhl|ufc|cfb|cbb|nfl"
 _MONEYLINE_RE = re.compile(
     rf"^(?P<league>{_LEAGUE})-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)"
     r"-(?P<ymd>\d{4}-\d{2}-\d{2})$"
@@ -116,7 +119,7 @@ def is_sports_series(slug: str | None) -> bool:
     if not slug:
         return False
     s = slug.lower()
-    if s in {"mlb", "wnba", "nba", "nhl", "ufc", "cfb", "nfl"}:
+    if s in {"mlb", "wnba", "nba", "nhl", "ufc", "cfb", "cbb", "nfl", "ncaa-cbb"}:
         return True
     if (
         _is_year_tagged_series(s, "cfb")
@@ -131,6 +134,8 @@ def is_sports_series(slug: str | None) -> bool:
 def look_ahead_days_for_series(series_slug: str, default: int) -> int:
     """CFB/NFL/UFC weekend slates need a longer window than daily MLB/WNBA boards."""
     s = (series_slug or "").lower()
+    if s in {"ncaa-cbb", "cbb"}:
+        return max(default, CFB_LOOK_AHEAD_DAYS)
     if _is_year_tagged_series(s, "cfb") or _is_year_tagged_series(s, "nfl"):
         return max(default, CFB_LOOK_AHEAD_DAYS)
     if s == "ufc":

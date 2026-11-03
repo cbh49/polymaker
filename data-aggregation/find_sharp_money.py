@@ -3,11 +3,11 @@
 Identify daily "sharp money" plays from combined betting splits.
 
 Input schema (per game.moneyline.away/home, game.spread.away/home, or
-game.total.over/under) — confirmed against mlb/wnba/nba/nhl/ufc/ncaaf/nfl_betting_splits.json:
+game.total.over/under) — confirmed against mlb/wnba/nba/nhl/ufc/ncaaf/ncaab/nfl_betting_splits.json:
 
   primary  public_bet_pct / handle_bet_pct
-           (MLB: PlayerProps.ai; WNBA/NBA/NHL/UFC/NCAAF/NFL: DraftKings Network)
-  sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NBA + NHL + NCAAF + NFL)
+           (MLB: PlayerProps.ai; WNBA/NBA/NHL/UFC/NCAAF/NCAAB/NFL: DraftKings Network)
+  sbd      sbd_public_bet_pct / sbd_handle_bet_pct   (MLB + NBA + NHL + NCAAF + NCAAB + NFL)
   prices   eva_open / eva_line first when EVA detected a move, else
            TheSpread open / live. Polymarket history is the moneyline
            price and, for spread/total, only the move direction — its
@@ -21,7 +21,7 @@ so RLM uses the number first and falls back to juice implied-prob movement.
 Totals use over/under: a rising total confirms Over, a falling total Under.
 A negative total, or a spread at +/-100 or beyond, is an American price
 that leaked into the line field and is ignored.
-WNBA/UFC score DraftKings alone. MLB/NBA/NHL/NCAAF/NFL need PlayerProps or DraftKings
+WNBA/UFC score DraftKings alone. MLB/NBA/NHL/NCAAF/NCAAB/NFL need PlayerProps or DraftKings
 plus SportsBettingDime. ScoresAndOdds is the same bet % and handle % as
 SportsBettingDime, so it votes only on a market where SBD has no gap.
 If the primary feed is null on every game, SBD qualifies alone, and SAO
@@ -46,6 +46,9 @@ Usage:
       --out output/ufc_sharp_money.json --csv output/ufc_sharp_money.csv
   python find_sharp_money.py --input output/ncaaf_betting_splits.json \\
       --out output/ncaaf_sharp_money.json --csv output/ncaaf_sharp_money.csv \\
+      --market all
+  python find_sharp_money.py --input output/ncaab_betting_splits.json \\
+      --out output/ncaab_sharp_money.json --csv output/ncaab_sharp_money.csv \\
       --market all
   python find_sharp_money.py --input output/nfl_betting_splits.json \\
       --out output/nfl_sharp_money.json --csv output/nfl_sharp_money.csv \\
@@ -106,9 +109,11 @@ ML_TO_SPREAD_MAX_FAIR = 0.48
 ML_TO_SPREAD_HIGH_FAIR = 0.60
 # Strictly below this no-vig fair, skip both markets. Leagues not listed still
 # buy the spread down through the 0.48 cutoff. CFB uses the NCAAF floor.
+# CBB uses the NCAAB floor.
 ML_SKIP_BELOW_FAIR: dict[str, float] = {
     "NBA": 0.25,
     "NCAAF": 0.20,
+    "NCAAB": 0.20,
     "NFL": 0.20,
 }
 
@@ -133,7 +138,7 @@ SOURCE_WEIGHTS: dict[str, float] = {
     "sao": SAO_WEIGHT,
 }
 MLB_SOURCES = ("primary", "sbd")
-SAO_LEAGUES = frozenset({"MLB", "NBA", "NHL", "NCAAF", "NFL"})
+SAO_LEAGUES = frozenset({"MLB", "NBA", "NHL", "NCAAF", "NCAAB", "NFL"})
 SINGLE_SOURCE_LEAGUES = frozenset({"WNBA", "UFC"})
 WNBA_SOURCES = ("primary",)
 PUBLIC_PCT_FIELDS = {
@@ -153,6 +158,8 @@ def _league_key(league: str | None) -> str:
     key = str(league or "").strip().upper()
     if key == "CFB":
         return "NCAAF"
+    if key == "CBB":
+        return "NCAAB"
     return key
 
 
@@ -181,7 +188,7 @@ def primary_down_note(league: str | None, consensus: str | None = None) -> str:
 
 
 def primary_source_label(league: str | None) -> str:
-    if _league_key(league) in {"WNBA", "NBA", "NHL", "UFC", "NCAAF", "NFL"}:
+    if _league_key(league) in {"WNBA", "NBA", "NHL", "UFC", "NCAAF", "NCAAB", "NFL"}:
         return "draftkings"
     return "playerprops"
 
@@ -1352,7 +1359,7 @@ def _attach_ml_trade_target(
     """Buy the team spread when a qualified ML fair is outside the tradable band.
 
     At or under 0.48, or above 0.60 (the sharp max_ask). Exactly 0.60 stays
-    a moneyline. NBA under 0.25, and NCAAF/NFL under 0.20, skip both markets.
+    a moneyline. NBA under 0.25, and NCAAF/NCAAB/NFL under 0.20, skip both markets.
     Card fields (market, play_label, open, live) stay the moneyline.
     """
     if play.get("market") != "moneyline" or play.get("qualified") is not True:
@@ -1901,7 +1908,7 @@ def main() -> None:
         "--market",
         default="moneyline",
         choices=["moneyline", "spread", "total", "both", "all"],
-        help="Market to evaluate (NBA/NCAAF/NFL should use 'all'; WNBA 'both' or 'spread')",
+        help="Market to evaluate (NBA/NCAAF/NCAAB/NFL should use 'all'; WNBA 'both' or 'spread')",
     )
     parser.add_argument("--no-discord", action="store_true", help="Skip Discord A/A+ alerts")
     parser.add_argument("--discord-dry-run", action="store_true", help="Print Discord payloads, do not POST")
