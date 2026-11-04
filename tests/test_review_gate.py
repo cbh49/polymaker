@@ -129,7 +129,8 @@ def test_exchange_edge_at_least_3_is_a_signal_key() -> None:
     assert "sbd_gap:15_to_25" in keys
     assert "pair:exchange_edge+line_move_abs:ge_3|0_to_1" in keys
     assert "pair:exchange_edge+sbd_gap:ge_3|15_to_25" in keys
-    verdict = classify_play(play, [EDGE], league="NCAAF")
+    nfl = _with_edge(league="NFL")
+    verdict = classify_play(nfl, [EDGE], league="NFL")
     assert verdict["decision"] == "traded"
     assert verdict["matched_systems"] == ["exchange_edge:ge_3"]
 
@@ -147,29 +148,30 @@ def test_old_slices_do_not_trade_without_a_3_point_edge() -> None:
         },
         EDGE,
     ]
-    play = _play(line_move=-3.0, reject_reasons=["line_move"])
+    play = _play(league="NFL", line_move=-3.0, reject_reasons=["line_move"])
     assert "line_move_abs:0_to_1" not in signal_keys(play)
     assert "sbd_gap:15_to_25" in signal_keys(play)
-    verdict = classify_play(play, old, league="NCAAF")
+    verdict = classify_play(play, old, league="NFL")
     assert verdict["decision"] == "dropped"
     assert verdict["drop_reasons"] == ["review_gate"]
 
 
 def test_edge_under_3_is_dropped() -> None:
-    verdict = classify_play(_with_edge(2.0), [EDGE], league="NCAAF")
-    assert "exchange_edge:1_5_to_3" in signal_keys(_with_edge(2.0))
+    play = _with_edge(2.0, league="NFL")
+    verdict = classify_play(play, [EDGE], league="NFL")
+    assert "exchange_edge:1_5_to_3" in signal_keys(play)
     assert verdict["decision"] == "dropped"
     assert verdict["drop_reasons"] == ["review_gate"]
 
 
 def test_mild_edge_and_total_gap_trade_when_they_clear() -> None:
-    mild = _with_edge(2.0, market="total", home_away="over", side="Over", composite_gap=20)
+    mild = _with_edge(2.0, league="NFL", market="total", home_away="over", side="Over", composite_gap=20)
     verdict = classify_play(mild, [EDGE, MILD_EDGE, TOTAL_GAP], league="NFL")
     assert verdict["decision"] == "traded"
     assert "exchange_edge:1_5_to_3" in verdict["matched_systems"]
     assert "pair:market+gap:total|15_to_25" in verdict["matched_systems"]
 
-    weak = _with_edge(0.4, composite_gap=20)
+    weak = _with_edge(0.4, league="NFL", composite_gap=20)
     dropped = classify_play(
         weak,
         [
@@ -185,7 +187,7 @@ def test_mild_edge_and_total_gap_trade_when_they_clear() -> None:
                 "losses": 76,
             },
         ],
-        league="NCAAF",
+        league="NFL",
     )
     assert "tier:A" in signal_keys(weak)
     assert "pair:market+gap:spread|15_to_25" in signal_keys(weak)
@@ -206,15 +208,15 @@ def test_skipped_order_is_logged_as_a_pass() -> None:
     )
     assert row["decision"] == "dropped"
     assert row["dropReasons"] == ["no open spread"]
-    assert row["matchedSystems"] == ["exchange_edge:ge_3"]
+    assert row["matchedSystems"] == ["league_override:NCAAF:spread"]
     assert row["candidateKey"].startswith("NCAAF|2026-08-29|unc-tcu|spread|")
     assert row["tradeData"]["exchange_confirmation"]["exchange_edge_pct"] == 4.0
 
 
 def test_large_line_move_still_trades_when_the_edge_clears() -> None:
-    play = _with_edge(4.2, line_move=-3.0, reject_reasons=["line_move"])
+    play = _with_edge(4.2, league="NFL", line_move=-3.0, reject_reasons=["line_move"])
     assert "line_move_abs:gt_2_5" in signal_keys(play)
-    verdict = classify_play(play, [EDGE], league="NCAAF")
+    verdict = classify_play(play, [EDGE], league="NFL")
     assert verdict["decision"] == "traded"
     assert verdict["matched_systems"] == ["exchange_edge:ge_3"]
 
@@ -245,7 +247,7 @@ def test_cheap_moneyline_is_judged_as_the_spread() -> None:
     assert "exchange_edge:ge_3" in keys
     verdict = classify_play(play, [EDGE], league="NCAAF")
     assert verdict["decision"] == "traded"
-    assert verdict["matched_systems"] == ["exchange_edge:ge_3"]
+    assert verdict["matched_systems"] == ["league_override:NCAAF:spread"]
     assert verdict["trade_data"]["market"] == "spread"
     assert verdict["trade_data"]["signal_market"] == "moneyline"
 
@@ -263,7 +265,15 @@ def test_split_slate_keeps_only_tradable_plays() -> None:
         "date": "2026-08-29",
         "plays": [
             _with_edge(),
-            _play(event_id="other", sbd_gap=40, line_move=-3, live=-6, play_line=-6, home_away="home"),
+            _play(
+                event_id="other",
+                market="moneyline",
+                side="TCU",
+                home_away="home",
+                live=150,
+                play_line=150,
+                play_odds=150,
+            ),
         ],
     }
     tradable, rows = split_slate(output, [EDGE], logged_at=1)
@@ -286,7 +296,7 @@ def test_filter_sharp_plays_uses_the_order() -> None:
         play_odds=120,
     )
     play = SharpPlay(
-        league="NCAAF",
+        league="NFL",
         matchup="UNC @ TCU",
         side="UNC",
         market="spread",
@@ -308,3 +318,126 @@ def test_filter_sharp_plays_uses_the_order() -> None:
     }
     assert filter_sharp_plays([play], [league_only]) == []
     assert filter_sharp_plays([play], [EDGE]) == [play]
+
+
+def _sharp(raw: dict, *, league: str, market: str | None = None) -> SharpPlay:
+    return SharpPlay(
+        league=league,
+        matchup=str(raw.get("matchup") or ""),
+        side=str(raw.get("side") or ""),
+        market=market or str(raw.get("market") or ""),
+        tier=str(raw.get("tier") or "A"),
+        home_away=str(raw.get("home_away") or "") or None,
+        game_time_utc=None,
+        implied_fair_prob=None,
+        rlm_confirmed=bool(raw.get("rlm_confirmed")),
+        composite_gap=float(raw["composite_gap"]) if raw.get("composite_gap") is not None else None,
+        source_path="",
+        raw=raw,
+    )
+
+
+def test_ncaaf_blank_edge_spread_bypasses_the_review_gate() -> None:
+    play = _play(exchange_confirmation={"exchange_edge_pct": ""}, composite_gap=20)
+    keys = signal_keys(play)
+    assert not any(key.startswith("exchange_edge:") for key in keys)
+    verdict = classify_play(play, [], league="NCAAF")
+    assert verdict["decision"] == "traded"
+    assert verdict["matched_systems"] == ["league_override:NCAAF:spread"]
+    tradable, rows = split_slate(
+        {"league": "NCAAF", "date": "2026-08-29", "plays": [play]},
+        [],
+        logged_at=1,
+    )
+    assert tradable["plays"] == [play]
+    assert rows[0]["decision"] == "traded"
+    assert rows[0]["matchedSystems"] == ["league_override:NCAAF:spread"]
+    sharp = _sharp(play, league="NCAAF")
+    assert filter_sharp_plays([sharp], []) == [sharp]
+
+
+def test_ncaaf_total_and_moneyline_do_not_fall_through_to_edge() -> None:
+    blocked_total = _with_edge(4.0, market="total", home_away="over", side="Over", composite_gap=30)
+    blocked = classify_play(blocked_total, [EDGE], league="NCAAF")
+    assert "exchange_edge:ge_3" in signal_keys(blocked_total)
+    assert blocked["decision"] == "dropped"
+    assert blocked["drop_reasons"] == ["review_gate"]
+
+    opened = _with_edge(0.4, market="total", home_away="over", side="Over", composite_gap=30)
+    verdict = classify_play(opened, [], league="NCAAF")
+    assert verdict["decision"] == "traded"
+    assert verdict["matched_systems"] == ["league_override:NCAAF:total"]
+
+    gap_band = _with_edge(0.4, market="total", home_away="over", side="Over", composite_gap=20)
+    held = classify_play(gap_band, [TOTAL_GAP], league="NCAAF")
+    assert "pair:market+gap:total|15_to_25" in signal_keys(gap_band)
+    assert held["decision"] == "dropped"
+    assert held["drop_reasons"] == ["review_gate"]
+
+    moneyline = _with_edge(4.0, market="moneyline", live=150, play_line=150, play_odds=150)
+    ml = classify_play(moneyline, [EDGE], league="NCAAF")
+    assert "exchange_edge:ge_3" in signal_keys(moneyline)
+    assert ml["decision"] == "dropped"
+    assert ml["drop_reasons"] == ["review_gate"]
+
+
+def test_nba_spread_under_1_5_edge_is_added_without_touching_totals() -> None:
+    spread = _with_edge(1.0, league="NBA")
+    verdict = classify_play(spread, [EDGE], league="NBA")
+    assert verdict["decision"] == "traded"
+    assert verdict["matched_systems"] == ["league_override:NBA:spread_lt_1_5"]
+    assert filter_sharp_plays([_sharp(spread, league="NBA")], [EDGE]) == [_sharp(spread, league="NBA")]
+
+    total = _with_edge(4.0, league="NBA", market="total", home_away="over", side="Over", composite_gap=30)
+    kept = classify_play(total, [EDGE], league="NBA")
+    assert kept["decision"] == "traded"
+    assert kept["matched_systems"] == ["exchange_edge:ge_3"]
+
+    quiet_total = _with_edge(
+        0.4, league="NBA", market="total", home_away="over", side="Over", composite_gap=30
+    )
+    dropped = classify_play(quiet_total, [EDGE], league="NBA")
+    assert dropped["decision"] == "dropped"
+    assert dropped["drop_reasons"] == ["review_gate"]
+
+    hot_spread = _with_edge(4.0, league="NBA")
+    hot = classify_play(hot_spread, [EDGE], league="NBA")
+    assert hot["decision"] == "traded"
+    assert hot["matched_systems"] == ["exchange_edge:ge_3"]
+    assert "league_override:NBA:spread_lt_1_5" not in hot["matched_systems"]
+
+
+def test_nfl_edge_gate_does_not_inherit_the_nba_spread_override() -> None:
+    hot = _with_edge(4.0, league="NFL")
+    verdict = classify_play(hot, [EDGE], league="NFL")
+    assert verdict["decision"] == "traded"
+    assert verdict["matched_systems"] == ["exchange_edge:ge_3"]
+
+    mild = _with_edge(1.0, league="NFL")
+    dropped = classify_play(mild, [EDGE], league="NFL")
+    assert "exchange_edge:lt_1_5" in signal_keys(mild)
+    assert dropped["decision"] == "dropped"
+    assert dropped["drop_reasons"] == ["review_gate"]
+
+
+def test_qualified_ncaab_bypasses_the_review_gate() -> None:
+    play = _play(league="NCAAB", event_id="duke-unc")
+    assert not any(key.startswith("exchange_edge:") for key in signal_keys(play, league="NCAAB"))
+    verdict = classify_play(play, [], league="NCAAB")
+    assert verdict["decision"] == "traded"
+    assert verdict["matched_systems"] == ["league_override:NCAAB"]
+    tradable, rows = split_slate(
+        {"league": "NCAAB", "date": "2026-11-03", "plays": [play]},
+        [],
+        logged_at=1,
+    )
+    assert tradable["plays"] == [play]
+    assert rows[0]["decision"] == "traded"
+    assert rows[0]["matchedSystems"] == ["league_override:NCAAB"]
+    sharp = _sharp(play, league="NCAAB")
+    assert filter_sharp_plays([sharp], []) == [sharp]
+
+    rejected = _play(league="NCAAB", qualified=False, reject_reasons=["rlm"])
+    assert classify_play(rejected, [], league="NCAAB")["drop_reasons"] == ["rlm"]
+    skipped = _play(league="NCAAB", market="moneyline", trade_market="skip", live=250, play_odds=250)
+    assert classify_play(skipped, [], league="NCAAB")["drop_reasons"] == ["trade_market_skip"]

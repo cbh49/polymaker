@@ -7,6 +7,12 @@ band may also clear a lower bar (60 decided, +0.05 units, Wilson 0.45).
 League, market, and price-side slices never qualify. Market × gap cells are
 judged by the primary bar. The list is read from the published
 sharp_trade_review report, then from config/sharp_trade_systems.json.
+
+Three league overrides are explicit exceptions, not systems, and they are
+not published into that list. A qualified NCAAB order passes. A qualified
+NCAAF spread passes, and an NCAAF total passes only when its edge is blank
+or under 1.5 and its composite gap is 25 or more. An NBA spread under 1.5
+edge passes on top of the system list. NFL and NHL use the list only.
 """
 
 from __future__ import annotations
@@ -270,13 +276,69 @@ def system_key_set(systems: Sequence[dict[str, Any] | str]) -> set[str]:
     return {str(item["key"]) for item in tradable_systems(systems)}
 
 
+# Log labels for the league exceptions. They are not trade_systems keys.
+NCAAB_OVERRIDE = "league_override:NCAAB"
+NCAAF_SPREAD_OVERRIDE = "league_override:NCAAF:spread"
+NCAAF_TOTAL_OVERRIDE = "league_override:NCAAF:total"
+NBA_SPREAD_LT_EDGE_OVERRIDE = "league_override:NBA:spread_lt_1_5"
+_NCAAF_TOTAL_GAPS = frozenset({"25_to_40", "ge_40"})
+
+
+def _canonical_league(name: str | None) -> str:
+    key = str(name or "").strip().upper()
+    if key == "CFB":
+        return "NCAAF"
+    if key == "CBB":
+        return "NCAAB"
+    return key
+
+
+def _keyed_band(keys: Sequence[str], family: str) -> str | None:
+    prefix = f"{family}:"
+    for key in keys:
+        if key.startswith(prefix):
+            return key[len(prefix) :]
+    return None
+
+
+def _league_override(
+    snap: dict[str, Any],
+    league: str | None,
+    keys: Sequence[str],
+    matched: list[str],
+) -> tuple[str, list[str]] | None:
+    """Explicit league exceptions. None means use the published systems.
+
+    NFL and NHL fall through to system_key_set. Do not add a branch or a
+    league key for them, and do not publish these labels as systems.
+    """
+    name = _canonical_league(str(snap.get("league") or league or ""))
+    market = str(snap.get("market") or "").strip().lower()
+    if name == "NCAAB":
+        return "traded", [NCAAB_OVERRIDE]
+    if name == "NCAAF":
+        if market == "spread":
+            return "traded", [NCAAF_SPREAD_OVERRIDE]
+        edge = _keyed_band(keys, "exchange_edge")
+        gap = _keyed_band(keys, "composite_gap")
+        if market == "total" and edge in {None, "lt_1_5"} and gap in _NCAAF_TOTAL_GAPS:
+            return "traded", [NCAAF_TOTAL_OVERRIDE]
+        return "dropped", []
+    if name == "NBA" and market == "spread" and _keyed_band(keys, "exchange_edge") == "lt_1_5":
+        systems = list(matched)
+        if NBA_SPREAD_LT_EDGE_OVERRIDE not in systems:
+            systems.append(NBA_SPREAD_LT_EDGE_OVERRIDE)
+        return "traded", systems
+    return None
+
+
 def classify_play(
     play: dict[str, Any],
     systems: Sequence[dict[str, Any] | str],
     *,
     league: str | None = None,
 ) -> dict[str, Any]:
-    """traded when any signal key is a profitable system. Otherwise dropped."""
+    """traded when a system or a league override matches. Otherwise dropped."""
     allowed = system_key_set(systems)
     if play.get("qualified") is False:
         reasons = [str(item) for item in (play.get("reject_reasons") or []) if str(item) != "line_move"]
@@ -299,6 +361,22 @@ def classify_play(
         snap["league"] = league
     keys = signal_keys(snap)
     matched = [key for key in keys if key in allowed]
+    override = _league_override(snap, league, keys, matched)
+    if override is not None:
+        decision, override_keys = override
+        if decision == "traded":
+            return {
+                "decision": "traded",
+                "matched_systems": override_keys,
+                "drop_reasons": [],
+                "trade_data": _json_safe(snap),
+            }
+        return {
+            "decision": "dropped",
+            "matched_systems": [],
+            "drop_reasons": ["review_gate"],
+            "trade_data": _json_safe(snap),
+        }
     if not allowed:
         return {
             "decision": "dropped",
