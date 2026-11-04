@@ -23,7 +23,9 @@ from find_sharp_money import (  # noqa: E402
     config_snapshot,
     format_play_label,
     primary_source_label,
+    passed_market_row,
     process_game,
+    process_slate,
     sources_for_league,
 )
 from polymaker.catalog.sports import is_moneyline_slug, look_ahead_days_for_series
@@ -435,6 +437,25 @@ def test_sbd_dissent_discards() -> None:
         },
     }
     assert process_game(game, market="moneyline", sources=sources_for_league("NCAAF")) is None
+    logged = passed_market_row(game, "moneyline", league="NCAAF")
+    assert logged is not None
+    assert logged["qualified"] is False
+    assert logged["reject_reasons"] == ["no_agreement"]
+    frame = process_slate(
+        {"league": "NCAAF", "date": "2026-08-29", "games": [game]},
+        markets=("moneyline",),
+        log_correlation=False,
+    )
+    assert len(frame) == 1
+    assert bool(frame.iloc[0]["qualified"]) is False
+    assert list(frame.iloc[0]["reject_reasons"]) == ["no_agreement"]
+    missing = passed_market_row(
+        {"matchup": "UNC @ TCU", "date": "2026-08-29", "moneyline": {"away": {}}},
+        "moneyline",
+        league="NCAAF",
+    )
+    assert missing is not None and missing["reject_reasons"] == ["missing_side"]
+    assert passed_market_row({"matchup": "UNC @ TCU"}, "moneyline") is None
 
 
 def test_sbd_dissent_without_strong_gaps_still_discards() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polymaker.trading.review_gate import (
+    candidate_for_skipped_order,
     classify_play,
     filter_sharp_plays,
     signal_keys,
@@ -19,6 +20,20 @@ EDGE = {
     "losses": 56,
     "hit_rate": 0.6647,
     "wilson_lower": 0.5901,
+}
+MILD_EDGE = {
+    "key": "exchange_edge:1_5_to_3",
+    "units_per_bet": 0.074,
+    "decided": 65,
+    "wins": 38,
+    "losses": 27,
+}
+TOTAL_GAP = {
+    "key": "pair:market+gap:total|15_to_25",
+    "units_per_bet": 0.1626,
+    "decided": 99,
+    "wins": 60,
+    "losses": 39,
 }
 
 
@@ -74,18 +89,37 @@ def test_only_metric_slices_that_clear_the_bar_authorize_a_trade() -> None:
             "wins": 55,
             "losses": 25,
         },
+        TOTAL_GAP,
         {
-            "key": "pair:market+gap:total|15_to_25",
-            "units_per_bet": 0.20,
-            "decided": 90,
-            "wins": 70,
-            "losses": 20,
+            "key": "pair:market+gap:spread|15_to_25",
+            "units_per_bet": -0.16,
+            "decided": 133,
+            "wins": 57,
+            "losses": 76,
+        },
+        {
+            "key": "tier:A",
+            "units_per_bet": -0.037,
+            "decided": 382,
+            "wins": 189,
+            "losses": 193,
+        },
+        {
+            "key": "exchange_edge:lt_1_5",
+            "units_per_bet": -0.128,
+            "decided": 653,
+            "wins": 291,
+            "losses": 362,
         },
         {"key": "sbd_gap:15_to_25", "units_per_bet": 0.75, "decided": 10, "wins": 9, "losses": 1},
         {"key": "line_move_abs:0_to_1", "units_per_bet": 0.13, "decided": 27, "wins": 16, "losses": 11},
         {"key": "favorite_vs_dog:dog"},
     ]
-    assert system_key_set(systems) == {"exchange_edge:ge_3"}
+    assert system_key_set(systems) == {
+        "exchange_edge:ge_3",
+        "exchange_edge:1_5_to_3",
+        "pair:market+gap:total|15_to_25",
+    }
 
 
 def test_exchange_edge_at_least_3_is_a_signal_key() -> None:
@@ -126,6 +160,55 @@ def test_edge_under_3_is_dropped() -> None:
     assert "exchange_edge:1_5_to_3" in signal_keys(_with_edge(2.0))
     assert verdict["decision"] == "dropped"
     assert verdict["drop_reasons"] == ["review_gate"]
+
+
+def test_mild_edge_and_total_gap_trade_when_they_clear() -> None:
+    mild = _with_edge(2.0, market="total", home_away="over", side="Over", composite_gap=20)
+    verdict = classify_play(mild, [EDGE, MILD_EDGE, TOTAL_GAP], league="NFL")
+    assert verdict["decision"] == "traded"
+    assert "exchange_edge:1_5_to_3" in verdict["matched_systems"]
+    assert "pair:market+gap:total|15_to_25" in verdict["matched_systems"]
+
+    weak = _with_edge(0.4, composite_gap=20)
+    dropped = classify_play(
+        weak,
+        [
+            EDGE,
+            MILD_EDGE,
+            TOTAL_GAP,
+            {"key": "tier:A", "units_per_bet": -0.04, "decided": 382, "wins": 189, "losses": 193},
+            {
+                "key": "pair:market+gap:spread|15_to_25",
+                "units_per_bet": -0.16,
+                "decided": 133,
+                "wins": 57,
+                "losses": 76,
+            },
+        ],
+        league="NCAAF",
+    )
+    assert "tier:A" in signal_keys(weak)
+    assert "pair:market+gap:spread|15_to_25" in signal_keys(weak)
+    assert "exchange_edge:lt_1_5" in signal_keys(weak)
+    assert dropped["decision"] == "dropped"
+    assert dropped["drop_reasons"] == ["review_gate"]
+
+
+def test_skipped_order_is_logged_as_a_pass() -> None:
+    play = _with_edge()
+    row = candidate_for_skipped_order(
+        play,
+        [EDGE],
+        league="NCAAF",
+        slate_date="2026-08-29",
+        detail="no open spread",
+        logged_at=1,
+    )
+    assert row["decision"] == "dropped"
+    assert row["dropReasons"] == ["no open spread"]
+    assert row["matchedSystems"] == ["exchange_edge:ge_3"]
+    assert row["candidateKey"].startswith("NCAAF|2026-08-29|unc-tcu|spread|")
+    assert row["tradeData"]["exchange_confirmation"]["exchange_edge_pct"] == 4.0
 
 
 def test_large_line_move_still_trades_when_the_edge_clears() -> None:

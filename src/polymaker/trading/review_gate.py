@@ -2,8 +2,10 @@
 
 Signal keys match review_sharp_trades.extract_signals / pair_keys. A play is
 sent when any of those keys clears the trading bar: at least 40 decided bets,
-+0.10 units per bet, and a Wilson win-rate floor of 0.50. League, market, and
-price-side slices never qualify. The list is read from the published
++0.10 units per bet, and a Wilson win-rate floor of 0.50. An exchange-edge
+band may also clear a lower bar (60 decided, +0.05 units, Wilson 0.45).
+League, market, and price-side slices never qualify. Market × gap cells are
+judged by the primary bar. The list is read from the published
 sharp_trade_review report, then from config/sharp_trade_systems.json.
 """
 
@@ -21,6 +23,10 @@ from polymaker.trading.sharp import SharpPlay, qualifying_trade_data
 MIN_UNITS_PER_BET = 0.10
 MIN_TRADE_DECIDED = 40
 MIN_WILSON_LOWER = 0.50
+# Keep in sync with review_sharp_trades. Exchange-edge-only second tier.
+EDGE_MIN_UNITS_PER_BET = 0.05
+EDGE_MIN_TRADE_DECIDED = 60
+EDGE_MIN_WILSON_LOWER = 0.45
 WILSON_Z = 1.96
 # Keep in sync with review_sharp_trades.EXCLUDED_TRADE_FAMILIES.
 EXCLUDED_TRADE_FAMILIES = frozenset(
@@ -29,7 +35,6 @@ EXCLUDED_TRADE_FAMILIES = frozenset(
         "market",
         "bet_side",
         "pair:league+market",
-        "pair:market+gap",
         "favorite_vs_dog",
         "odds_band",
         "low_volume_dog",
@@ -240,16 +245,25 @@ def _system_clears_bar(row: dict[str, Any]) -> bool:
     if slice_family(key) in EXCLUDED_TRADE_FAMILIES:
         return False
     per = row.get("units_per_bet")
-    if isinstance(per, bool) or not isinstance(per, (int, float)) or per < MIN_UNITS_PER_BET:
+    if isinstance(per, bool) or not isinstance(per, (int, float)):
         return False
     decided = _as_int(row.get("decided"))
     wins = _as_int(row.get("wins"))
-    if decided is None or wins is None or decided < MIN_TRADE_DECIDED or wins < 0:
+    if decided is None or wins is None or wins < 0:
         return False
     wilson = row.get("wilson_lower")
     if isinstance(wilson, bool) or not isinstance(wilson, (int, float)):
         wilson = wilson_lower(wins, decided)
-    return wilson is not None and float(wilson) >= MIN_WILSON_LOWER
+    if wilson is None:
+        return False
+    if decided >= MIN_TRADE_DECIDED and per >= MIN_UNITS_PER_BET and wilson >= MIN_WILSON_LOWER:
+        return True
+    return (
+        slice_family(key) == "exchange_edge"
+        and decided >= EDGE_MIN_TRADE_DECIDED
+        and per >= EDGE_MIN_UNITS_PER_BET
+        and wilson >= EDGE_MIN_WILSON_LOWER
+    )
 
 
 def system_key_set(systems: Sequence[dict[str, Any] | str]) -> set[str]:
@@ -342,6 +356,38 @@ def split_slate(
     posted["plays"] = tradable
     posted["play_count"] = len(tradable)
     return posted, rows
+
+
+def candidate_for_skipped_order(
+    play: dict[str, Any],
+    systems: Sequence[dict[str, Any] | str],
+    *,
+    league: str,
+    slate_date: Any,
+    detail: str,
+    logged_at: int,
+) -> dict[str, Any]:
+    """Candidate row for a gate-approved play the order path did not send.
+
+    The decision is dropped and the skip detail is kept, so the review can
+    grade the pass. Matched systems stay on the row.
+    """
+    verdict = classify_play(play, systems, league=league)
+    reason = detail.strip() or "skipped"
+    reasons = [item for item in verdict["drop_reasons"] if item != reason]
+    reasons.append(reason)
+    return _candidate_row(
+        play,
+        {
+            "decision": "dropped",
+            "matched_systems": verdict["matched_systems"],
+            "drop_reasons": reasons,
+            "trade_data": verdict["trade_data"],
+        },
+        league=league,
+        slate_date=slate_date,
+        logged_at=logged_at,
+    )
 
 
 def load_trade_systems() -> list[dict[str, Any]]:

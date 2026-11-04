@@ -1596,6 +1596,41 @@ def append_correlation_log(rows: list[dict[str, Any]]) -> None:
         print(f"Warning: source correlation log failed: {exc}", file=sys.stderr)
 
 
+def passed_market_row(
+    game: dict[str, Any],
+    market: Market,
+    *,
+    league: str | None = None,
+) -> dict[str, Any] | None:
+    """A market we looked at and did not bet, so the review can grade the pass.
+
+    No row when the game has no splits block for this market.
+    """
+    block = game.get(market)
+    if not isinstance(block, dict):
+        return None
+    if market == "total":
+        left, right = block.get("over"), block.get("under")
+    else:
+        left, right = block.get("away"), block.get("home")
+    reason = "missing_side" if not isinstance(left, dict) or not isinstance(right, dict) else "no_agreement"
+    return {
+        "league": league or game.get("league"),
+        "date": game.get("date"),
+        "matchup": game.get("matchup"),
+        "matchup_display": game.get("matchup"),
+        "event_id": game.get("event_id"),
+        "game_time_utc": game.get("game_time_utc"),
+        "market": market,
+        "side": "",
+        "home_away": "",
+        "tier": None,
+        "composite_gap": None,
+        "qualified": False,
+        "reject_reasons": [reason],
+    }
+
+
 def process_slate(
     payload: dict[str, Any],
     markets: tuple[Market, ...] = ("moneyline",),
@@ -1626,6 +1661,8 @@ def process_slate(
                 down_note=note,
                 league=payload.get("league"),
             )
+            if play is None:
+                play = passed_market_row(game, market, league=payload.get("league"))
             if play is not None:
                 plays.append(play)
 
@@ -1706,7 +1743,7 @@ def slate_to_json(
     source_file: Path,
     markets: tuple[Market, ...],
 ) -> dict[str, Any]:
-    plays = frame.to_dict(orient="records") if not frame.empty else []
+    plays = [_json_ready(row) for row in frame.to_dict(orient="records")] if not frame.empty else []
     qualified_n = sum(1 for play in plays if play.get("qualified") is True)
     return {
         "source_file": str(source_file),

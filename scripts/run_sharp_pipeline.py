@@ -119,7 +119,46 @@ def _write_sharp(
     return tradable
 
 
-def _trade_league(cfg: Config, league: str, *, live: bool) -> list[dict[str, Any]]:
+def _log_order_skips(results: list[Any], *, dry_run: bool) -> None:
+    """Write order-time passes back onto the sharpCandidates row."""
+    from convex_sharp_alerts import post_sharp_candidates
+    from polymaker.trading.review_gate import candidate_for_skipped_order, load_trade_systems
+
+    systems = load_trade_systems()
+    logged_at = int(datetime.now(timezone.utc).timestamp() * 1000)
+    rows: list[dict[str, Any]] = []
+    for result in results:
+        if getattr(result, "action", "") != "skipped":
+            continue
+        matched = result.matched
+        play = matched.play
+        raw = play.raw if isinstance(play.raw, dict) else {}
+        if not raw:
+            continue
+        league = str(raw.get("league") or play.league or "")
+        slate_date = raw.get("date") or ""
+        rows.append(
+            candidate_for_skipped_order(
+                raw,
+                systems,
+                league=league,
+                slate_date=slate_date,
+                detail=str(result.detail or "skipped"),
+                logged_at=logged_at,
+            )
+        )
+    if rows:
+        post_sharp_candidates(rows, dry_run=dry_run)
+
+
+def _trade_league(
+    cfg: Config,
+    league: str,
+    *,
+    live: bool,
+    log_skips: bool = True,
+    convex_dry_run: bool = False,
+) -> list[dict[str, Any]]:
     from polymaker.cli import _refresh_sports_catalog, _sharp_trade_cfg
 
     try:
@@ -144,6 +183,12 @@ def _trade_league(cfg: Config, league: str, *, live: bool) -> list[dict[str, Any
         results = asyncio.run(_go())
     finally:
         store.close()
+
+    if log_skips:
+        try:
+            _log_order_skips(results, dry_run=convex_dry_run)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Convex skip log failed: {exc}", file=sys.stderr)
 
     rows: list[dict[str, Any]] = []
     for r in results:
@@ -313,7 +358,15 @@ def main() -> int:
             convex_dry_run=args.convex_dry_run,
         )
         sharp_outputs.append(out)
-        trade_rows.extend(_trade_league(cfg, league, live=live))
+        trade_rows.extend(
+            _trade_league(
+                cfg,
+                league,
+                live=live,
+                log_skips=not args.no_convex,
+                convex_dry_run=args.convex_dry_run,
+            )
+        )
 
     if not args.no_x and sharp_outputs:
         try:
