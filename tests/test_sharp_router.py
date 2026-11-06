@@ -173,6 +173,90 @@ def test_kalshi_spread_within_tolerance() -> None:
     assert matched[0].kalshi_side == "yes"
 
 
+def test_ncaab_total_matches_kalshi_when_title_says_point_total() -> None:
+    """Polymarket CBB events are moneyline-only. Kalshi titles the total ': Point Total'."""
+    play = _play(
+        league="NCAAB",
+        matchup="BELL @ IND",
+        side="Over",
+        market="total",
+        home_away="over",
+        game_time_utc=None,
+        raw={"live": 151.5, "open": 150.5, "date": "2026-11-05"},
+    )
+    event = {
+        "event_ticker": "KXNCAAMBTOTAL-26NOV05BELLIND",
+        "title": "Bellarmine vs Indiana: Point Total",
+        "sub_title": "BELL vs IND (Nov 5)",
+        "markets": [
+            {
+                "ticker": "KXNCAAMBTOTAL-26NOV05BELLIND-149",
+                "yes_sub_title": "Over 148.5 points",
+                "yes_ask_dollars": 0.40,
+                "yes_bid_dollars": 0.38,
+                "floor_strike": 148.5,
+                "occurrence_datetime": "2026-11-06T00:00:00Z",
+            },
+            {
+                "ticker": "KXNCAAMBTOTAL-26NOV05BELLIND-152",
+                "yes_sub_title": "Over 151.5 points",
+                "yes_ask_dollars": 0.52,
+                "yes_bid_dollars": 0.50,
+                "floor_strike": 151.5,
+                "occurrence_datetime": "2026-11-06T00:00:00Z",
+            },
+        ],
+    }
+    matched = match_kalshi_plays(
+        [play],
+        markets=frozenset({"total"}),
+        series_cache={"KXNCAAMBTOTAL": [event]},
+        resolved_series={"ncaab:total": "KXNCAAMBTOTAL"},
+    )
+    assert matched[0].status == "matched"
+    assert matched[0].ticker == "KXNCAAMBTOTAL-26NOV05BELLIND-152"
+    assert matched[0].kalshi_side == "yes"
+    assert matched[0].line == 151.5
+    assert matched[0].start_time == "2026-11-06T00:00:00Z"
+
+
+def test_ncaab_spread_matches_kalshi_with_four_letter_codes() -> None:
+    play = _play(
+        league="NCAAB",
+        matchup="BELL @ IND",
+        side="IND",
+        market="spread",
+        home_away="home",
+        game_time_utc=None,
+        raw={"live": -3.5, "open": -3.0, "date": "2026-11-05"},
+    )
+    event = {
+        "event_ticker": "KXNCAAMBSPREAD-26NOV05BELLIND",
+        "title": "Bellarmine vs Indiana: Spread",
+        "sub_title": "BELL vs IND (Nov 5)",
+        "markets": [
+            {
+                "ticker": "KXNCAAMBSPREAD-26NOV05BELLIND-IND4",
+                "yes_sub_title": "Indiana wins by over 3.5 points",
+                "yes_ask_dollars": 0.48,
+                "yes_bid_dollars": 0.46,
+                "floor_strike": 3.5,
+                "occurrence_datetime": "2026-11-06T00:00:00Z",
+            }
+        ],
+    }
+    matched = match_kalshi_plays(
+        [play],
+        markets=frozenset({"spread"}),
+        series_cache={"KXNCAAMBSPREAD": [event]},
+        resolved_series={"ncaab:spread": "KXNCAAMBSPREAD"},
+    )
+    assert matched[0].status == "matched"
+    assert matched[0].ticker == "KXNCAAMBSPREAD-26NOV05BELLIND-IND4"
+    assert matched[0].kalshi_side == "yes"
+    assert matched[0].start_time == "2026-11-06T00:00:00Z"
+
+
 def test_kalshi_spread_line_mismatch_skips() -> None:
     play = _play(
         side="DAL",

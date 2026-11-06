@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from polymaker.catalog.sports import DEFAULT_PREGAME_BUFFER_MINUTES, is_pre_game
+from polymaker.catalog.sports import DEFAULT_PREGAME_BUFFER_MINUTES, is_pre_game, parse_utc
 from polymaker.config import Config
 from polymaker.domain import Side
 from polymaker.execution.gateway import ExecutionGateway
@@ -218,9 +218,19 @@ async def _trade_one(
         and bool(kalshi.kalshi_side)
     )
     if not poly_matched and not kalshi_matched:
-        detail = m.detail or m.status
-        if kalshi is not None and kalshi.detail and not poly_enabled:
-            detail = kalshi.detail
+        detail = (m.detail or m.status or "").strip()
+        kalshi_detail = (kalshi.detail if kalshi is not None else "").strip()
+        if kalshi_detail and not poly_enabled:
+            detail = kalshi_detail
+        elif (
+            kalshi_enabled
+            and kalshi_detail
+            and detail.lower().startswith("no open ")
+            and kalshi_detail.lower() != detail.lower()
+        ):
+            # Polymarket often has no NCAAB spread or total. Keep Kalshi's reason
+            # when that is why the order did not go out.
+            detail = f"{detail}; {kalshi_detail}"
         return SharpTradeResult(matched=m, action="skipped", detail=detail)
 
     canonical = canonical_trade_key(
@@ -238,7 +248,7 @@ async def _trade_one(
     if canonical in already or (slug_key is not None and slug_key in already):
         return SharpTradeResult(matched=m, action="skipped", detail="already traded (dedupe log)")
 
-    if not _is_pre_game_play(m, trade_cfg.pregame_buffer_minutes):
+    if not _is_pre_game_play(m, trade_cfg.pregame_buffer_minutes, kalshi=kalshi):
         return SharpTradeResult(
             matched=m, action="skipped", detail="not pre-game (startTime)"
         )
@@ -724,14 +734,29 @@ async def _execute_kalshi(
     )
 
 
-def _is_pre_game_play(m: MatchedPlay, buffer_minutes: float) -> bool:
-    """Final startTime gate. Does not trust event.live / gameStatus."""
-    start = None
-    if m.meta is not None:
-        start = m.meta.start_time_iso
-    if not start:
-        start = m.play.game_time_utc
-    return is_pre_game({"startTime": start}, buffer_minutes)
+def _is_pre_game_play(
+    m: MatchedPlay,
+    buffer_minutes: float,
+    kalshi: KalshiMatchedPlay | None = None,
+) -> bool:
+    """Final startTime gate. Does not trust event.live / gameStatus.
+
+    A matched Polymarket market uses Gamma startTime. NCAAB spreads and totals
+    often have no Polymarket line, and the DraftKings slate has no
+    game_time_utc, so a Kalshi-only order uses that contract's
+    occurrence_datetime. Missing every clock still fails closed.
+    """
+    starts: list[str] = []
+    if m.meta is not None and m.meta.start_time_iso:
+        starts.append(m.meta.start_time_iso)
+    if m.play.game_time_utc:
+        starts.append(str(m.play.game_time_utc))
+    if kalshi is not None and kalshi.start_time:
+        starts.append(kalshi.start_time)
+    for start in starts:
+        if parse_utc(start) is not None:
+            return is_pre_game({"startTime": start}, buffer_minutes)
+    return False
 
 
 # NCAAF/NFL game totals (Over/Under) stake this much even at Tier A/A+.

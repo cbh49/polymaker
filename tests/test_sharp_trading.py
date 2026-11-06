@@ -846,6 +846,132 @@ async def test_trade_skips_when_not_pre_game() -> None:
     assert "pre-game" in result.detail
 
 
+@pytest.mark.asyncio
+async def test_ncaab_kalshi_total_trades_without_polymarket_line() -> None:
+    """A 7pm ET tip with no Polymarket total and no sportsbook UTC clock still trades."""
+    from datetime import UTC, datetime, timedelta
+
+    from polymaker.trading.execute import SharpTradeConfig, _trade_one
+    from polymaker.trading.kalshi_match import KalshiMatchedPlay, match_kalshi_plays
+    from polymaker.trading.match import MatchedPlay
+    from polymaker.trading.teams import resolve_team
+
+    tip = datetime.now(UTC) + timedelta(hours=4)
+    play = SharpPlay(
+        league="NCAAB",
+        matchup="BELL @ IND",
+        side="Over",
+        market="total",
+        tier="A",
+        home_away="over",
+        game_time_utc=None,
+        implied_fair_prob=0.55,
+        rlm_confirmed=True,
+        composite_gap=12.0,
+        source_path="x",
+        raw={"live": 151.5, "open": 150.5, "date": tip.date().isoformat()},
+    )
+    event = {
+        "event_ticker": "KXNCAAMBTOTAL-26NOV05BELLIND",
+        "title": "Bellarmine vs Indiana: Point Total",
+        "sub_title": "BELL vs IND (Nov 5)",
+        "markets": [
+            {
+                "ticker": "KXNCAAMBTOTAL-26NOV05BELLIND-152",
+                "yes_sub_title": "Over 151.5 points",
+                "yes_ask_dollars": 0.52,
+                "yes_bid_dollars": 0.50,
+                "floor_strike": 151.5,
+                "occurrence_datetime": tip.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        ],
+    }
+    kalshi = match_kalshi_plays(
+        [play],
+        markets=frozenset({"total"}),
+        series_cache={"KXNCAAMBTOTAL": [event]},
+        resolved_series={"ncaab:total": "KXNCAAMBTOTAL"},
+    )[0]
+    assert kalshi.status == "matched"
+    away = resolve_team("NCAAB", "BELL")
+    home = resolve_team("NCAAB", "IND")
+    assert away is not None and home is not None
+    poly = MatchedPlay(
+        play=play,
+        away=away,
+        home=home,
+        side_team=away,
+        event_date=tip.date(),
+        slug=None,
+        meta=None,
+        token=None,
+        status="no_market",
+        detail="no open total",
+    )
+
+    class _Gw:
+        async def get_book(self, token_id: str) -> dict:
+            raise AssertionError("polymarket book is not required")
+
+    result = await _trade_one(poly, _Gw(), SharpTradeConfig(), set(), kalshi=kalshi)  # type: ignore[arg-type]
+    assert result.action == "dry_run"
+    assert result.venue == "kalshi"
+    assert result.ticker == "KXNCAAMBTOTAL-26NOV05BELLIND-152"
+
+
+@pytest.mark.asyncio
+async def test_kalshi_only_without_any_tip_time_still_fails_closed() -> None:
+    from polymaker.trading.execute import SharpTradeConfig, _trade_one
+    from polymaker.trading.kalshi_match import KalshiMatchedPlay
+    from polymaker.trading.match import MatchedPlay
+    from polymaker.trading.teams import TeamRef
+
+    away = TeamRef("BELL", "bell", "Bellarmine")
+    home = TeamRef("IND", "ind", "Indiana")
+    play = SharpPlay(
+        league="NCAAB",
+        matchup="BELL @ IND",
+        side="Over",
+        market="total",
+        tier="A",
+        home_away="over",
+        game_time_utc=None,
+        implied_fair_prob=0.55,
+        rlm_confirmed=True,
+        composite_gap=12.0,
+        source_path="x",
+        raw={"live": 151.5},
+    )
+    poly = MatchedPlay(
+        play=play,
+        away=away,
+        home=home,
+        side_team=away,
+        event_date=None,
+        slug=None,
+        meta=None,
+        token=None,
+        status="no_market",
+        detail="no open total",
+    )
+    kalshi = KalshiMatchedPlay(
+        play=play,
+        away=away,
+        home=home,
+        side_team=away,
+        event_date=None,
+        ticker="KXNCAAMBTOTAL-26NOV05BELLIND-152",
+        kalshi_side="yes",
+        line=151.5,
+        ask=0.52,
+        status="matched",
+        start_time=None,
+    )
+    result = await _trade_one(poly, object(), SharpTradeConfig(), set(), kalshi=kalshi)  # type: ignore[arg-type]
+    assert result.action == "skipped"
+    assert result.detail == "not pre-game (startTime)"
+
+
 def test_price_gate_max_ask() -> None:
     from polymaker.trading.execute import SharpTradeConfig, _price_gate
 

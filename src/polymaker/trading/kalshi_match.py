@@ -92,6 +92,11 @@ _TICKER_DATE_RE = re.compile(
     re.I,
 )
 _TITLE_VS_RE = re.compile(r"(.+?)\s+vs\.?\s+(.+?)(?:\s*\(|$)", re.I)
+# Kalshi NCAAB totals are "Bellarmine vs Indiana: Point Total", not ": Total Points".
+_MARKET_TITLE_SUFFIX = re.compile(
+    r"\s*:\s*(?:Point Total|Total Points|Total|Spread|Moneyline|Winner)\s*$",
+    re.I,
+)
 _TOTAL_SIDES = frozenset({"over", "under"})
 
 
@@ -110,6 +115,7 @@ class KalshiMatchedPlay:
     detail: str = ""
     event_ticker: str | None = None
     close_time: str | None = None
+    start_time: str | None = None  # market occurrence_datetime, the scheduled tip
 
 
 def match_kalshi_plays(
@@ -290,6 +296,7 @@ def _match_one(
         detail="",
         event_ticker=str(event.get("event_ticker") or "") or None,
         close_time=str(event.get("close_time") or "") or None,
+        start_time=_occurrence_time(event, ticker),
     )
 
 
@@ -441,17 +448,29 @@ def _label_is_team(label: str, team: TeamRef) -> bool:
     return _abbr_match(label, team)
 
 
+def _occurrence_time(event: dict[str, Any], ticker: str) -> str | None:
+    """Scheduled tip on the matched contract. close_time is settlement, not kickoff."""
+    for market in event.get("markets") or []:
+        if not isinstance(market, dict):
+            continue
+        if str(market.get("ticker") or "") != ticker:
+            continue
+        raw = market.get("occurrence_datetime")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
 def _event_participant_names(event: dict[str, Any]) -> list[str]:
+    title = _MARKET_TITLE_SUFFIX.sub("", str(event.get("title") or "")).strip()
+    match = _TITLE_VS_RE.search(title)
+    if match:
+        left, right = match.group(1).strip(), match.group(2).strip()
+        if left and right:
+            return [left, right]
     parsed = parse_kalshi_sub_title(str(event.get("sub_title") or ""))
     if parsed is not None:
         return [parsed[0], parsed[1]]
-    title = str(event.get("title") or "")
-    for suffix in (": Spread", ": Total Points", ": Moneyline", ": Winner"):
-        if title.endswith(suffix):
-            title = title[: -len(suffix)]
-    match = _TITLE_VS_RE.search(title)
-    if match:
-        return [match.group(1).strip(), match.group(2).strip()]
     sub = str(event.get("sub_title") or "")
     match = _TITLE_VS_RE.search(sub)
     if match:
