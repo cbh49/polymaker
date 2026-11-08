@@ -19,6 +19,7 @@ from cbb_team_map import (  # noqa: E402
     poly_code,
 )
 from find_sharp_money import (  # noqa: E402
+    consensus_gap_floor,
     ml_skip_below_fair,
     primary_source_label,
     process_game,
@@ -80,6 +81,9 @@ def test_ncaab_sharp_sources() -> None:
     assert primary_source_label("CBB") == "draftkings"
     assert ml_skip_below_fair("NCAAB") == 0.20
     assert ml_skip_below_fair("CBB") == 0.20
+    assert consensus_gap_floor("NCAAB") == 15.0
+    assert consensus_gap_floor("CBB") == 15.0
+    assert consensus_gap_floor("NBA") is None
     assert slate_window_days("NCAAB") == 7
     assert slate_window_days("CBB") == 7
 
@@ -174,3 +178,96 @@ def test_ncaab_process_game_moneyline() -> None:
     assert play["home_away"] == "away"
     assert play["rlm_confirmed"] is True
     assert play["qualified"] is True
+    assert "consensus_gap" not in play["reject_reasons"]
+
+
+def _ncaab_moneyline(away: dict, home: dict) -> dict:
+    return {
+        "matchup": "ARMY @ DUKE",
+        "away": "Army",
+        "home": "Duke",
+        "date": "2026-11-02",
+        "league": "NCAAB",
+        "moneyline": {"away": away, "home": home},
+    }
+
+
+def test_ncaab_thin_sbd_gap_does_not_qualify() -> None:
+    """A huge DraftKings gap must not qualify on a 4-point SBD gap."""
+    play = process_game(
+        _ncaab_moneyline(
+            _side(
+                public=20,
+                handle=80,
+                sbd_pub=40,
+                sbd_h=44,
+                sao_public_bet_pct=20,
+                sao_handle_bet_pct=60,
+                selection="ARMY",
+                open=280,
+                live=250,
+            ),
+            _side(
+                public=80,
+                handle=20,
+                sbd_pub=60,
+                sbd_h=56,
+                sao_public_bet_pct=80,
+                sao_handle_bet_pct=40,
+                selection="DUKE",
+                open=-355,
+                live=-320,
+            ),
+        ),
+        market="moneyline",
+        sources=sources_for_league("NCAAB"),
+        league="NCAAB",
+    )
+    assert play is not None
+    assert play["rlm_confirmed"] is True
+    assert play["composite_gap"] >= 15
+    assert play["sbd_gap"] == 4
+    assert play["qualified"] is False
+    assert play["tier"] is None
+    assert play["would_be_tier"] == "A"
+    assert "consensus_gap" in play["reject_reasons"]
+    assert "gap" not in play["reject_reasons"]
+
+
+def test_ncaab_sao_stands_in_only_when_it_clears_the_floor() -> None:
+    def side(public, handle, sao_pub, sao_h, **extra):
+        row = {
+            "public_bet_pct": public,
+            "handle_bet_pct": handle,
+            "sao_public_bet_pct": sao_pub,
+            "sao_handle_bet_pct": sao_h,
+        }
+        row.update(extra)
+        return row
+
+    thin = process_game(
+        _ncaab_moneyline(
+            side(20, 80, 40, 44, selection="ARMY", open=280, live=250),
+            side(80, 20, 60, 56, selection="DUKE", open=-355, live=-320),
+        ),
+        market="moneyline",
+        sources=sources_for_league("NCAAB"),
+        league="CBB",
+    )
+    assert thin is not None
+    assert thin["qualified"] is False
+    assert "consensus_gap" in thin["reject_reasons"]
+
+    confirmed = process_game(
+        _ncaab_moneyline(
+            side(20, 80, 25, 45, selection="ARMY", open=280, live=250),
+            side(80, 20, 75, 55, selection="DUKE", open=-355, live=-320),
+        ),
+        market="moneyline",
+        sources=sources_for_league("NCAAB"),
+        league="NCAAB",
+    )
+    assert confirmed is not None
+    assert confirmed["qualified"] is True
+    assert confirmed["sao_gap"] == 20
+    assert "consensus_gap" not in confirmed["reject_reasons"]

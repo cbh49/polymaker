@@ -24,6 +24,9 @@ that leaked into the line field and is ignored.
 WNBA/UFC score DraftKings alone. MLB/NBA/NHL/NCAAF/NCAAB/NFL need PlayerProps or DraftKings
 plus SportsBettingDime. ScoresAndOdds is the same bet % and handle % as
 SportsBettingDime, so it votes only on a market where SBD has no gap.
+NCAAB also requires that confirming feed's own gap to clear 15. A huge
+DraftKings gap can pull the weighted average over 15 while SportsBettingDime
+is only barely positive, and those plays are not qualified.
 If the primary feed is null on every game, SBD qualifies alone, and SAO
 qualifies only when SBD is missing.
 Pinnacle is skipped. RLM source order:
@@ -116,6 +119,14 @@ ML_SKIP_BELOW_FAIR: dict[str, float] = {
     "NCAAF": 0.20,
     "NCAAB": 0.20,
     "NFL": 0.20,
+}
+# The confirming feed must clear this on its own. The composite can still
+# clear 15 when DraftKings is 40–70 and SportsBettingDime is only +2 to +14.
+# Through Nov 7 2026 those NCAAB fills were 6-15, −9.44u. SBD is the feed.
+# SAO is used only when SBD published no gap. Leagues not listed stay on the
+# weighted composite alone.
+CONSENSUS_GAP_FLOOR: dict[str, float] = {
+    "NCAAB": TIER_A_THRESHOLD,
 }
 
 # Exchange confirmation (enrichment only; never filters plays).
@@ -829,6 +840,18 @@ def _gap_rejects(n_agreeing: int, composite_gap: float, n_sources: int) -> bool:
     return composite_gap < TIER_B_THRESHOLD
 
 
+def confirming_gap(side_gaps: SourceGaps) -> float | None:
+    """Gap on the sharp side from SBD, or from SAO when SBD has no number."""
+    gaps = side_gaps.as_dict()
+    if gaps.get("sbd") is not None:
+        return gaps["sbd"]
+    return gaps.get("sao")
+
+
+def consensus_gap_floor(league: str | None) -> float | None:
+    return CONSENSUS_GAP_FLOOR.get(_league_key(league))
+
+
 def point_move_rejects(market: Market, line_move: float | None) -> bool:
     """True when a spread or total moved more than MAX_POINT_LINE_MOVE points."""
     if market not in {"spread", "total"}:
@@ -847,8 +870,15 @@ def rejection_reasons(
     sbd_override: bool,
     market: Market,
     line_move: float | None,
+    league: str | None = None,
+    confirming_gap_value: float | None = None,
 ) -> list[str]:
-    """Every failed gate, so a later review can tell them apart."""
+    """Every failed gate, so a later review can tell them apart.
+
+    `line_move` is recorded and does not by itself unqualify a play.
+    `consensus_gap` does: NCAAB will not trade a composite that cleared
+    only because the primary gap swamped a thin confirming feed.
+    """
     reasons: list[str] = []
     if not rlm_confirmed:
         reasons.append("rlm")
@@ -856,6 +886,9 @@ def rejection_reasons(
         reasons.append("gap")
     if sbd_override:
         reasons.append("sbd_override")
+    floor = consensus_gap_floor(league)
+    if floor is not None and (confirming_gap_value is None or confirming_gap_value < floor):
+        reasons.append("consensus_gap")
     if point_move_rejects(market, line_move):
         reasons.append("line_move")
     return reasons
@@ -1511,6 +1544,7 @@ def process_game(
         sources=sources,
         public_field=public_field,
     )
+    resolved_league = league or game.get("league")
     reasons = rejection_reasons(
         rlm_confirmed=rlm.rlm_confirmed,
         n_agreeing=agreement.n_agreeing,
@@ -1519,10 +1553,13 @@ def process_game(
         sbd_override=agreement.sbd_override,
         market=market,
         line_move=_as_float(play.get("line_move")),
+        league=str(resolved_league) if resolved_league else None,
+        confirming_gap_value=confirming_gap(side_gaps),
     )
     # A large point move is recorded, not a veto. The review gate still
     # trades the play when it matches another profitable system.
-    qualified = tier is not None
+    # consensus_gap is a veto: the confirming feed has to clear its own floor.
+    qualified = tier is not None and "consensus_gap" not in reasons
     play["qualified"] = qualified
     play["reject_reasons"] = reasons
     play["would_be_tier"] = agreement_tier(agreement.n_agreeing, n_sources)
@@ -1722,6 +1759,7 @@ def config_snapshot(
     cfg["ml_to_spread_max_fair"] = ML_TO_SPREAD_MAX_FAIR
     cfg["ml_to_spread_high_fair"] = ML_TO_SPREAD_HIGH_FAIR
     cfg["ml_skip_below_fair"] = dict(ML_SKIP_BELOW_FAIR)
+    cfg["consensus_gap_floor"] = dict(CONSENSUS_GAP_FLOOR)
     return cfg
 
 

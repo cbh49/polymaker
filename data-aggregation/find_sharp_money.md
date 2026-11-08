@@ -14,6 +14,8 @@ A play qualifies only when three things are true:
 2. The weighted gap on that side is at least 15.
 3. The line moved toward that side and away from the public side (reverse line movement).
 
+NCAAB adds a fourth gate. SportsBettingDime's own gap on that side must also be at least 15. ScoresAndOdds is held to the same floor only when SportsBettingDime published no number. A 50-point DraftKings gap and a 4-point SportsBettingDime gap still average above 15, and those plays are written with `qualified: false` and `consensus_gap` in `reject_reasons`. Other leagues stay on the weighted average alone.
+
 Games that fail step 1 are dropped. Games that pass step 1 and fail step 2 or 3 are still written, with `qualified: false`, so a later review can see why they missed.
 
 ## Sources by league
