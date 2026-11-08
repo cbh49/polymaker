@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from polymaker.trading.review_gate import (
+    _fallback_avoid,
+    _fallback_systems,
     candidate_for_skipped_order,
     classify_play,
     filter_sharp_plays,
@@ -441,3 +443,84 @@ def test_qualified_ncaab_bypasses_the_review_gate() -> None:
     assert classify_play(rejected, [], league="NCAAB")["drop_reasons"] == ["rlm"]
     skipped = _play(league="NCAAB", market="moneyline", trade_market="skip", live=250, play_odds=250)
     assert classify_play(skipped, [], league="NCAAB")["drop_reasons"] == ["trade_market_skip"]
+
+
+def test_avoid_key_drops_a_play_the_positive_list_would_trade() -> None:
+    play = _with_edge(league="NFL")
+    avoid = [
+        {
+            "key": "sbd_gap:15_to_25",
+            "units_per_bet": -0.12,
+            "decided": 80,
+            "wins": 30,
+            "losses": 50,
+        }
+    ]
+    verdict = classify_play(play, [EDGE], league="NFL", avoid=avoid)
+    assert verdict["decision"] == "dropped"
+    assert verdict["drop_reasons"] == ["avoid_system"]
+    assert verdict["matched_systems"] == ["exchange_edge:ge_3"]
+    assert filter_sharp_plays([_sharp(play, league="NFL")], [EDGE], avoid) == []
+    mild = {
+        "key": "sbd_gap:15_to_25",
+        "units_per_bet": -0.02,
+        "decided": 80,
+        "wins": 35,
+        "losses": 45,
+    }
+    kept = classify_play(play, [EDGE], league="NFL", avoid=[mild])
+    assert kept["decision"] == "traded"
+
+
+def test_league_metric_pair_matches_only_when_both_are_present() -> None:
+    nfl = _with_edge(league="NFL", composite_gap=42)
+    nba = _with_edge(league="NBA", composite_gap=42)
+    assert "pair:league+composite_gap:NFL|ge_40" in signal_keys(nfl, league="NFL")
+    assert "pair:league+composite_gap:NFL|ge_40" not in signal_keys(nba, league="NBA")
+    assert "pair:league+composite_gap:NBA|ge_40" in signal_keys(nba, league="NBA")
+    system = {
+        "key": "pair:league+composite_gap:NFL|ge_40",
+        "units_per_bet": 0.2,
+        "decided": 50,
+        "wins": 35,
+        "losses": 15,
+        "wilson_lower": 0.55,
+    }
+    assert classify_play(nfl, [system], league="NFL")["decision"] == "traded"
+    assert classify_play(nba, [system], league="NBA")["decision"] == "dropped"
+
+
+def test_october_fallback_lists_clear_the_bars() -> None:
+    trade = {row["key"] for row in _fallback_systems()}
+    avoid = {row["key"] for row in _fallback_avoid()}
+    assert trade == {
+        "sbd_gap:15_to_25",
+        "pair:league+sbd_gap:NBA|lt_15",
+        "pair:league+rlm_source_used:NBA|eva",
+        "pair:league+public_pct:NCAAF|lt_30",
+    }
+    assert avoid == {
+        "sao_gap:lt_15",
+        "ml_spread_divergence:false",
+        "sbd_gap:25_to_40",
+        "model_confidence:78_to_85",
+        "pair:league+public_pct:NCAAF|30_to_45",
+        "pair:market+gap:spread|25_to_40",
+        "pair:league+ml_spread_divergence:NCAAF|false",
+    }
+
+
+def test_league_override_ignores_an_avoid_key() -> None:
+    play = _play(league="NCAAB", event_id="duke-unc")
+    avoid = [
+        {
+            "key": "composite_gap:15_to_25",
+            "units_per_bet": -0.2,
+            "decided": 40,
+            "wins": 10,
+            "losses": 30,
+        }
+    ]
+    verdict = classify_play(play, [], league="NCAAB", avoid=avoid)
+    assert verdict["decision"] == "traded"
+    assert verdict["matched_systems"] == ["league_override:NCAAB"]

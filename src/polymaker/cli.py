@@ -272,7 +272,7 @@ def match_sharp(
     """Match sharp-money plays to Polymarket MLB/WNBA/NBA/NHL/UFC/NCAAF/NCAAB/NFL markets (no orders)."""
     from polymaker.trading.execute import filter_plays, load_configured_plays
     from polymaker.trading.match import match_sharp_plays
-    from polymaker.trading.review_gate import filter_sharp_plays, load_trade_systems
+    from polymaker.trading.review_gate import filter_sharp_plays, load_review_lists
     from polymaker.trading.sharp import plays_for_orders
 
     league_key = _normalize_league(league)
@@ -286,9 +286,11 @@ def match_sharp(
         raise typer.Exit(1) from exc
 
     trade_cfg = _sharp_trade_cfg(cfg, tier=tier, dry_run=True)
+    systems, avoid = load_review_lists()
     plays = filter_sharp_plays(
         plays_for_orders(filter_plays(plays, trade_cfg, league=league_key)),
-        load_trade_systems(),
+        systems,
+        avoid,
     )
     if not plays:
         console.print(
@@ -353,7 +355,7 @@ def trade_sharp(
         run_sharp_trades,
     )
     from polymaker.trading.match import match_sharp_plays
-    from polymaker.trading.review_gate import filter_sharp_plays, load_trade_systems
+    from polymaker.trading.review_gate import filter_sharp_plays, load_review_lists
     from polymaker.trading.sharp import plays_for_orders
 
     league_key = _normalize_league(league)
@@ -373,9 +375,11 @@ def trade_sharp(
         usd_b=usd_b,
         dry_run=not live,
     )
+    systems, avoid = load_review_lists()
     plays = filter_sharp_plays(
         plays_for_orders(filter_plays(plays, trade_cfg, league=league_key)),
-        load_trade_systems(),
+        systems,
+        avoid,
     )
     if not plays:
         console.print(

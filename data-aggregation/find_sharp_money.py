@@ -103,7 +103,8 @@ MAX_POINT_LINE_MOVE = 1.0
 
 # Qualified moneyline outside this no-vig band is bought as that team's spread.
 # At or under 0.48, or above 0.60 (the sharp max_ask). Exactly 0.60 stays a
-# moneyline. The published row stays a moneyline so the card still shows the ML splits.
+# moneyline, except NCAAF, which skips a fair above 0.48 through 0.60.
+# The published row stays a moneyline so the card still shows the ML splits.
 # Below the league floor, neither the moneyline nor the spread is traded.
 ML_TO_SPREAD_MAX_FAIR = 0.48
 ML_TO_SPREAD_HIGH_FAIR = 0.60
@@ -1359,15 +1360,24 @@ def _attach_ml_trade_target(
     """Buy the team spread when a qualified ML fair is outside the tradable band.
 
     At or under 0.48, or above 0.60 (the sharp max_ask). Exactly 0.60 stays
-    a moneyline. NBA under 0.25, and NCAAF/NCAAB/NFL under 0.20, skip both markets.
+    a moneyline. NCAAF skips a fair above 0.48 through 0.60. NBA under 0.25,
+    and NCAAF/NCAAB/NFL under 0.20, skip both markets.
     Card fields (market, play_label, open, live) stay the moneyline.
     """
     if play.get("market") != "moneyline" or play.get("qualified") is not True:
         return
     fair = _as_float(play.get("implied_fair_prob"))
-    if fair is None or ML_TO_SPREAD_MAX_FAIR < fair <= ML_TO_SPREAD_HIGH_FAIR:
+    if fair is None:
         return
     resolved = league if league else game.get("league")
+    if (
+        _league_key(str(resolved) if resolved else None) == "NCAAF"
+        and ML_TO_SPREAD_MAX_FAIR < fair <= ML_TO_SPREAD_HIGH_FAIR
+    ):
+        play["trade_market"] = "skip"
+        return
+    if ML_TO_SPREAD_MAX_FAIR < fair <= ML_TO_SPREAD_HIGH_FAIR:
+        return
     floor = ml_skip_below_fair(str(resolved) if resolved else None)
     if floor is not None and fair <= ML_TO_SPREAD_MAX_FAIR and fair < floor:
         play["trade_market"] = "skip"

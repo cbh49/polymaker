@@ -55,7 +55,7 @@ from polymaker.trading.execute import (  # noqa: E402
 )
 from polymaker.trading.review_gate import (  # noqa: E402
     filter_sharp_plays,
-    load_trade_systems,
+    load_review_lists,
     split_slate,
 )
 from polymaker.trading.sharp import plays_for_orders  # noqa: E402
@@ -93,9 +93,9 @@ def _write_sharp(
     _frame_for_csv(frame).to_csv(csv_out, index=False)
     print_summary(frame)
     print(f"JSON → {json_out}")
-    systems = load_trade_systems()
+    systems, avoid = load_review_lists()
     logged_at = int(datetime.now(timezone.utc).timestamp() * 1000)
-    tradable, candidates = split_slate(output, systems, logged_at=logged_at)
+    tradable, candidates = split_slate(output, systems, logged_at=logged_at, avoid=avoid)
     dropped = len(candidates) - len(tradable.get("plays") or [])
     print(
         f"Review gate: {len(tradable.get('plays') or [])} tradable, "
@@ -122,9 +122,9 @@ def _write_sharp(
 def _log_order_skips(results: list[Any], *, dry_run: bool) -> None:
     """Write order-time passes back onto the sharpCandidates row."""
     from convex_sharp_alerts import post_sharp_candidates
-    from polymaker.trading.review_gate import candidate_for_skipped_order, load_trade_systems
+    from polymaker.trading.review_gate import candidate_for_skipped_order, load_review_lists
 
-    systems = load_trade_systems()
+    systems, avoid = load_review_lists()
     logged_at = int(datetime.now(timezone.utc).timestamp() * 1000)
     rows: list[dict[str, Any]] = []
     for result in results:
@@ -145,6 +145,7 @@ def _log_order_skips(results: list[Any], *, dry_run: bool) -> None:
                 slate_date=slate_date,
                 detail=str(result.detail or "skipped"),
                 logged_at=logged_at,
+                avoid=avoid,
             )
         )
     if rows:
@@ -168,7 +169,8 @@ def _trade_league(
         return []
     trade_cfg = _sharp_trade_cfg(cfg, dry_run=not live)
     plays = plays_for_orders(filter_plays(plays, trade_cfg, league=league))
-    plays = filter_sharp_plays(plays, load_trade_systems())
+    systems, avoid = load_review_lists()
+    plays = filter_sharp_plays(plays, systems, avoid)
     if not plays:
         print(f"No sharp plays after filters (league={league}).")
         return []

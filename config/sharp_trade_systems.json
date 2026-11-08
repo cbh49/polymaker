@@ -3,16 +3,94 @@
   "min_decided": 40,
   "min_wilson_lower": 0.5,
   "source": "sharp_trade_review",
-  "generated_at": "2026-11-02T14:06:11.830143+00:00",
+  "generated_at": "2026-11-08T05:40:00+00:00",
+  "avoid": [
+    {
+      "key": "sao_gap:lt_15",
+      "units_per_bet": -0.26,
+      "decided": 53,
+      "wins": 20,
+      "losses": 33
+    },
+    {
+      "key": "ml_spread_divergence:false",
+      "units_per_bet": -0.19,
+      "decided": 86,
+      "wins": 34,
+      "losses": 52
+    },
+    {
+      "key": "sbd_gap:25_to_40",
+      "units_per_bet": -0.17,
+      "decided": 46,
+      "wins": 19,
+      "losses": 27
+    },
+    {
+      "key": "model_confidence:78_to_85",
+      "units_per_bet": -0.16,
+      "decided": 48,
+      "wins": 21,
+      "losses": 27
+    },
+    {
+      "key": "pair:league+public_pct:NCAAF|30_to_45",
+      "units_per_bet": -0.15,
+      "decided": 71,
+      "wins": 31,
+      "losses": 40
+    },
+    {
+      "key": "pair:market+gap:spread|25_to_40",
+      "units_per_bet": -0.14,
+      "decided": 53,
+      "wins": 24,
+      "losses": 29
+    },
+    {
+      "key": "pair:league+ml_spread_divergence:NCAAF|false",
+      "units_per_bet": -0.12,
+      "decided": 45,
+      "wins": 19,
+      "losses": 26
+    }
+  ],
   "systems": [
     {
-      "key": "exchange_edge:ge_3",
-      "units_per_bet": 0.2682,
-      "decided": 167,
-      "wins": 111,
-      "losses": 56,
-      "hit_rate": 0.6647,
-      "wilson_lower": 0.5901
+      "key": "sbd_gap:15_to_25",
+      "units_per_bet": 0.24,
+      "decided": 54,
+      "wins": 35,
+      "losses": 19,
+      "hit_rate": 0.6481,
+      "wilson_lower": 0.5148
+    },
+    {
+      "key": "pair:league+sbd_gap:NBA|lt_15",
+      "units_per_bet": 0.25,
+      "decided": 43,
+      "wins": 28,
+      "losses": 15,
+      "hit_rate": 0.6512,
+      "wilson_lower": 0.5017
+    },
+    {
+      "key": "pair:league+rlm_source_used:NBA|eva",
+      "units_per_bet": 0.25,
+      "decided": 43,
+      "wins": 28,
+      "losses": 15,
+      "hit_rate": 0.6512,
+      "wilson_lower": 0.5017
+    },
+    {
+      "key": "pair:league+public_pct:NCAAF|lt_30",
+      "units_per_bet": 0.22,
+      "decided": 80,
+      "wins": 50,
+      "losses": 30,
+      "hit_rate": 0.625,
+      "wilson_lower": 0.5155
     }
   ]
 }

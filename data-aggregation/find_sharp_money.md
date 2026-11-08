@@ -76,7 +76,7 @@ These steps never remove a play.
 
 Tier A becomes **A+** when all three are true: exchange edge ≥ 1.5, Polymarket history confirms, and Polymarket liquidity is at least $10,000.
 
-**What to buy.** The published row stays a moneyline so the card still shows the moneyline splits. If a qualified moneyline’s no-vig fair is at or under 0.48, or above 0.60, `trade_market` is set to that team’s spread (`trade_line` / `trade_odds`). Exactly 0.60 stays a moneyline. If the fair is outside the band and there is no spread number, `trade_market` is `skip`.
+**What to buy.** The published row stays a moneyline so the card still shows the moneyline splits. If a qualified moneyline’s no-vig fair is at or under 0.48, or above 0.60, `trade_market` is set to that team’s spread (`trade_line` / `trade_odds`). Exactly 0.60 stays a moneyline. NCAAF sets `trade_market` to `skip` when the fair is above 0.48 through 0.60, so that pocket is not ordered. If the fair is outside the band and there is no spread number, `trade_market` is `skip`.
 
 A cheap moneyline below the league floor skips both markets, even when a spread number exists. NBA skips under 0.25. NCAAF and NFL (and CFB) skip under 0.20. Exactly on the floor still buys the spread. Other leagues still buy the spread all the way down through 0.48.
 

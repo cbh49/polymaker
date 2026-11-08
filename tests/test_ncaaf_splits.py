@@ -1279,6 +1279,75 @@ def test_ml_inside_the_band_stays_a_moneyline() -> None:
     assert "trade_market" not in play
 
 
+def test_ncaaf_ml_inside_the_band_is_skipped() -> None:
+    """-130/+110 de-vigs to about 0.54. NCAAF sends no order in that band."""
+    game = {
+        "matchup": "UNC @ TCU",
+        "away": "North Carolina",
+        "home": "TCU",
+        "date": "2026-10-04",
+        "moneyline": {
+            "away": _side(
+                public=70,
+                handle=45,
+                vsin_pub=72,
+                vsin_h=48,
+                sbd_pub=68,
+                sbd_h=48,
+                selection="UNC",
+                open=100,
+                live=110,
+            ),
+            "home": _side(
+                public=30,
+                handle=55,
+                vsin_pub=28,
+                vsin_h=52,
+                sbd_pub=32,
+                sbd_h=52,
+                selection="TCU",
+                open=-120,
+                live=-130,
+            ),
+        },
+        "spread": {
+            "away": _side(
+                public=60,
+                handle=40,
+                vsin_pub=60,
+                vsin_h=40,
+                sbd_pub=60,
+                sbd_h=40,
+                selection="UNC",
+                open=3.0,
+                live=2.5,
+                live_odds=-110,
+            ),
+            "home": _side(
+                public=40,
+                handle=60,
+                vsin_pub=40,
+                vsin_h=60,
+                sbd_pub=40,
+                sbd_h=60,
+                selection="TCU",
+                open=-3.0,
+                live=-2.5,
+                live_odds=-110,
+            ),
+        },
+    }
+    play = process_game(
+        game, market="moneyline", sources=sources_for_league("NCAAF"), league="NCAAF"
+    )
+    assert play is not None
+    assert play["qualified"] is True
+    assert play["market"] == "moneyline"
+    assert play["play_label"] == "TCU -130"
+    assert 0.48 < play["implied_fair_prob"] <= 0.60
+    assert play["trade_market"] == "skip"
+
+
 def test_rich_ml_without_a_spread_is_skipped() -> None:
     game = {
         "matchup": "ATL @ HOU",

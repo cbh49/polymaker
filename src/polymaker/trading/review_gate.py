@@ -5,8 +5,11 @@ sent when any of those keys clears the trading bar: at least 40 decided bets,
 +0.10 units per bet, and a Wilson win-rate floor of 0.50. An exchange-edge
 band may also clear a lower bar (60 decided, +0.05 units, Wilson 0.45).
 League, market, and price-side slices never qualify. Market × gap cells are
-judged by the primary bar. The list is read from the published
-sharp_trade_review report, then from config/sharp_trade_systems.json.
+judged by the primary bar. A play that matches a positive key is still
+dropped when it also matches an avoid key (40 decided, −0.10 units per bet
+or worse). League overrides return before that check. Both lists are read
+from the published sharp_trade_review report, then from
+config/sharp_trade_systems.json.
 
 Three league overrides are explicit exceptions, not systems, and they are
 not published into that list. A qualified NCAAB order passes. A qualified
@@ -45,6 +48,46 @@ EXCLUDED_TRADE_FAMILIES = frozenset(
         "odds_band",
         "low_volume_dog",
     }
+)
+# Keep this tuple identical to review_sharp_trades.METRIC_FAMILIES.
+METRIC_FAMILIES = (
+    "tier",
+    "rlm_confirmed",
+    "n_sources",
+    "agreeing_sources",
+    "composite_gap",
+    "primary_gap",
+    "vsin_gap",
+    "sbd_gap",
+    "sao_gap",
+    "plus_pp",
+    "handle_pct",
+    "public_pct",
+    "contrarian_public",
+    "line_toward_bet",
+    "line_move_abs",
+    "low_volume_dog",
+    "exchange_edge",
+    "rlm_source_used",
+    "exchange_rlm_confirmed",
+    "low_liquidity",
+    "sbd_override",
+    "ml_spread_divergence",
+    "model_confidence",
+    "source_dk",
+    "source_sbd",
+    "source_vsin",
+    "source_sao",
+)
+CONTEXT_FAMILIES = frozenset(
+    {"league", "market", "bet_side", "favorite_vs_dog", "odds_band"}
+)
+AVOID_MAX_UNITS_PER_BET = -0.10
+_SOURCE_FLAGS = (
+    ("source_dk", frozenset({"primary", "dk", "draftkings", "playerprops"})),
+    ("source_sbd", frozenset({"sbd", "sportsbettingdime"})),
+    ("source_vsin", frozenset({"vsin"})),
+    ("source_sao", frozenset({"sao", "scoresandodds"})),
 )
 FALLBACK_PATH = Path(__file__).resolve().parents[3] / "config" / "sharp_trade_systems.json"
 
@@ -159,6 +202,14 @@ def pair_keys(signals: dict[str, Any]) -> list[str]:
         keys.append(
             f"pair:{label}:{signal_label(signals[left])}|{signal_label(signals[right])}"
         )
+    league = signals.get("league")
+    if league is not None:
+        for metric in METRIC_FAMILIES:
+            if metric not in signals:
+                continue
+            keys.append(
+                f"pair:league+{metric}:{signal_label(league)}|{signal_label(signals[metric])}"
+            )
     return keys
 
 
@@ -219,6 +270,18 @@ def slice_family(key: str) -> str:
     return family
 
 
+def tradable_family(key: str) -> bool:
+    """True when this key is a metric the bot may trade or avoid."""
+    family = slice_family(key)
+    if family in EXCLUDED_TRADE_FAMILIES:
+        return False
+    if family.startswith("pair:league+"):
+        metric = family[len("pair:league+") :]
+        if metric in EXCLUDED_TRADE_FAMILIES or metric in CONTEXT_FAMILIES:
+            return False
+    return True
+
+
 def wilson_lower(wins: int, decided: int) -> float | None:
     if decided <= 0:
         return None
@@ -248,7 +311,7 @@ def tradable_systems(systems: Sequence[dict[str, Any] | str]) -> list[dict[str, 
 
 def _system_clears_bar(row: dict[str, Any]) -> bool:
     key = str(row.get("key") or "")
-    if slice_family(key) in EXCLUDED_TRADE_FAMILIES:
+    if not tradable_family(key):
         return False
     per = row.get("units_per_bet")
     if isinstance(per, bool) or not isinstance(per, (int, float)):
@@ -274,6 +337,39 @@ def _system_clears_bar(row: dict[str, Any]) -> bool:
 
 def system_key_set(systems: Sequence[dict[str, Any] | str]) -> set[str]:
     return {str(item["key"]) for item in tradable_systems(systems)}
+
+
+def _avoid_clears_bar(row: dict[str, Any]) -> bool:
+    key = str(row.get("key") or "")
+    if not tradable_family(key):
+        return False
+    per = row.get("units_per_bet")
+    if isinstance(per, bool) or not isinstance(per, (int, float)):
+        return False
+    decided = _as_int(row.get("decided"))
+    if decided is None or decided < MIN_TRADE_DECIDED:
+        return False
+    return per <= AVOID_MAX_UNITS_PER_BET
+
+
+def active_avoid(systems: Sequence[dict[str, Any] | str]) -> list[dict[str, Any]]:
+    """Avoid keys that clear the loss bar and are metrics."""
+    out: list[dict[str, Any]] = []
+    for item in systems:
+        if isinstance(item, str) and item.strip():
+            row: dict[str, Any] = {"key": item.strip()}
+        elif isinstance(item, dict) and str(item.get("key") or "").strip():
+            key = str(item["key"]).strip()
+            row = {"key": key, **{k: v for k, v in item.items() if k != "key"}}
+        else:
+            continue
+        if _avoid_clears_bar(row):
+            out.append(row)
+    return out
+
+
+def avoid_key_set(systems: Sequence[dict[str, Any] | str]) -> set[str]:
+    return {str(item["key"]) for item in active_avoid(systems)}
 
 
 # Log labels for the league exceptions. They are not trade_systems keys.
@@ -337,9 +433,15 @@ def classify_play(
     systems: Sequence[dict[str, Any] | str],
     *,
     league: str | None = None,
+    avoid: Sequence[dict[str, Any] | str] | None = None,
 ) -> dict[str, Any]:
-    """traded when a system or a league override matches. Otherwise dropped."""
+    """traded when a system or a league override matches. Otherwise dropped.
+
+    A positive match is dropped when an avoid key matches too. League
+    overrides return before that check.
+    """
     allowed = system_key_set(systems)
+    blocked = avoid_key_set(avoid or [])
     if play.get("qualified") is False:
         reasons = [str(item) for item in (play.get("reject_reasons") or []) if str(item) != "line_move"]
         return {
@@ -385,6 +487,14 @@ def classify_play(
             "trade_data": _json_safe(snap),
         }
     if matched:
+        avoided = [key for key in keys if key in blocked]
+        if avoided:
+            return {
+                "decision": "dropped",
+                "matched_systems": matched,
+                "drop_reasons": ["avoid_system"],
+                "trade_data": _json_safe(snap),
+            }
         return {
             "decision": "traded",
             "matched_systems": matched,
@@ -402,11 +512,14 @@ def classify_play(
 def filter_sharp_plays(
     plays: Sequence[SharpPlay],
     systems: Sequence[dict[str, Any] | str],
+    avoid: Sequence[dict[str, Any] | str] | None = None,
 ) -> list[SharpPlay]:
-    """Keep plays whose order matches a profitable system."""
+    """Keep plays whose order matches a profitable system and no avoid key."""
     kept: list[SharpPlay] = []
     for play in plays:
-        verdict = classify_play(qualifying_trade_data(play), systems, league=play.league)
+        verdict = classify_play(
+            qualifying_trade_data(play), systems, league=play.league, avoid=avoid
+        )
         if verdict["decision"] == "traded":
             kept.append(play)
     return kept
@@ -417,6 +530,7 @@ def split_slate(
     systems: Sequence[dict[str, Any] | str],
     *,
     logged_at: int,
+    avoid: Sequence[dict[str, Any] | str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Tradable slate for alerts, plus one Convex row for every finder play."""
     league = str(output.get("league") or "")
@@ -426,7 +540,7 @@ def split_slate(
     for play in output.get("plays") or []:
         if not isinstance(play, dict):
             continue
-        verdict = classify_play(play, systems, league=league)
+        verdict = classify_play(play, systems, league=league, avoid=avoid)
         rows.append(_candidate_row(play, verdict, league=league, slate_date=slate_date, logged_at=logged_at))
         if verdict["decision"] == "traded":
             tradable.append(play)
@@ -444,13 +558,14 @@ def candidate_for_skipped_order(
     slate_date: Any,
     detail: str,
     logged_at: int,
+    avoid: Sequence[dict[str, Any] | str] | None = None,
 ) -> dict[str, Any]:
     """Candidate row for a gate-approved play the order path did not send.
 
     The decision is dropped and the skip detail is kept, so the review can
     grade the pass. Matched systems stay on the row.
     """
-    verdict = classify_play(play, systems, league=league)
+    verdict = classify_play(play, systems, league=league, avoid=avoid)
     reason = detail.strip() or "skipped"
     reasons = [item for item in verdict["drop_reasons"] if item != reason]
     reasons.append(reason)
@@ -474,10 +589,28 @@ def load_trade_systems() -> list[dict[str, Any]]:
     An empty published list is a real answer: nothing currently clears the bar.
     The fallback is only for a missed fetch.
     """
-    remote = _fetch_remote_systems()
+    trade, _avoid = load_review_lists()
+    return trade
+
+
+def load_avoid_systems() -> list[dict[str, Any]]:
+    """Published avoid keys, or the checked-in fallback.
+
+    A published report with no avoid list means nothing is currently cold
+    enough. The fallback file is only for a missed fetch.
+    """
+    _trade, avoid = load_review_lists()
+    return avoid
+
+
+def load_review_lists() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Positive systems and avoid keys from one published report."""
+    remote = _fetch_remote_payload()
     if remote is not None:
-        return remote
-    return _fallback_systems()
+        trade = _clean_systems(remote.get("trade_systems"))
+        avoid = _clean_avoid(remote.get("avoid_systems"))
+        return trade or [], avoid or []
+    return _fallback_systems(), _fallback_avoid()
 
 
 def _signals(play: dict[str, Any]) -> dict[str, Any]:
@@ -504,10 +637,20 @@ def _signals(play: dict[str, Any]) -> dict[str, Any]:
         toward_bet = moved_toward == home_away
     confirmation = play.get("exchange_confirmation")
     edge = None
+    exchange_rlm = None
+    low_liq = None
     if isinstance(confirmation, dict):
         edge = _as_float(confirmation.get("exchange_edge_pct"))
+        exchange_rlm = confirmation.get("exchange_rlm_confirmed")
+        if not isinstance(exchange_rlm, bool):
+            exchange_rlm = None
+        low_liq = confirmation.get("low_liquidity")
+        if not isinstance(low_liq, bool):
+            low_liq = None
     if edge is None:
         edge = _as_float(play.get("exchange_edge_pct"))
+    if low_liq is None and isinstance(play.get("polymarket_low_liquidity"), bool):
+        low_liq = play.get("polymarket_low_liquidity")
     low_volume = play.get("low_volume_dog_flag")
     if not isinstance(low_volume, bool):
         low_volume = None
@@ -543,6 +686,18 @@ def _signals(play: dict[str, Any]) -> dict[str, Any]:
     put("low_volume_dog", low_volume)
     put("exchange_edge", edge_band(edge))
     put("bet_side", home_away)
+    put("sao_gap", gap_band(_as_float(play.get("sao_gap"))))
+    rlm_source = str(play.get("rlm_source_used") or "").strip().lower()
+    put("rlm_source_used", rlm_source or None)
+    put("exchange_rlm_confirmed", exchange_rlm)
+    put("low_liquidity", low_liq)
+    sbd_override = play.get("sbd_override")
+    put("sbd_override", sbd_override if isinstance(sbd_override, bool) else None)
+    divergence = play.get("ml_spread_divergence")
+    put("ml_spread_divergence", divergence if isinstance(divergence, bool) else None)
+    put("model_confidence", _confidence_band(_confidence_number(play.get("model_confidence"))))
+    for key, flag in _source_flags(play.get("agreeing_sources")).items():
+        put(key, flag)
     return signals
 
 
@@ -582,7 +737,7 @@ def _candidate_key(play: dict[str, Any], league: str, slate_date: str) -> str:
     )
 
 
-def _fetch_remote_systems() -> list[dict[str, Any]] | None:
+def _fetch_remote_payload() -> dict[str, Any] | None:
     try:
         import requests
     except ImportError:
@@ -607,25 +762,78 @@ def _fetch_remote_systems() -> list[dict[str, Any]] | None:
     except ValueError:
         return None
     payload = body.get("payload") if isinstance(body, dict) else None
-    systems = payload.get("trade_systems") if isinstance(payload, dict) else None
-    return _clean_systems(systems)
+    return payload if isinstance(payload, dict) else None
 
 
-def _fallback_systems() -> list[dict[str, Any]]:
+def _read_fallback() -> dict[str, Any] | None:
     if not FALLBACK_PATH.is_file():
-        return []
+        return None
     try:
         raw = json.loads(FALLBACK_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _fallback_systems() -> list[dict[str, Any]]:
+    raw = _read_fallback()
+    if raw is None:
         return []
     systems = raw.get("systems") if isinstance(raw, dict) else raw
     return _clean_systems(systems) or []
+
+
+def _fallback_avoid() -> list[dict[str, Any]]:
+    raw = _read_fallback()
+    if raw is None:
+        return []
+    return _clean_avoid(raw.get("avoid")) or []
 
 
 def _clean_systems(systems: Any) -> list[dict[str, Any]] | None:
     if not isinstance(systems, list):
         return None
     return tradable_systems(systems)
+
+
+def _clean_avoid(systems: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(systems, list):
+        return None
+    return active_avoid(systems)
+
+
+def _source_flags(value: Any) -> dict[str, bool]:
+    """One boolean per feed. Primary is the DraftKings or PlayerProps vote."""
+    if not isinstance(value, list):
+        return {}
+    names = {str(item).strip().lower() for item in value if str(item).strip()}
+    return {
+        key: any(name in names for name in aliases)
+        for key, aliases in _SOURCE_FLAGS
+    }
+
+
+def _confidence_number(value: Any) -> float | None:
+    if isinstance(value, dict):
+        for key in ("score", "model_confidence", "confidence", "value"):
+            number = _as_float(value.get(key))
+            if number is not None:
+                return number
+        return None
+    return _as_float(value)
+
+
+def _confidence_band(value: float | None) -> str | None:
+    """Bands for the finder score, which sits between 70 and 100."""
+    if value is None:
+        return None
+    if value < 78:
+        return "lt_78"
+    if value < 85:
+        return "78_to_85"
+    if value < 92:
+        return "85_to_92"
+    return "ge_92"
 
 
 def _source_key(value: Any) -> str | None:
