@@ -29,7 +29,7 @@ from polymaker.trading.venue_quote import PricedVenue, pick_venue, price_venue
 class SharpTradeConfig:
     """Runtime knobs for sharp auto-buys (overridable via CLI)."""
 
-    usd_tier_a: float = 25.0  # A/A+ stake; NCAAF/NFL totals and NHL are $10; NCAAB totals are $5
+    usd_tier_a: float = 25.0  # A/A+ stake; NFL totals and NHL are $10; NCAAB totals are $5
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # A = Tier A only; B = A+B
     markets: frozenset[str] = frozenset({"moneyline", "spread", "total"})
@@ -759,9 +759,9 @@ def _is_pre_game_play(
     return False
 
 
-# NCAAF/NFL game totals (Over/Under) stake this much even at Tier A/A+.
-FOOTBALL_TOTAL_USD = 10.0
-FOOTBALL_TOTAL_LEAGUES = frozenset({"NCAAF", "NFL"})
+# NFL game totals (Over/Under) stake this much even at Tier A/A+.
+# NCAAF totals use the normal tier stake ($25 at A/A+).
+NFL_TOTAL_USD = 10.0
 # NCAAB game totals stake this much at every tier.
 NCAAB_TOTAL_USD = 5.0
 # NHL stakes are a flat $10 for every tier and market.
@@ -789,15 +789,15 @@ def _usd_for_tier(tier: str, cfg: SharpTradeConfig) -> float:
     return float(cfg.usd_tier_b)
 
 
-def _football_total_cap(play: SharpPlay, base: float) -> float:
-    """A/A+ Over/Under in NCAAF and NFL stakes $10, not the usual $25."""
+def _nfl_total_cap(play: SharpPlay, base: float) -> float:
+    """A/A+ Over/Under in the NFL stakes $10. NCAAF uses the tier stake."""
     if str(play.market or "").strip().lower() != "total":
         return base
-    if _normalized_league(play.league) not in FOOTBALL_TOTAL_LEAGUES:
+    if _normalized_league(play.league) != "NFL":
         return base
     if str(play.tier or "").strip().upper() not in {"A+", "A"}:
         return base
-    return min(base, FOOTBALL_TOTAL_USD)
+    return min(base, NFL_TOTAL_USD)
 
 
 def _ncaab_total_cap(play: SharpPlay, base: float) -> float:
@@ -855,14 +855,15 @@ def _nhl_stake(play: SharpPlay) -> float | None:
 def _usd_for_play(play: SharpPlay, cfg: SharpTradeConfig, ask: float | None) -> float:
     """Tier stake, or to-win that amount when `low_volume_dog_flag` is set.
 
-    NCAAF and NFL totals cap Tier A/A+ at $10. NCAAB totals cap every tier
-    at $5. NHL is a flat $10 on every market and tier, with no long-dog
-    to-win shrink. Other leagues keep the configured tier stake.
+    NFL totals cap Tier A/A+ at $10. NCAAF totals use the tier stake.
+    NCAAB totals cap every tier at $5. NHL is a flat $10 on every market
+    and tier, with no long-dog to-win shrink. Other leagues keep the
+    configured tier stake.
     """
     nhl = _nhl_stake(play)
     if nhl is not None:
         return nhl
-    base = _ncaab_total_cap(play, _football_total_cap(play, _usd_for_tier(play.tier, cfg)))
+    base = _ncaab_total_cap(play, _nfl_total_cap(play, _usd_for_tier(play.tier, cfg)))
     if not play.low_volume_dog_flag:
         return base
     price = _dog_price(ask, play)

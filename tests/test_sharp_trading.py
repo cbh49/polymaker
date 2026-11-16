@@ -1089,24 +1089,28 @@ def _sized_play(**overrides: object) -> SharpPlay:
     return SharpPlay(**fields)  # type: ignore[arg-type]
 
 
-def test_usd_for_play_football_totals_are_ten() -> None:
+def test_usd_for_play_ncaaf_totals_use_tier_stake() -> None:
     from polymaker.trading.execute import SharpTradeConfig, _usd_for_play
 
     cfg = SharpTradeConfig(usd_tier_a=25.0, usd_tier_b=10.0)
-    assert _usd_for_play(_sized_play(tier="A"), cfg, ask=0.52) == 10.0
-    assert _usd_for_play(_sized_play(tier="A+"), cfg, ask=0.48) == 10.0
-    assert _usd_for_play(_sized_play(league="NFL", side="Under", home_away="under"), cfg, ask=0.51) == 10.0
-    assert _usd_for_play(_sized_play(league="CFB"), cfg, ask=0.50) == 10.0
-    # Tier B was already $10.
+    assert _usd_for_play(_sized_play(tier="A"), cfg, ask=0.52) == 25.0
+    assert _usd_for_play(_sized_play(tier="A+"), cfg, ask=0.48) == 25.0
+    assert _usd_for_play(_sized_play(league="CFB"), cfg, ask=0.50) == 25.0
+    # Tier B stays on the $10 tier stake.
     assert _usd_for_play(_sized_play(tier="B"), cfg, ask=0.50) == 10.0
+    # NFL totals stay capped at $10 for Tier A/A+.
+    assert _usd_for_play(_sized_play(league="NFL", side="Under", home_away="under"), cfg, ask=0.51) == 10.0
+    assert _usd_for_play(_sized_play(league="NFL", tier="A+"), cfg, ask=0.48) == 10.0
+    assert _usd_for_play(_sized_play(league="NFL", tier="B"), cfg, ask=0.50) == 10.0
     # Spreads, moneylines, and other leagues stay on the A/A+ stake.
     assert _usd_for_play(_sized_play(market="spread", side="OSU", home_away="away"), cfg, ask=0.50) == 25.0
     assert _usd_for_play(_sized_play(market="moneyline", side="OSU", home_away="away"), cfg, ask=0.50) == 25.0
     assert _usd_for_play(_sized_play(league="NBA"), cfg, ask=0.50) == 25.0
     assert _usd_for_play(_sized_play(league="MLB"), cfg, ask=0.50) == 25.0
-    # A smaller configured A stake is not raised up to $10.
+    # A smaller configured A stake is not raised.
     small = SharpTradeConfig(usd_tier_a=8.0, usd_tier_b=5.0)
     assert _usd_for_play(_sized_play(), small, ask=0.50) == 8.0
+    assert _usd_for_play(_sized_play(league="NFL"), small, ask=0.50) == 8.0
 
 
 def test_usd_for_play_ncaab_totals_are_five() -> None:
