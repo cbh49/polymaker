@@ -17,6 +17,7 @@ from polymaker.trading.event_key import (
     canonical_trade_key,
     event_date_for_play,
     poly_slug_key,
+    sibling_side_key,
 )
 from polymaker.trading.fill import enrich_fill
 from polymaker.trading.kalshi_match import KalshiMatchedPlay, match_kalshi_plays
@@ -247,6 +248,13 @@ async def _trade_one(
     )
     if canonical in already or (slug_key is not None and slug_key in already):
         return SharpTradeResult(matched=m, action="skipped", detail="already traded (dedupe log)")
+    sibling = sibling_side_key(canonical)
+    if sibling is not None and sibling in already:
+        return SharpTradeResult(
+            matched=m,
+            action="skipped",
+            detail="already traded this team (moneyline/spread)",
+        )
 
     if not _is_pre_game_play(m, trade_cfg.pregame_buffer_minutes, kalshi=kalshi):
         return SharpTradeResult(
@@ -460,7 +468,11 @@ def _claim_event(
     payload: dict[str, Any],
     trade_data: dict[str, Any] | None = None,
 ) -> tuple[list[str], str | None]:
-    """Claim canonical key, then optional Polymarket slug lock. Release on failure."""
+    """Claim the market key, the other of moneyline/spread, then the slug lock.
+
+    Release every key already claimed if a later lock fails. Totals have no
+    sibling lock.
+    """
     claim = convex.claim(
         trade_key_value=canonical,
         league=league,
@@ -478,7 +490,28 @@ def _claim_event(
     if not claim.claimed:
         return [], claim.detail
     claimed = [canonical]
-    if slug_key and slug_key != canonical:
+    sibling = sibling_side_key(canonical)
+    if sibling and sibling not in claimed:
+        # Hold the other of moneyline/spread so a later signal on this team
+        # cannot buy it. Totals are a different key and are not locked.
+        lock = convex.claim(
+            trade_key_value=sibling,
+            league=league,
+            source="sharp_money",
+            matchup=matchup,
+            side=side,
+            usd=0.0,
+            prediction_date=prediction_date,
+            slug=slug,
+            condition_id=condition_id,
+            venue=str(payload.get("venue") or ""),
+            payload={**payload, "lockOnly": True, "sideLock": True},
+        )
+        if not lock.claimed:
+            _release_keys(convex, claimed)
+            return [], lock.detail
+        claimed.append(sibling)
+    if slug_key and slug_key not in claimed:
         lock = convex.claim(
             trade_key_value=slug_key,
             league=league,
@@ -493,7 +526,7 @@ def _claim_event(
             payload={**payload, "lockOnly": True},
         )
         if not lock.claimed:
-            convex.release(canonical)
+            _release_keys(convex, claimed)
             return [], lock.detail
         claimed.append(slug_key)
     return claimed, None
@@ -595,9 +628,11 @@ async def _execute_poly(
     except Exception as exc:  # noqa: BLE001
         fill["convex_complete_error"] = str(exc)
     _append_filled(trade_cfg.filled_log, fill)
-    already.add(canonical)
-    if m.slug and m.token is not None:
-        already.add(poly_slug_key(m.slug, m.token.outcome))
+    _remember_trade(
+        already,
+        canonical,
+        poly_slug_key(m.slug, m.token.outcome) if m.slug and m.token is not None else None,
+    )
     return SharpTradeResult(
         matched=m,
         action=action,
@@ -717,9 +752,11 @@ async def _execute_kalshi(
     except Exception as exc:  # noqa: BLE001
         fill["convex_complete_error"] = str(exc)
     _append_filled(trade_cfg.filled_log, fill)
-    already.add(canonical)
-    if m.slug and m.token is not None:
-        already.add(poly_slug_key(m.slug, m.token.outcome))
+    _remember_trade(
+        already,
+        canonical,
+        poly_slug_key(m.slug, m.token.outcome) if m.slug and m.token is not None else None,
+    )
     return SharpTradeResult(
         matched=m,
         action="bought",
@@ -925,6 +962,16 @@ def _fill_key(slug: str, outcome: str) -> str:
     return poly_slug_key(slug, outcome)
 
 
+def _remember_trade(already: set[str], canonical: str, slug_key: str | None = None) -> None:
+    """Record a fill so this run will not buy it, or the other side market, again."""
+    already.add(canonical)
+    sibling = sibling_side_key(canonical)
+    if sibling:
+        already.add(sibling)
+    if slug_key:
+        already.add(slug_key)
+
+
 def _load_filled_keys(path: str | Path) -> set[str]:
     p = Path(path)
     if not p.is_file():
@@ -941,6 +988,9 @@ def _load_filled_keys(path: str | Path) -> set[str]:
         key = row.get("key")
         if isinstance(key, str):
             keys.add(key)
+            sibling = sibling_side_key(key)
+            if sibling:
+                keys.add(sibling)
     return keys
 
 

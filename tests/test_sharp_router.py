@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from polymaker.trading.convex_trades import ClaimResult
-from polymaker.trading.event_key import canonical_trade_key, canonical_trade_key_for_play
+from polymaker.trading.event_key import (
+    canonical_trade_key,
+    canonical_trade_key_for_play,
+    sibling_side_key,
+)
 from polymaker.trading.execute import _claim_event
 from polymaker.trading.kalshi_match import match_kalshi_plays
 from polymaker.trading.sharp import SharpPlay
@@ -320,7 +325,10 @@ def test_claim_releases_canonical_when_slug_lock_fails() -> None:
     )
     assert claimed == []
     assert err is not None and "already traded" in err
-    assert convex.released == ["sharp|nfl|2026-09-17|det|buf|moneyline|buf"]
+    assert convex.released == [
+        "sharp|nfl|2026-09-17|det|buf|moneyline|buf",
+        "sharp|nfl|2026-09-17|det|buf|spread|buf",
+    ]
 
 
 def test_claim_both_keys_when_poly_slug_available() -> None:
@@ -354,8 +362,73 @@ def test_claim_both_keys_when_poly_slug_available() -> None:
     assert err is None
     assert claimed == [
         "sharp|nfl|2026-09-17|det|buf|moneyline|buf",
+        "sharp|nfl|2026-09-17|det|buf|spread|buf",
         "nfl-det-buf-2026-09-17|buffalo bills",
     ]
+
+
+def test_sibling_side_key_swaps_moneyline_and_spread_only() -> None:
+    spread = "sharp|ncaab|2026-11-17|lamar|omaha|spread|omaha"
+    moneyline = "sharp|ncaab|2026-11-17|lamar|omaha|moneyline|omaha"
+    assert sibling_side_key(spread) == moneyline
+    assert sibling_side_key(moneyline) == spread
+    assert sibling_side_key("sharp|ncaab|2026-11-17|lamar|omaha|total|over") is None
+    # The other team is a different key, so an Omaha spread does not lock Lamar.
+    assert sibling_side_key(spread) != "sharp|ncaab|2026-11-17|lamar|omaha|moneyline|lamar"
+
+
+def test_claim_releases_moneyline_when_spread_already_held() -> None:
+    class FakeConvex:
+        def __init__(self) -> None:
+            self.released: list[str] = []
+
+        def claim(self, *, trade_key_value: str, **kwargs: object) -> ClaimResult:
+            if "|spread|" in trade_key_value:
+                return ClaimResult(claimed=False, detail="already traded (convex ledger)")
+            return ClaimResult(claimed=True, detail="claimed")
+
+        def release(self, trade_key_value: str) -> None:
+            self.released.append(trade_key_value)
+
+    convex = FakeConvex()
+    claimed, err = _claim_event(
+        convex,  # type: ignore[arg-type]
+        canonical="sharp|ncaab|2026-11-17|lamar|omaha|moneyline|omaha",
+        slug_key="cbb-lamar-neom-2026-11-17|omaha mavericks",
+        league="NCAAB",
+        matchup="LAMAR @ OMAHA",
+        side="Omaha Mavericks",
+        usd=25.0,
+        prediction_date="2026-11-17",
+        slug="cbb-lamar-neom-2026-11-17",
+        condition_id="0x1",
+        payload={"venue": "polymarket"},
+    )
+    assert claimed == []
+    assert err is not None and "already traded" in err
+    assert convex.released == ["sharp|ncaab|2026-11-17|lamar|omaha|moneyline|omaha"]
+
+
+def test_filled_log_blocks_the_other_side_market(tmp_path) -> None:
+    from polymaker.trading.execute import _load_filled_keys
+
+    log = tmp_path / "sharp_trades.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                json.dumps({"key": "sharp|ncaab|2026-11-17|lamar|omaha|moneyline|omaha"}),
+                json.dumps({"key": "sharp|ncaab|2026-11-17|lamar|omaha|total|over"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    keys = _load_filled_keys(log)
+    assert "sharp|ncaab|2026-11-17|lamar|omaha|moneyline|omaha" in keys
+    assert "sharp|ncaab|2026-11-17|lamar|omaha|spread|omaha" in keys
+    assert "sharp|ncaab|2026-11-17|lamar|omaha|total|over" in keys
+    assert "sharp|ncaab|2026-11-17|lamar|omaha|spread|lamar" not in keys
+    assert sibling_side_key("sharp|ncaab|2026-11-17|lamar|omaha|total|over") is None
 
 
 def test_event_date_in_canonical_key() -> None:

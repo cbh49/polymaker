@@ -1,8 +1,10 @@
 """Convex trade ledger: claim before a live buy, record the fill, fail closed.
 
 Sharp-money canonical tradeKey is `sharp|{league}|{ymd}|{away}|{home}|{market}|{side}`.
-The Polymarket slug key `{slug}|{outcome}` is still claimed as a lockOnly row so
-poly-sharp-finder cannot buy the same CLOB token.
+A moneyline fill also claims the same team's spread key (and the reverse) as
+lockOnly, so the other of those two markets is not bought again. Totals are
+not part of that lock. The Polymarket slug key `{slug}|{outcome}` is still
+claimed as a lockOnly row so poly-sharp-finder cannot buy the same CLOB token.
 """
 
 from __future__ import annotations

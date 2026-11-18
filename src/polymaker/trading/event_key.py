@@ -68,9 +68,13 @@ def canonical_trade_key(
     side_team: TeamRef,
     event_date: date | None = None,
 ) -> str:
-    """One moneyline / spread-side / total-side per game, independent of venue ids.
+    """One market-side per game, independent of venue ids.
 
     `sharp|{league}|{ymd}|{away}|{home}|{market}|{side}`
+
+    Moneyline and spread stay distinct keys so the journal records which
+    market filled. `sibling_side_key` is what blocks buying the other of
+    those two for the same team. Totals are not part of that pair.
     """
     league = normalize_league(play.league)
     ymd = (event_date or event_date_for_play(play))
@@ -100,3 +104,23 @@ def canonical_trade_key_for_play(play: SharpPlay) -> str | None:
 
 def poly_slug_key(slug: str, outcome: str) -> str:
     return f"{slug.strip()}|{outcome.strip().lower()}"
+
+
+def sibling_side_key(canonical: str) -> str | None:
+    """The other of moneyline/spread for this same team.
+
+    A filled spread blocks that team's moneyline, and the reverse. Totals
+    and the opposing team stay on their own keys.
+    """
+    parts = canonical.split("|")
+    if len(parts) != 7 or parts[0] != "sharp":
+        return None
+    market = parts[5]
+    if market == "moneyline":
+        other = "spread"
+    elif market == "spread":
+        other = "moneyline"
+    else:
+        return None
+    parts[5] = other
+    return "|".join(parts)
