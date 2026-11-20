@@ -30,7 +30,7 @@ from polymaker.trading.venue_quote import PricedVenue, pick_venue, price_venue
 class SharpTradeConfig:
     """Runtime knobs for sharp auto-buys (overridable via CLI)."""
 
-    usd_tier_a: float = 25.0  # A/A+ stake; NFL totals and NHL are $10; NCAAB totals are $25
+    usd_tier_a: float = 25.0  # A/A+ stake; NFL totals and NHL are $10; NCAAB totals are $5
     usd_tier_b: float = 10.0
     min_tier: str = "B"  # A = Tier A only; B = A+B
     markets: frozenset[str] = frozenset({"moneyline", "spread", "total"})
@@ -800,7 +800,7 @@ def _is_pre_game_play(
 # NCAAF totals use the normal tier stake ($25 at A/A+).
 NFL_TOTAL_USD = 10.0
 # NCAAB game totals stake this much at every tier.
-NCAAB_TOTAL_USD = 25.0
+NCAAB_TOTAL_USD = 5.0
 # NHL stakes are a flat $10 for every tier and market.
 NHL_USD = 10.0
 # NHL moneyline skips below this. 0.42 still trades.
@@ -838,7 +838,7 @@ def _nfl_total_cap(play: SharpPlay, base: float) -> float:
 
 
 def _ncaab_total_stake(play: SharpPlay, base: float) -> float:
-    """NCAAB Over/Under stakes $25 at every tier."""
+    """NCAAB Over/Under stakes $5 at every tier."""
     if str(play.market or "").strip().lower() != "total":
         return base
     if _normalized_league(play.league) != "NCAAB":
@@ -893,7 +893,7 @@ def _usd_for_play(play: SharpPlay, cfg: SharpTradeConfig, ask: float | None) -> 
     """Tier stake, or to-win that amount when `low_volume_dog_flag` is set.
 
     NFL totals cap Tier A/A+ at $10. NCAAF totals use the tier stake.
-    NCAAB totals are a flat $25 at every tier. NHL is a flat $10 on every
+    NCAAB totals are a flat $5 at every tier. NHL is a flat $10 on every
     market and tier, with no long-dog to-win shrink. Other leagues keep the
     configured tier stake.
     """

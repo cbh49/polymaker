@@ -1113,14 +1113,14 @@ def test_usd_for_play_ncaaf_totals_use_tier_stake() -> None:
     assert _usd_for_play(_sized_play(league="NFL"), small, ask=0.50) == 8.0
 
 
-def test_usd_for_play_ncaab_totals_are_twenty_five() -> None:
+def test_usd_for_play_ncaab_totals_are_five() -> None:
     from polymaker.trading.execute import SharpTradeConfig, _usd_for_play
 
     cfg = SharpTradeConfig(usd_tier_a=25.0, usd_tier_b=10.0)
-    assert _usd_for_play(_sized_play(league="NCAAB", tier="A"), cfg, ask=0.52) == 25.0
-    assert _usd_for_play(_sized_play(league="NCAAB", tier="A+"), cfg, ask=0.48) == 25.0
-    assert _usd_for_play(_sized_play(league="NCAAB", tier="B"), cfg, ask=0.50) == 25.0
-    assert _usd_for_play(_sized_play(league="CBB", tier="A"), cfg, ask=0.51) == 25.0
+    assert _usd_for_play(_sized_play(league="NCAAB", tier="A"), cfg, ask=0.52) == 5.0
+    assert _usd_for_play(_sized_play(league="NCAAB", tier="A+"), cfg, ask=0.48) == 5.0
+    assert _usd_for_play(_sized_play(league="NCAAB", tier="B"), cfg, ask=0.50) == 5.0
+    assert _usd_for_play(_sized_play(league="CBB", tier="A"), cfg, ask=0.51) == 5.0
     # Spreads and moneylines stay on the tier stake.
     assert _usd_for_play(
         _sized_play(league="NCAAB", market="spread", side="Duke", home_away="away"),
@@ -1134,8 +1134,8 @@ def test_usd_for_play_ncaab_totals_are_twenty_five() -> None:
     ) == 10.0
     # The flat total stake is not lowered by a smaller tier stake.
     small = SharpTradeConfig(usd_tier_a=3.0, usd_tier_b=4.0)
-    assert _usd_for_play(_sized_play(league="NCAAB", tier="A"), small, ask=0.50) == 25.0
-    assert _usd_for_play(_sized_play(league="NCAAB", tier="B"), small, ask=0.50) == 25.0
+    assert _usd_for_play(_sized_play(league="NCAAB", tier="A"), small, ask=0.50) == 5.0
+    assert _usd_for_play(_sized_play(league="NCAAB", tier="B"), small, ask=0.50) == 5.0
 
 
 def test_nhl_price_gates_and_stakes() -> None:
