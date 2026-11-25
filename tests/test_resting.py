@@ -435,7 +435,6 @@ def test_taker_fill_logs_a_warning(tmp_path: Path, capsys: pytest.CaptureFixture
         venue="polymarket",
         order_id="abc",
         key="k",
-        alert=False,
     )
     assert "TAKER_FILL" in capsys.readouterr().out
     log_fill(
@@ -444,6 +443,5 @@ def test_taker_fill_logs_a_warning(tmp_path: Path, capsys: pytest.CaptureFixture
         venue="polymarket",
         order_id="abc",
         key="k",
-        alert=False,
     )
     assert "TAKER_FILL" not in capsys.readouterr().out

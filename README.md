@@ -127,7 +127,7 @@ New orders are only placed more than 30 minutes before the start, so a signal
 that first appears inside that window is skipped. Every fill is logged with
 price, size, fee, and maker/taker role to `journal/maker_fills.jsonl` and
 stdout (`[fill] ... fee=0.0000 role=maker`); a taker role or a fee above zero
-prints `TAKER_FILL` (and posts to `DISCORD_SHARP_WEBHOOK_URL` if set).
+prints `TAKER_FILL` to the sharp log only (Discord is unchanged and still only posts A/A+ sharp cards).
 Knobs live in `[maker]`, `[kalshi_maker_fees]`, and `[sharp]` (`resting_log`,
 `maker_fills_log`) in `config/config.toml`.
 

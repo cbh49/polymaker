@@ -2,14 +2,14 @@
 
 Each fill is one row in `journal/maker_fills.jsonl` and one console line, so a
 maker fill is easy to confirm (`role=maker fee=0.0000`). A fill that reports a
-taker role or a fee above zero logs a TAKER_FILL warning (and posts to Discord
-when DISCORD_SHARP_WEBHOOK_URL is set).
+taker role or a fee above zero logs a TAKER_FILL warning to stdout/CloudWatch
+only. Discord is not used here; sharp-money Discord posts stay on the existing
+A/A+ play path.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -147,7 +147,6 @@ def log_fill(
     key: str,
     matchup: str = "",
     outcome: str = "",
-    alert: bool = True,
 ) -> dict[str, Any]:
     """Append one fill row and print a confirmation line (and warn on taker fills)."""
     row = {
@@ -173,25 +172,14 @@ def log_fill(
     if row.get("role") == "unverified":
         print(f"UNVERIFIED_FILL {line} (no trade row to confirm maker/fee)", flush=True)
         log.warning("unverified_fill", venue=venue, order=order_id[:12])
-        if alert:
-            _discord_alert(f"UNVERIFIED_FILL {line}")
     elif is_taker_fill(row):
         warning = f"TAKER_FILL {line}"
         print(warning, flush=True)
-        log.warning("taker_fill", venue=venue, order=order_id[:12], role=row.get("role"),
-                    fee=row.get("fee"))
-        if alert:
-            _discord_alert(warning)
+        log.warning(
+            "taker_fill",
+            venue=venue,
+            order=order_id[:12],
+            role=row.get("role"),
+            fee=row.get("fee"),
+        )
     return row
-
-
-def _discord_alert(text: str) -> None:
-    url = os.environ.get("DISCORD_SHARP_WEBHOOK_URL", "").strip()
-    if not url:
-        return
-    try:
-        import requests
-
-        requests.post(url, json={"content": text[:1900]}, timeout=10)
-    except Exception:  # noqa: BLE001 - alerting must never break reconcile
-        return
