@@ -1,16 +1,18 @@
-"""Execute sharp-money buys on the cheaper of Polymarket and Kalshi."""
+"""Place sharp-money buys as resting maker orders on the cheaper of Polymarket and Kalshi.
+
+Every buy is a post-only GTC limit one tick below the best ask, so it never
+fills as a taker. Orders are tracked in `resting.py` and reconciled each run.
+"""
 
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from polymaker.catalog.sports import DEFAULT_PREGAME_BUFFER_MINUTES, is_pre_game, parse_utc
-from polymaker.config import Config
-from polymaker.domain import Side
+from polymaker.config import Config, KalshiMakerFeeConfig
 from polymaker.execution.gateway import ExecutionGateway
 from polymaker.trading.convex_trades import ConvexTradeClient, prediction_date_today
 from polymaker.trading.event_key import (
@@ -19,11 +21,16 @@ from polymaker.trading.event_key import (
     poly_slug_key,
     sibling_side_key,
 )
-from polymaker.trading.fill import enrich_fill
 from polymaker.trading.kalshi_match import KalshiMatchedPlay, match_kalshi_plays
+from polymaker.trading.maker import (
+    MakerQuote,
+    assert_below_ask,
+    pick_maker_venue,
+    price_maker_venue,
+)
 from polymaker.trading.match import MatchedPlay
+from polymaker.trading.resting import RestingBook, RestingOrder, cancel_resting
 from polymaker.trading.sharp import SharpPlay, load_sharp_plays, qualifying_trade_data
-from polymaker.trading.venue_quote import PricedVenue, pick_venue, price_venue
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,25 +46,34 @@ class SharpTradeConfig:
     min_moneyline_ask: float | None = 0.35  # skip ML if best ask is cheaper than this
     min_edge: float | None = None  # require ask <= fair - min_edge
     filled_log: str = "journal/sharp_trades.jsonl"
+    resting_log: str = "journal/resting_orders.json"
+    maker_fills_log: str = "journal/maker_fills.jsonl"
     dry_run: bool = True
     pregame_buffer_minutes: float = DEFAULT_PREGAME_BUFFER_MINUTES
     venues: frozenset[str] = frozenset({"polymarket", "kalshi"})
     tie_venue: str = "polymarket"
     max_ask_slippage: float = 0.01
+    # Maker mode: rest `maker_offset` below the best ask; cancel inside the window.
+    maker_offset: float = 0.01
+    cancel_window_minutes: float = 30.0
+    post_only: bool = True
+    kalshi_fees: KalshiMakerFeeConfig = field(default_factory=KalshiMakerFeeConfig)
 
 
 @dataclass(slots=True)
 class SharpTradeResult:
     matched: MatchedPlay
-    action: str  # bought | dry_run | skipped | failed
+    action: str  # resting | dry_run | skipped | failed
     usd: float = 0.0
     detail: str = ""
     response: dict[str, Any] = field(default_factory=dict)
     venue: str | None = None
     ask: float | None = None
-    fee: float | None = None
-    all_in: float | None = None
+    fee: float | None = None  # total maker fee for the order, dollars
+    all_in: float | None = None  # effective price per contract: limit + fee / size
     ticker: str | None = None
+    limit_price: float | None = None
+    size: float | None = None
 
 
 async def run_sharp_trades(
@@ -69,8 +85,8 @@ async def run_sharp_trades(
     kalshi_client: Any | None = None,
     kalshi_matches: list[KalshiMatchedPlay] | None = None,
 ) -> list[SharpTradeResult]:
-    """Buy (or dry-run) each play on the cheaper fee-adjusted venue."""
-    already = _load_filled_keys(trade_cfg.filled_log)
+    """Rest (or dry-run) a maker buy for each play on the lower effective-price venue."""
+    already = _load_filled_keys(trade_cfg.filled_log) | RestingBook(trade_cfg.resting_log).keys()
     owns_gw = gateway is None
     gw = gateway or ExecutionGateway(cfg, paper=trade_cfg.dry_run)
     owns_kalshi = False
@@ -256,12 +272,15 @@ async def _trade_one(
             detail="already traded this team (moneyline/spread)",
         )
 
-    if not _is_pre_game_play(m, trade_cfg.pregame_buffer_minutes, kalshi=kalshi):
+    window = max(trade_cfg.pregame_buffer_minutes, trade_cfg.cancel_window_minutes)
+    if not _is_pre_game_play(m, window, kalshi=kalshi):
         return SharpTradeResult(
-            matched=m, action="skipped", detail="not pre-game (startTime)"
+            matched=m,
+            action="skipped",
+            detail=f"not pre-game or inside {window:g}-min maker window (startTime)",
         )
 
-    quotes: list[PricedVenue] = []
+    quotes: list[MakerQuote] = []
     quote_notes: dict[str, str] = {}
     poly_book: dict[str, Any] | None = None
     poly_ask: float | None = None
@@ -284,7 +303,18 @@ async def _trade_one(
         elif usd <= 0 or poly_ask is None:
             quote_notes["polymarket"] = "usd size is 0" if usd <= 0 else "no ask"
         else:
-            quotes.append(price_venue("polymarket", poly_ask, usd))
+            quote, why = price_maker_venue(
+                "polymarket",
+                poly_ask,
+                usd,
+                tick=m.meta.tick_size or 0.01,
+                offset=trade_cfg.maker_offset,
+                min_size=m.meta.min_order_size,
+            )
+            if quote is None:
+                quote_notes["polymarket"] = why or "no maker quote"
+            else:
+                quotes.append(quote)
 
     if kalshi_matched:
         assert kalshi is not None and kalshi.ticker and kalshi.kalshi_side
@@ -314,29 +344,30 @@ async def _trade_one(
         elif usd_k <= 0 or kalshi_ask is None:
             quote_notes["kalshi"] = "usd size is 0" if usd_k <= 0 else "no ask"
         else:
-            from ev_trading.fair_value.kalshi_execute import contracts_for_usd
-
-            n = contracts_for_usd(usd_k, kalshi_ask)
-            if n < 1:
-                quote_notes["kalshi"] = f"cannot size ${usd_k:.2f} at ask {kalshi_ask:.4f}"
+            quote, why = price_maker_venue(
+                "kalshi",
+                kalshi_ask,
+                usd_k,
+                offset=trade_cfg.maker_offset,
+                ticker=kalshi.ticker,
+                kalshi_fees=trade_cfg.kalshi_fees,
+            )
+            if quote is None:
+                quote_notes["kalshi"] = why or "no maker quote"
             else:
-                quotes.append(price_venue("kalshi", kalshi_ask, usd_k, contracts=n))
+                quotes.append(quote)
 
-    chosen = pick_venue(quotes, tie_venue=trade_cfg.tie_venue)  # type: ignore[arg-type]
+    chosen = pick_maker_venue(quotes, tie_venue=trade_cfg.tie_venue)  # type: ignore[arg-type]
     if chosen is None:
         detail = " ; ".join(f"{k}: {v}" for k, v in quote_notes.items()) or "no tradable venue"
         return SharpTradeResult(matched=m, action="skipped", detail=detail)
 
     if chosen.venue == "kalshi" and not trade_cfg.dry_run:
         if kalshi_client is None or not getattr(kalshi_client, "has_auth", False):
-            return SharpTradeResult(
-                matched=m,
-                action="skipped",
-                usd=chosen.usd,
-                venue="kalshi",
-                ask=chosen.ask,
-                fee=chosen.fee,
-                all_in=chosen.all_in,
+            return _result(
+                m,
+                "skipped",
+                chosen,
                 ticker=kalshi.ticker if kalshi else None,
                 detail="kalshi cheaper but API keys missing (fail closed)",
             )
@@ -350,44 +381,32 @@ async def _trade_one(
         other_bit = ""
         if other:
             o = other[0]
-            other_bit = f" vs {o.venue} ask={o.ask:.3f} all_in={o.all_in:.4f}"
+            other_bit = (
+                f" vs {o.venue} limit={o.limit_price:.3f} fee={o.fee:.2f} "
+                f"effective={o.effective_price:.4f}"
+            )
         outcome = m.token.outcome if m.token is not None else m.play.side
-        return SharpTradeResult(
-            matched=m,
-            action="dry_run",
-            usd=chosen.usd,
-            venue=chosen.venue,
-            ask=chosen.ask,
-            fee=chosen.fee,
-            all_in=chosen.all_in,
+        return _result(
+            m,
+            "dry_run",
+            chosen,
             ticker=kalshi.ticker if chosen.venue == "kalshi" and kalshi else None,
             detail=(
-                f"would BUY ${chosen.usd:.2f} on {chosen.venue} {outcome} "
-                f"@ ask={chosen.ask:.3f} fee={chosen.fee:.4f} all_in={chosen.all_in:.4f}"
+                f"would REST BUY ${chosen.usd:.2f} on {chosen.venue} {outcome} "
+                f"{chosen.size:g} @ limit={chosen.limit_price:.3f} (ask={chosen.ask:.3f}, "
+                f"post-only) fee={chosen.fee:.2f} effective={chosen.effective_price:.4f}"
                 f"{other_bit}{sizing}"
             ),
             response={
                 "book": poly_book,
                 "slug": m.slug,
-                "quotes": [
-                    {"venue": q.venue, "ask": q.ask, "fee": q.fee, "all_in": q.all_in}
-                    for q in quotes
-                ],
+                "quotes": [_quote_dict(q) for q in quotes],
             },
         )
 
     convex = ConvexTradeClient()
     if not convex.configured:
-        return SharpTradeResult(
-            matched=m,
-            action="skipped",
-            usd=chosen.usd,
-            venue=chosen.venue,
-            ask=chosen.ask,
-            fee=chosen.fee,
-            all_in=chosen.all_in,
-            detail="convex unavailable (fail closed)",
-        )
+        return _result(m, "skipped", chosen, detail="convex unavailable (fail closed)")
 
     pred_date = (m.play.game_time_utc or "")[:10] or prediction_date_today()
     outcome = m.token.outcome if m.token is not None else m.play.side
@@ -406,35 +425,36 @@ async def _trade_one(
         payload={
             "tier": m.play.tier,
             "ask": chosen.ask,
+            "limit_price": chosen.limit_price,
+            "size": chosen.size,
             "fee": chosen.fee,
-            "all_in": chosen.all_in,
+            "all_in": chosen.effective_price,
+            "maker": True,
             "venue": chosen.venue,
             "ticker": kalshi.ticker if kalshi else None,
             "kalshi_side": kalshi.kalshi_side if kalshi else None,
             "poly_ask": poly_ask,
             "kalshi_ask": kalshi_ask,
             "low_volume_dog_flag": m.play.low_volume_dog_flag,
-            "quotes": [
-                {"venue": q.venue, "ask": q.ask, "fee": q.fee, "all_in": q.all_in}
-                for q in quotes
-            ],
+            "quotes": [_quote_dict(q) for q in quotes],
         },
     )
     if claim_err:
-        return SharpTradeResult(
-            matched=m,
-            action="skipped",
-            usd=chosen.usd,
-            venue=chosen.venue,
-            ask=chosen.ask,
-            fee=chosen.fee,
-            all_in=chosen.all_in,
-            detail=claim_err,
-        )
+        return _result(m, "skipped", chosen, detail=claim_err)
 
+    start_iso = _play_start_iso(m, kalshi)
     if chosen.venue == "polymarket":
         return await _execute_poly(
-            m, gw, chosen, canonical, convex, claimed_keys, already, trade_cfg
+            m,
+            gw,
+            chosen,
+            canonical,
+            slug_key if poly_found else None,
+            convex,
+            claimed_keys,
+            already,
+            trade_cfg,
+            start_iso,
         )
     return await _execute_kalshi(
         m,
@@ -442,10 +462,48 @@ async def _trade_one(
         kalshi_client,
         chosen,
         canonical,
+        slug_key if poly_found else None,
         convex,
         claimed_keys,
         already,
         trade_cfg,
+        start_iso,
+    )
+
+
+def _quote_dict(q: MakerQuote) -> dict[str, Any]:
+    return {
+        "venue": q.venue,
+        "ask": q.ask,
+        "limit_price": q.limit_price,
+        "size": q.size,
+        "fee": q.fee,
+        "effective_price": q.effective_price,
+    }
+
+
+def _result(
+    m: MatchedPlay,
+    action: str,
+    q: MakerQuote,
+    *,
+    detail: str = "",
+    ticker: str | None = None,
+    response: dict[str, Any] | None = None,
+) -> SharpTradeResult:
+    return SharpTradeResult(
+        matched=m,
+        action=action,
+        usd=q.usd,
+        detail=detail,
+        response=response or {},
+        venue=q.venue,
+        ask=q.ask,
+        fee=q.fee,
+        all_in=q.effective_price,
+        ticker=ticker,
+        limit_price=q.limit_price,
+        size=q.size,
     )
 
 
@@ -561,214 +619,204 @@ def _refresh_kalshi_ask(
 async def _execute_poly(
     m: MatchedPlay,
     gw: ExecutionGateway,
-    chosen: PricedVenue,
+    chosen: MakerQuote,
     canonical: str,
+    slug_key: str | None,
     convex: ConvexTradeClient,
     claimed_keys: list[str],
     already: set[str],
     trade_cfg: SharpTradeConfig,
+    start_iso: str | None,
 ) -> SharpTradeResult:
+    """Rest a post-only GTC limit buy. Fills are picked up by the next reconcile."""
     assert m.token is not None and m.meta is not None
     try:
-        resp = await gw.market_order(m.token.token_id, Side.BUY, chosen.usd, m.meta, fak=True)
+        assert_below_ask(chosen.limit_price, chosen.ask)
+        placed = await gw.place_limit_buy(
+            m.token.token_id,
+            chosen.limit_price,
+            chosen.size,
+            m.meta,
+            post_only=trade_cfg.post_only,
+        )
     except Exception as exc:  # noqa: BLE001
         _release_keys(convex, claimed_keys)
-        return SharpTradeResult(
-            matched=m,
-            action="failed",
-            usd=chosen.usd,
-            venue="polymarket",
-            ask=chosen.ask,
-            fee=chosen.fee,
-            all_in=chosen.all_in,
-            detail=f"order error: {exc}",
+        return _result(m, "failed", chosen, detail=f"order error: {exc}")
+
+    order_id = placed.get("order_id")
+    error = placed.get("error")
+    if error or not order_id:
+        _release_keys(convex, claimed_keys)
+        text = str(error or "no order id")
+        crossed = any(w in text.lower() for w in ("cross", "post only", "post-only", "taker"))
+        return _result(
+            m,
+            "skipped" if crossed else "failed",
+            chosen,
+            detail=(f"post-only rejected (would cross): {text}" if crossed else f"order error: {text}"),
+            response=placed.get("raw") or {},
         )
 
-    status = str(resp.get("status", resp.get("error", ""))).lower()
-    action = "bought" if "error" not in status and not resp.get("error") else "failed"
-    start_iso = m.meta.start_time_iso or m.play.game_time_utc
-    fill = enrich_fill(
-        {
-            "ts": time.time(),
-            "key": canonical,
-            "venue": "polymarket",
-            "slug": m.slug,
-            "outcome": m.token.outcome,
-            "league": m.play.league,
-            "matchup": m.play.matchup,
-            "side": m.play.side,
-            "tier": m.play.tier,
-            "usd": chosen.usd,
-            "ask": chosen.ask,
-            "fee": chosen.fee,
-            "all_in": chosen.all_in,
-            "low_volume_dog_flag": m.play.low_volume_dog_flag,
-            "resp": resp,
-        },
-        token_id=m.token.token_id,
-        start_time_iso=start_iso,
-        ask=chosen.ask,
-        resp=resp if isinstance(resp, dict) else None,
-    )
-    if action == "failed":
-        _release_keys(convex, claimed_keys)
-        return SharpTradeResult(
-            matched=m,
-            action="failed",
-            usd=chosen.usd,
-            venue="polymarket",
-            ask=chosen.ask,
-            fee=chosen.fee,
-            all_in=chosen.all_in,
-            detail=status or "sent",
-            response=resp if isinstance(resp, dict) else {"raw": resp},
-        )
-    try:
-        convex.complete(canonical, fill)
-    except Exception as exc:  # noqa: BLE001
-        fill["convex_complete_error"] = str(exc)
-    _append_filled(trade_cfg.filled_log, fill)
-    _remember_trade(
-        already,
-        canonical,
-        poly_slug_key(m.slug, m.token.outcome) if m.slug and m.token is not None else None,
-    )
-    return SharpTradeResult(
-        matched=m,
-        action=action,
-        usd=chosen.usd,
+    rec = RestingOrder(
         venue="polymarket",
+        order_id=str(order_id),
+        canonical=canonical,
+        limit_price=chosen.limit_price,
+        size=chosen.size,
+        claimed_keys=list(claimed_keys),
+        slug_key=slug_key,
+        league=m.play.league,
+        matchup=m.play.matchup,
+        side=m.token.outcome,
+        tier=m.play.tier,
+        usd=chosen.usd,
         ask=chosen.ask,
-        fee=chosen.fee,
-        all_in=chosen.all_in,
-        detail=status or "sent",
-        response=resp if isinstance(resp, dict) else {"raw": resp},
+        start_time=start_iso,
+        token_id=m.token.token_id,
+        slug=m.slug,
+        low_volume_dog_flag=m.play.low_volume_dog_flag,
     )
+    return await _record_resting(m, chosen, rec, gw, None, convex, claimed_keys, already, trade_cfg, placed)
 
 
 async def _execute_kalshi(
     m: MatchedPlay,
     kalshi: KalshiMatchedPlay | None,
     kalshi_client: Any,
-    chosen: PricedVenue,
+    chosen: MakerQuote,
     canonical: str,
+    slug_key: str | None,
     convex: ConvexTradeClient,
     claimed_keys: list[str],
     already: set[str],
     trade_cfg: SharpTradeConfig,
+    start_iso: str | None,
 ) -> SharpTradeResult:
-    from ev_trading.fair_value.kalshi_execute import send_kalshi_ioc
+    from ev_trading.fair_value.kalshi_execute import send_kalshi_maker
 
     if kalshi is None or not kalshi.ticker or not kalshi.kalshi_side or kalshi_client is None:
         _release_keys(convex, claimed_keys)
-        return SharpTradeResult(
-            matched=m,
-            action="failed",
-            usd=chosen.usd,
-            venue="kalshi",
-            ask=chosen.ask,
-            fee=chosen.fee,
-            all_in=chosen.all_in,
-            detail="kalshi client/ticker missing",
-        )
+        return _result(m, "failed", chosen, detail="kalshi client/ticker missing")
     try:
-        placed = send_kalshi_ioc(
+        assert_below_ask(chosen.limit_price, chosen.ask)
+        placed = send_kalshi_maker(
             kalshi_client,
             ticker=kalshi.ticker,
             side=kalshi.kalshi_side,
-            ask=chosen.ask,
-            usd=chosen.usd,
+            limit_price=chosen.limit_price,
+            contracts=int(chosen.size),
+            post_only=trade_cfg.post_only,
         )
     except Exception as exc:  # noqa: BLE001
         _release_keys(convex, claimed_keys)
-        return SharpTradeResult(
-            matched=m,
-            action="failed",
-            usd=chosen.usd,
-            venue="kalshi",
-            ask=chosen.ask,
-            fee=chosen.fee,
-            all_in=chosen.all_in,
+        text = str(exc)
+        crossed = any(w in text.lower() for w in ("post_only", "post-only", "cross"))
+        return _result(
+            m,
+            "skipped" if crossed else "failed",
+            chosen,
             ticker=kalshi.ticker,
-            detail=f"order error: {exc}",
+            detail=(f"post-only rejected (would cross): {text}" if crossed else f"order error: {text}"),
         )
-    fill_count = float(placed.get("fill_count") or 0)
-    resp = placed.get("response") or {}
-    if fill_count <= 0:
+    order_id = placed.get("order_id")
+    if not order_id:
         _release_keys(convex, claimed_keys)
-        return SharpTradeResult(
-            matched=m,
-            action="skipped",
-            usd=chosen.usd,
-            venue="kalshi",
-            ask=chosen.ask,
-            fee=chosen.fee,
-            all_in=chosen.all_in,
+        return _result(
+            m,
+            "failed",
+            chosen,
             ticker=kalshi.ticker,
-            detail="IOC no fill",
-            response=resp if isinstance(resp, dict) else {"raw": resp},
+            detail="kalshi accepted the order without an order_id",
+            response=placed.get("response") or {},
         )
-    start_iso = (m.meta.start_time_iso if m.meta is not None else None) or m.play.game_time_utc
-    fill = {
-        "ts": time.time(),
-        "key": canonical,
-        "venue": "kalshi",
-        "ticker": kalshi.ticker,
-        "kalshi_side": kalshi.kalshi_side,
-        "slug": m.slug,
-        "outcome": m.token.outcome if m.token is not None else m.play.side,
-        "league": m.play.league,
-        "matchup": m.play.matchup,
-        "side": m.play.side,
-        "tier": m.play.tier,
-        "usd": placed.get("usd") or chosen.usd,
-        "ask": chosen.ask,
-        "fee": chosen.fee,
-        "all_in": chosen.all_in,
-        "contracts": placed.get("contracts"),
-        "fill_count": fill_count,
-        "client_order_id": placed.get("client_order_id"),
-        "low_volume_dog_flag": m.play.low_volume_dog_flag,
-        "resp": resp,
-        "buy_price": chosen.ask,
-        "shares": fill_count,
-        "clv_status": "unavailable",
-    }
-    from polymaker.trading.fill import iso_to_unix_ms
 
-    start_ms = iso_to_unix_ms(start_iso)
-    if start_iso:
-        fill["start_time"] = start_iso
-    if start_ms is not None:
-        fill["start_time_ms"] = start_ms
-    try:
-        convex.complete(
-            canonical,
-            fill,
-            buy_price=chosen.ask,
-            shares=fill_count,
-            start_time=start_ms,
-        )
-    except Exception as exc:  # noqa: BLE001
-        fill["convex_complete_error"] = str(exc)
-    _append_filled(trade_cfg.filled_log, fill)
-    _remember_trade(
-        already,
-        canonical,
-        poly_slug_key(m.slug, m.token.outcome) if m.slug and m.token is not None else None,
-    )
-    return SharpTradeResult(
-        matched=m,
-        action="bought",
-        usd=float(placed.get("usd") or chosen.usd),
+    rec = RestingOrder(
         venue="kalshi",
+        order_id=str(order_id),
+        canonical=canonical,
+        limit_price=chosen.limit_price,
+        size=chosen.size,
+        claimed_keys=list(claimed_keys),
+        slug_key=slug_key,
+        league=m.play.league,
+        matchup=m.play.matchup,
+        side=m.token.outcome if m.token is not None else m.play.side,
+        tier=m.play.tier,
+        usd=chosen.usd,
         ask=chosen.ask,
-        fee=chosen.fee,
-        all_in=chosen.all_in,
+        start_time=start_iso,
+        slug=m.slug,
         ticker=kalshi.ticker,
-        detail=f"filled {fill_count}",
-        response=resp if isinstance(resp, dict) else {"raw": resp},
+        kalshi_side=kalshi.kalshi_side,
+        client_order_id=placed.get("client_order_id"),
+        low_volume_dog_flag=m.play.low_volume_dog_flag,
     )
+    return await _record_resting(
+        m, chosen, rec, None, kalshi_client, convex, claimed_keys, already, trade_cfg, placed
+    )
+
+
+async def _record_resting(
+    m: MatchedPlay,
+    chosen: MakerQuote,
+    rec: RestingOrder,
+    gw: ExecutionGateway | None,
+    kalshi_client: Any | None,
+    convex: ConvexTradeClient,
+    claimed_keys: list[str],
+    already: set[str],
+    trade_cfg: SharpTradeConfig,
+    placed: dict[str, Any],
+) -> SharpTradeResult:
+    """Persist a live order so the next run can fill-check or cancel it."""
+    try:
+        RestingBook(trade_cfg.resting_log).add(rec)
+    except Exception as exc:  # noqa: BLE001
+        # An order we cannot track must not stay live: cancel it and free the claim.
+        ok, _reason, _ = await cancel_resting(rec, gw, kalshi_client)
+        if ok:
+            _release_keys(convex, claimed_keys)
+        return _result(
+            m,
+            "failed",
+            chosen,
+            ticker=rec.ticker,
+            detail=(
+                f"could not save resting order ({exc}); "
+                + ("cancelled" if ok else f"CANCEL FAILED, order {rec.order_id} may be live")
+            ),
+        )
+    _remember_trade(already, rec.canonical, rec.slug_key)
+    print(
+        f"[resting] placed {rec.venue} {rec.matchup} {rec.side} {rec.size:g} @ "
+        f"{rec.limit_price:.3f} (ask {rec.ask:.3f}, post-only={trade_cfg.post_only}) "
+        f"fee={chosen.fee:.2f} effective={chosen.effective_price:.4f} order={rec.order_id[:12]}",
+        flush=True,
+    )
+    raw = placed.get("raw") if rec.venue == "polymarket" else placed.get("response")
+    return _result(
+        m,
+        "resting",
+        chosen,
+        ticker=rec.ticker,
+        detail=f"resting {rec.size:g} @ {rec.limit_price:.3f} (ask {rec.ask:.3f}) order={rec.order_id}",
+        response=raw if isinstance(raw, dict) else {"raw": raw},
+    )
+
+
+def _play_start_iso(m: MatchedPlay, kalshi: KalshiMatchedPlay | None = None) -> str | None:
+    """First parseable game start: Polymarket startTime, sportsbook clock, Kalshi occurrence."""
+    starts: list[str] = []
+    if m.meta is not None and m.meta.start_time_iso:
+        starts.append(m.meta.start_time_iso)
+    if m.play.game_time_utc:
+        starts.append(str(m.play.game_time_utc))
+    if kalshi is not None and kalshi.start_time:
+        starts.append(kalshi.start_time)
+    for start in starts:
+        if parse_utc(start) is not None:
+            return start
+    return None
 
 
 def _is_pre_game_play(
@@ -783,17 +831,10 @@ def _is_pre_game_play(
     game_time_utc, so a Kalshi-only order uses that contract's
     occurrence_datetime. Missing every clock still fails closed.
     """
-    starts: list[str] = []
-    if m.meta is not None and m.meta.start_time_iso:
-        starts.append(m.meta.start_time_iso)
-    if m.play.game_time_utc:
-        starts.append(str(m.play.game_time_utc))
-    if kalshi is not None and kalshi.start_time:
-        starts.append(kalshi.start_time)
-    for start in starts:
-        if parse_utc(start) is not None:
-            return is_pre_game({"startTime": start}, buffer_minutes)
-    return False
+    start = _play_start_iso(m, kalshi)
+    if start is None:
+        return False
+    return is_pre_game({"startTime": start}, buffer_minutes)
 
 
 # NFL game totals (Over/Under) stake this much even at Tier A/A+.

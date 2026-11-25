@@ -29,7 +29,7 @@ sports_rewards_only = false
 
 [execution]
 rate_budget_fraction = 0.25     # fraction of documented API limits we allow
-post_only = false               # false allows market (taker) buys
+post_only = true                # orders through ExecutionGateway.place() are post-only (never taker)
 max_orders_per_batch = 15
 
 [sharp]
@@ -53,6 +53,22 @@ max_ask = 0.60                  # never auto-buy if best ask / last price is abo
 min_moneyline_ask = 0.35        # never auto-buy a moneyline if best ask is below this
 # min_edge = 0.02               # optional: require ask <= fair_prob - min_edge
 filled_log = "journal/sharp_trades.jsonl"
+resting_log = "journal/resting_orders.json"   # open maker orders carried between 30-minute runs
+maker_fills_log = "journal/maker_fills.jsonl" # one row per fill: price, size, fee, maker/taker
+
+[maker]
+# Sharp buys are resting post-only GTC limits, never market/IOC orders.
+offset = 0.01                   # rest this many dollars below the best ask (51c ask -> 50c bid)
+cancel_window_minutes = 30      # cancel the unfilled remainder once the game is this close
+post_only = true                # reject instead of crossing the spread
+
+[kalshi_maker_fees]
+# Kalshi maker fee = ceil_to_cent(rate * C * p * (1 - p)) per order; Polymarket makers pay 0.
+# Series set to false pay fee = 0. Keys are the ticker prefix before the first dash.
+rate = 0.0175
+default_enabled = true
+[kalshi_maker_fees.series]
+# KXNBAGAME = false
 
 [paths]
 db = "state.db"

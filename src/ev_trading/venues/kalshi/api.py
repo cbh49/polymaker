@@ -233,8 +233,14 @@ class KalshiClient:
         time_in_force: str = "immediate_or_cancel",
         self_trade_prevention_type: str = "taker_at_cross",
         client_order_id: str | None = None,
+        post_only: bool = False,
+        expiration_time: int | None = None,
     ) -> dict[str, Any]:
-        """Buy/sell YES on the V2 event-market book (`bid` = buy YES, `ask` = sell YES / buy NO)."""
+        """Buy/sell YES on the V2 event-market book (`bid` = buy YES, `ask` = sell YES / buy NO).
+
+        `post_only` rejects an order that would cross the book instead of taking.
+        `expiration_time` (unix seconds) pairs with `good_till_canceled`.
+        """
         body: dict[str, Any] = {
             "ticker": ticker,
             "side": side,
@@ -245,7 +251,26 @@ class KalshiClient:
         }
         if client_order_id:
             body["client_order_id"] = client_order_id
+        if post_only:
+            body["post_only"] = True
+        if expiration_time is not None:
+            body["expiration_time"] = int(expiration_time)
         return self.post("/portfolio/events/orders", body)
+
+    def get_order(self, order_id: str) -> dict[str, Any]:
+        """One order incl. fill counts and maker/taker fees. May 404 right after a write."""
+        data = self.request("GET", f"/portfolio/orders/{order_id}", auth=True)
+        order = data.get("order")
+        return order if isinstance(order, dict) else data
+
+    def cancel_order(self, order_id: str, market_ticker: str) -> dict[str, Any]:
+        """Cancel a resting V2 order. `market_ticker` lets Kalshi route to the right shard."""
+        return self.request(
+            "DELETE",
+            f"/portfolio/events/orders/{order_id}",
+            params={"market_ticker": market_ticker},
+            auth=True,
+        )
 
     def paginate(
         self,

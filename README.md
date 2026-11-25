@@ -79,7 +79,8 @@ Pipeline:
 2. `find_sharp_money.py` → `{mlb,wnba,ufc,ncaaf,nfl}_sharp_money.json`
 3. `polymaker trade-sharp` maps plays to Polymarket moneylines, spreads, and
    totals (`mlb-ari-atl-…`, `cfb-ohio-neb-…-total-46pt5`,
-   `cfb-fres-usc-…-spread-home-21pt5`) and market-buys the sharp side
+   `cfb-fres-usc-…-spread-home-21pt5`) and rests a maker buy on the sharp side
+   (see [Maker orders](#maker-orders-no-taker-fees))
 
 Matching uses betting abbrs → Polymarket codes (e.g. `AZ`→`ari`, `LV`→`las`,
 `GS`→`gsv`), then Gamma/catalog lookup of the game event. Spreads/totals pick
@@ -98,8 +99,37 @@ Suggested daily loop once tomorrow's slate is live:
 ```bash
 # refresh splits + sharp JSON (your existing scripts), then:
 uv run polymaker trade-sharp --refresh          # inspect dry-run
-uv run polymaker trade-sharp --refresh --live   # send buys
+uv run polymaker trade-sharp --refresh --live   # rest post-only limit buys
 ```
+
+### Maker orders (no taker fees)
+
+Sharp buys never take liquidity. Each one is a GTC **post-only** limit buy one
+tick below the best ask (a 51¢ ask rests at 50¢; the price is checked to be
+strictly below the ask and the exchange rejects it rather than filling it as a
+taker). Polymarket makers pay no fee; Kalshi makers pay
+`ceil_to_cent(0.0175 * C * p * (1 - p))` per order unless the series is set to
+`false` under `[kalshi_maker_fees.series]`. The venue is chosen on
+`effective_price = p + fee / C` (ties go to Polymarket). 50 contracts at $0.50
+cost $0.5000 on Polymarket and $0.5044 on Kalshi.
+
+The 30-minute pipeline carries orders between runs in
+`journal/resting_orders.json`. At the top of every run (before scraping) it
+reconciles each one:
+
+- Filled: record the fill, `convex.complete`, add to the dedupe log.
+- Game starts within `[maker].cancel_window_minutes` (30): cancel only the
+  unfilled remainder. Whatever filled is kept; nothing filled releases the
+  Convex claim. A failed cancel is kept and retried next run.
+- Otherwise keep holding. Positions are held to resolution; there is no exit order.
+
+New orders are only placed more than 30 minutes before the start, so a signal
+that first appears inside that window is skipped. Every fill is logged with
+price, size, fee, and maker/taker role to `journal/maker_fills.jsonl` and
+stdout (`[fill] ... fee=0.0000 role=maker`); a taker role or a fee above zero
+prints `TAKER_FILL` (and posts to `DISCORD_SHARP_WEBHOOK_URL` if set).
+Knobs live in `[maker]`, `[kalshi_maker_fees]`, and `[sharp]` (`resting_log`,
+`maker_fills_log`) in `config/config.toml`.
 
 Production (EC2 eu-west-1) is documented in [`infra/README.md`](infra/README.md): a 30-minute systemd timer runs `scripts/run_sharp_pipeline.py` (trades only when all scrape sources share today's Pacific slate) and `scripts/run_monitor.py` stays up for whale + smart-wallet signals. Live buys require `POLYMAKER_LIVE=1` and Convex claim/complete so the two bots cannot fill the same market twice. Set `DISCORD_SHARP_WEBHOOK_URL` (SSM `/polymaker/DISCORD_SHARP_WEBHOOK_URL` in prod) to auto-post Tier A / A+ cards from that same sharp container. With `X_WHALE_POSTS=1` (or `X_SHARP_POSTS=1`), that container also tweets the **two best** A/A+ plays per Pacific day.
 
@@ -107,7 +137,7 @@ Production (EC2 eu-west-1) is documented in [`infra/README.md`](infra/README.md)
 
 ```
 catalog/     Gamma scan (politics + sports ML/spread/total) → SQLite
-execution/   ExecutionGateway — connect wallet, place/cancel, market buy, balances
+execution/   ExecutionGateway — connect wallet, place/cancel, post-only limit buys, market buy (CLI only), balances
 research/    MLB article research agents → sized_plays.json
 trading/     sharp-money → market match + auto-buy
 domain.py    MarketMeta, Quote, Side, …

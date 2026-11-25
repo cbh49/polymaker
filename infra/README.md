@@ -3,7 +3,7 @@
 One Ubuntu 24.04 `t3.medium` in **eu-west-1** runs three processes:
 
 - **Monitor** (`polymaker-monitor.service`) — always-on `poly-sharp-finder` (whale + smart-wallet convergence).
-- **Sharp pipeline** (`polymaker-sharp.timer`) — every 30 minutes at `:00/:30`, scrape MLB + WNBA + NCAAF + NFL splits and trade only when every required source is on **today's Pacific slate** (NCAAF uses a 6-day weekend window; NFL uses 7 days so Monday night is included).
+- **Sharp pipeline** (`polymaker-sharp.timer`) — every 30 minutes at `:00/:30`, first reconcile resting maker orders (fills, cancel inside 30 minutes of start), then scrape MLB + WNBA + NCAAF + NFL splits and rest post-only limit buys only when every required source is on **today's Pacific slate** (NCAAF uses a 6-day weekend window; NFL uses 7 days so Monday night is included).
 - **NFL EV pipeline** (`polymaker-ev.timer`) — every 30 minutes at `:15/:45`, scrape RotoWire + Kalshi + Polymarket, score `tradable` rows, and post +EV cards to Discord + X. Kalshi/Polymarket buys are paused (`order_placement.ENABLED = False`). Set that flag to True to buy again (fee-adjusted edge ≥ 5 points, confidence ≥ 0.80, $10 each; live orders still require `POLYMAKER_LIVE=1` and a Convex claim).
 
 ## 1. Put secrets in SSM
@@ -25,7 +25,7 @@ aws ssm put-parameter --region $REGION --name /polymaker/DISCORD_EV_WEBHOOK_URL 
 aws ssm put-parameter --region $REGION --name /polymaker/X_EV_POSTS --type SecureString --value '1' --overwrite
 ```
 
-`POLYMAKER_LIVE=1` sends real CLOB buys. Leave it unset (or `0`) for dry-run.
+`POLYMAKER_LIVE=1` sends real orders (post-only resting limit buys on Polymarket and Kalshi, never market/IOC). Open orders live in `/var/lib/polymaker/journal/resting_orders.json` and fills in `maker_fills.jsonl` on the same volume; look for `[fill]`, `[resting]`, and `TAKER_FILL` lines in the `sharp` log stream. Leave it unset (or `0`) for dry-run.
 
 `X_WHALE_POSTS=1` tweets whale detections from the monitor (same X app as MLB POTD). Omit it (or `0`) to keep the monitor silent on X. Keys in `trading-bot/.env` only reach local compose — production reads `/etc/polymaker.env` from these SSM parameters. The same switch (or `X_SHARP_POSTS=1`) also lets the sharp container tweet **at most two** A/A+ sharp-money plays per Pacific day; Discord still gets every A/A+ card. Set `X_SHARP_POSTS=0` to tweet whales only.
 

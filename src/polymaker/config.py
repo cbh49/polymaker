@@ -53,9 +53,40 @@ class CatalogConfig(BaseModel):
 
 class ExecutionConfig(BaseModel):
     rate_budget_fraction: float = 0.25
-    # False = allow taker (market) buys; set True only if you want post-only limits.
-    post_only: bool = False
+    # True = every order posted through ExecutionGateway.place() is post-only
+    # (rejected rather than filled as a taker).
+    post_only: bool = True
     max_orders_per_batch: int = 15
+
+
+class MakerConfig(BaseModel):
+    """Resting-limit (maker) buys for the sharp pipeline. Never crosses the spread."""
+
+    # Dollars below the best ask for the resting buy (0.01 = one cent).
+    offset: float = 0.01
+    # Cancel unfilled orders once the game is this close to starting.
+    cancel_window_minutes: float = 30.0
+    post_only: bool = True
+
+
+class KalshiMakerFeeConfig(BaseModel):
+    """Kalshi maker fee: ceil_to_cent(rate * C * p * (1 - p)), per order.
+
+    `series` maps a Kalshi series ticker (the ticker prefix before the first
+    dash, e.g. KXNBAGAME) to whether that series charges a maker fee. Missing
+    series fall back to `default_enabled`. A series set to false pays fee = 0.
+    """
+
+    rate: float = 0.0175
+    default_enabled: bool = True
+    series: dict[str, bool] = Field(default_factory=dict)
+
+    def enabled_for(self, ticker: str | None) -> bool:
+        key = (ticker or "").split("-", 1)[0].strip().upper()
+        for name, flag in self.series.items():
+            if name.strip().upper() == key:
+                return bool(flag)
+        return self.default_enabled
 
 
 class PathsConfig(BaseModel):
@@ -87,6 +118,8 @@ class SharpConfig(BaseModel):
     # If set, require best ask <= implied_fair_prob - min_edge
     min_edge: float | None = None
     filled_log: str = "journal/sharp_trades.jsonl"
+    resting_log: str = "journal/resting_orders.json"
+    maker_fills_log: str = "journal/maker_fills.jsonl"
 
 
 class Secrets(BaseSettings):
@@ -121,6 +154,8 @@ class Config(BaseModel):
     execution: ExecutionConfig = ExecutionConfig()
     paths: PathsConfig = PathsConfig()
     sharp: SharpConfig = SharpConfig()
+    maker: MakerConfig = MakerConfig()
+    kalshi_maker_fees: KalshiMakerFeeConfig = KalshiMakerFeeConfig()
     secrets: Secrets = Field(default_factory=Secrets)
     config_dir: Path = Path("config")
 
@@ -140,6 +175,8 @@ class Config(BaseModel):
             execution=ExecutionConfig(**main.get("execution", {})),
             paths=PathsConfig(**main.get("paths", {})),
             sharp=SharpConfig(**main.get("sharp", {})),
+            maker=MakerConfig(**main.get("maker", {})),
+            kalshi_maker_fees=KalshiMakerFeeConfig(**main.get("kalshi_maker_fees", {})),
             secrets=Secrets(),
             config_dir=cdir,
         )

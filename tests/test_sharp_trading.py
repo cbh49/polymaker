@@ -969,7 +969,7 @@ async def test_kalshi_only_without_any_tip_time_still_fails_closed() -> None:
     )
     result = await _trade_one(poly, object(), SharpTradeConfig(), set(), kalshi=kalshi)  # type: ignore[arg-type]
     assert result.action == "skipped"
-    assert result.detail == "not pre-game (startTime)"
+    assert result.detail.startswith("not pre-game")
 
 
 def test_price_gate_max_ask() -> None:

@@ -240,6 +240,141 @@ class ExecutionGateway:
         await self._io(self._client.cancel_all)
         log.info("cancel_all_sent")
 
+    # ── resting (maker) buys ────────────────────────────────────────────
+    async def place_limit_buy(
+        self,
+        token_id: str,
+        price: float,
+        size: float,
+        meta: MarketMeta,
+        *,
+        post_only: bool = True,
+    ) -> dict[str, Any]:
+        """Post one GTC limit BUY. Post-only orders are rejected, never filled as taker.
+
+        Returns {order_id, status, error, raw}. `error` is set when the order was
+        not accepted (including a post-only rejection for crossing the book).
+        """
+        if self._paper or self._client is None:
+            return {
+                "order_id": f"paper-{next(self._paper_ids)}",
+                "status": "paper",
+                "error": None,
+                "raw": {"paper": True},
+            }
+        await self._order_bucket.acquire(1)
+
+        def _do() -> dict[str, Any]:
+            from py_clob_client_v2.clob_types import (
+                OrderArgsV2,
+                OrderType,
+                PartialCreateOrderOptions,
+            )
+
+            opts = PartialCreateOrderOptions(
+                tick_size=_tick_str(meta.tick_size), neg_risk=meta.neg_risk
+            )
+            try:
+                signed = self._client.create_order(
+                    OrderArgsV2(
+                        token_id=token_id,
+                        price=round(float(price), 4),
+                        size=round(float(size), 2),
+                        side=Side.BUY.value,
+                    ),
+                    options=opts,
+                )
+                resp = self._client.post_order(signed, OrderType.GTC, post_only)
+            except Exception as exc:  # noqa: BLE001 - surface as data, never crash the caller
+                return {"order_id": None, "status": "failed", "error": str(exc), "raw": {}}
+            return _parse_post_order(resp)
+
+        return await self._io(_do)
+
+    async def get_order(self, order_id: str) -> dict[str, Any] | None:
+        """Normalized order state, or None if it could not be read.
+
+        {status (lowercase), original_size, size_matched, price, raw}
+        """
+        if self._paper or self._client is None:
+            return None
+
+        def _get() -> dict[str, Any] | None:
+            raw = self._client.get_order(order_id)
+            if not isinstance(raw, dict) or not raw:
+                return None
+            return {
+                "status": str(raw.get("status", "")).lower(),
+                "original_size": _num(raw.get("original_size", raw.get("size"))),
+                "size_matched": _num(raw.get("size_matched")),
+                "price": _num(raw.get("price")),
+                "raw": raw,
+            }
+
+        try:
+            return await self._io(_get)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("get_order_failed", err=str(exc), order=order_id[:12])
+            return None
+
+    async def cancel_order(self, order_id: str) -> tuple[bool, str | None]:
+        """Cancel one order. Returns (cancelled, reason_if_not).
+
+        The exchange reports per-order outcomes in `canceled` / `not_canceled`;
+        a bare HTTP 200 is not proof the order is gone.
+        """
+        if self._paper or self._client is None:
+            return True, None
+        await self._cancel_bucket.acquire(1)
+
+        def _cancel() -> tuple[bool, str | None]:
+            resp = self._client.cancel_orders([order_id])
+            if isinstance(resp, dict):
+                canceled = resp.get("canceled") or []
+                if order_id in canceled:
+                    return True, None
+                not_canceled = resp.get("not_canceled") or {}
+                if isinstance(not_canceled, dict) and order_id in not_canceled:
+                    return False, str(not_canceled[order_id])
+                if canceled == [] and not not_canceled:
+                    return False, "exchange returned no cancel confirmation"
+            return True, None
+
+        try:
+            return await self._io(_cancel)
+        except Exception as exc:  # noqa: BLE001
+            log.error("cancel_order_failed", err=str(exc), order=order_id[:12])
+            return False, str(exc)
+
+    async def order_trades(
+        self, order_id: str, token_id: str, *, after_ts: float | None = None
+    ) -> list[dict[str, Any]]:
+        """Raw trade rows on `token_id` that involve `order_id` (as maker or taker)."""
+        if self._paper or self._client is None:
+            return []
+
+        def _get() -> list[dict[str, Any]]:
+            from py_clob_client_v2.clob_types import TradeParams
+
+            after = int(after_ts) - 60 if after_ts else None
+            rows = self._client.get_trades(TradeParams(asset_id=token_id, after=after))
+            out: list[dict[str, Any]] = []
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("taker_order_id") == order_id or any(
+                    isinstance(mo, dict) and mo.get("order_id") == order_id
+                    for mo in row.get("maker_orders") or []
+                ):
+                    out.append(row)
+            return out
+
+        try:
+            return await self._io(_get)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("order_trades_failed", err=str(exc), order=order_id[:12])
+            return []
+
     # ── market (taker) orders ───────────────────────────────────────────
     async def market_order(
         self, token_id: str, side: Side, amount: float, meta: MarketMeta,
@@ -515,6 +650,32 @@ class ExecutionGateway:
     def _journal_write(self, kind: str, payload: Any, ts: float) -> None:
         if self._journal is not None:
             self._journal.write(kind, payload, ts)
+
+
+def _num(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_post_order(resp: Any) -> dict[str, Any]:
+    """Normalize a `post_order` response into {order_id, status, error, raw}."""
+    if not isinstance(resp, dict):
+        return {"order_id": None, "status": "failed", "error": f"bad response: {resp!r}", "raw": {}}
+    order_id = _first(resp, "orderID", "orderId", "order_id", "id")
+    status = str(resp.get("status", "")).lower()
+    error = resp.get("errorMsg") or resp.get("error")
+    if resp.get("success") is False and not error:
+        error = "order rejected"
+    if not error and not order_id:
+        error = "no order id in response"
+    return {
+        "order_id": str(order_id) if order_id else None,
+        "status": status or ("failed" if error else "live"),
+        "error": str(error) if error else None,
+        "raw": resp,
+    }
 
 
 def _first(d: Any, *keys: str) -> Any:

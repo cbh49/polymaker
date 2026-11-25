@@ -18,7 +18,7 @@ sports_rewards_only = false
 
 [execution]
 rate_budget_fraction = 0.15
-post_only = false
+post_only = true
 max_orders_per_batch = 15
 
 [sharp]
@@ -38,6 +38,18 @@ require_rlm = false
 max_ask = 0.60
 min_moneyline_ask = 0.35
 filled_log = "livecfg/journal/sharp_trades.jsonl"
+resting_log = "livecfg/journal/resting_orders.json"
+maker_fills_log = "livecfg/journal/maker_fills.jsonl"
+
+[maker]
+offset = 0.01
+cancel_window_minutes = 30
+post_only = true
+
+[kalshi_maker_fees]
+rate = 0.0175
+default_enabled = true
+[kalshi_maker_fees.series]
 
 [paths]
 db = "livecfg/state.db"

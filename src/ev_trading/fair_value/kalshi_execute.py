@@ -57,6 +57,7 @@ class KalshiTradingClient(Protocol):
         time_in_force: str = "immediate_or_cancel",
         self_trade_prevention_type: str = "taker_at_cross",
         client_order_id: str | None = None,
+        post_only: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -174,6 +175,49 @@ def send_kalshi_ioc(
         "yes_leg_price": float(yes_leg),
         "client_order_id": client_order_id,
         "fill_count": float(fill_count),
+    }
+
+
+def send_kalshi_maker(
+    client: KalshiTradingClient,
+    *,
+    ticker: str,
+    side: str,
+    limit_price: float,
+    contracts: int,
+    post_only: bool = True,
+) -> dict[str, Any]:
+    """Rest a GTC buy at `limit_price` for `contracts`. Never an IOC/taker order.
+
+    `side` is a YES/NO label. NO buys rest as a YES-book ask at `1 - limit_price`,
+    which sits above the YES bid whenever `limit_price` is below the NO ask.
+    Returns order id and any immediate fill info (a post-only order has none).
+    """
+    if contracts < 1:
+        raise ValueError(f"cannot place {contracts} contracts")
+    book_side, yes_leg = v2_book_order(side, limit_price)
+    client_order_id = str(uuid.uuid4())
+    resp = client.create_event_order(
+        ticker=ticker,
+        side=book_side,
+        count=_count_fp(contracts),
+        price=_dollars_fp(yes_leg),
+        time_in_force="good_till_canceled",
+        client_order_id=client_order_id,
+        post_only=post_only,
+    )
+    resp = resp if isinstance(resp, dict) else {"raw": resp}
+    return {
+        "response": resp,
+        "order_id": resp.get("order_id"),
+        "client_order_id": client_order_id,
+        "contracts": contracts,
+        "limit_price": float(_dollars(_as_decimal(limit_price))),
+        "book_side": book_side,
+        "yes_leg_price": float(yes_leg),
+        "fill_count": float(_as_decimal(resp.get("fill_count") or 0)),
+        "remaining_count": float(_as_decimal(resp.get("remaining_count") or 0)),
+        "post_only": post_only,
     }
 
 

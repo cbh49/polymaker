@@ -213,6 +213,32 @@ def _trade_league(
     return rows
 
 
+def _reconcile_resting(cfg: Config, *, live: bool) -> list[dict[str, Any]]:
+    """Fill-check, hold, or cancel every resting maker order from earlier runs.
+
+    Runs before any scrape so a failed scrape or misaligned slate can never
+    leave an order resting past its cancel window.
+    """
+    from polymaker.trading.resting import reconcile_from_config
+
+    try:
+        results = asyncio.run(reconcile_from_config(cfg, live=live))
+    except Exception as exc:  # noqa: BLE001 - keep scraping; open orders are retried next run
+        print(f"Resting order reconcile FAILED: {exc}", file=sys.stderr)
+        return [{"action": "error", "detail": f"reconcile failed: {exc}"}]
+    rows: list[dict[str, Any]] = []
+    for r in results:
+        o = r.order
+        print(
+            f"  resting {r.action:13s} {o.venue:10s} {o.matchup} {o.side} "
+            f"{o.filled:g}/{o.size:g} @ {o.limit_price:.3f}  {r.detail}"
+        )
+        rows.append(r.to_row())
+    if not results:
+        print("No resting maker orders.")
+    return rows
+
+
 def _refresh_watch_list(config_dir: str) -> None:
     from export_watch_list import export_watch_list
 
@@ -250,6 +276,9 @@ def main() -> int:
     mode = "LIVE" if live else "DRY-RUN"
     print(f"Sharp pipeline {mode} slate={day.isoformat()} league={args.league}")
 
+    cfg = Config.load(args.config_dir)
+    resting_rows = _reconcile_resting(cfg, live=live)
+
     league = "ncaaf" if args.league == "cfb" else args.league
     if league == "cbb":
         league = "ncaab"
@@ -286,7 +315,6 @@ def main() -> int:
     if "nfl" in wanted:
         scrape_ok["nfl"] = _run_scraper("scrape_nfl_betting_splits.py", date_args)
 
-    cfg = Config.load(args.config_dir)
     trade_rows: list[dict[str, Any]] = []
     alignments: dict[str, dict[str, Any]] = {}
     sharp_outputs: list[dict[str, Any]] = []
@@ -388,6 +416,7 @@ def main() -> int:
         "mode": mode.lower(),
         "alignments": alignments,
         "trades": trade_rows,
+        "resting": resting_rows,
     }
     convex = ConvexTradeClient()
     if convex.configured:

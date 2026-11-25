@@ -427,7 +427,7 @@ def trade_sharp(
         )
     console.print(table)
     if trade_cfg.dry_run:
-        console.print("[dim]Re-run with --live to send market buys.[/dim]")
+        console.print("[dim]Re-run with --live to rest post-only limit buys.[/dim]")
 
 
 def _normalize_league(league: str) -> str:
@@ -526,8 +526,14 @@ def _sharp_trade_cfg(
         min_moneyline_ask=s.min_moneyline_ask,
         min_edge=s.min_edge,
         filled_log=s.filled_log,
+        resting_log=s.resting_log,
+        maker_fills_log=s.maker_fills_log,
         dry_run=dry_run,
         pregame_buffer_minutes=cfg.catalog.pregame_buffer_minutes,
+        maker_offset=cfg.maker.offset,
+        cancel_window_minutes=cfg.maker.cancel_window_minutes,
+        post_only=cfg.maker.post_only,
+        kalshi_fees=cfg.kalshi_maker_fees,
     )
 
 
