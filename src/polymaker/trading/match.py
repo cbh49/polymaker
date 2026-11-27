@@ -260,6 +260,27 @@ async def _match_one(
             detail=str(exc),
         )
 
+    if not is_total and play.market == "spread":
+        problem = spread_sign_problem(
+            event,
+            slug=meta.slug,
+            outcome=token.outcome,
+            play_line=_play_line_number(play),
+        )
+        if problem:
+            return MatchedPlay(
+                play=play,
+                away=away,
+                home=home,
+                side_team=side,
+                event_date=event_dates[0] if event_dates else None,
+                slug=meta.slug,
+                meta=meta,
+                token=None,
+                status="no_outcome",
+                detail=problem,
+            )
+
     return MatchedPlay(
         play=play,
         away=away,
@@ -330,6 +351,67 @@ def resolve_total_outcome_token(meta: MarketMeta, side: str) -> TokenMeta:
     raise ValueError(
         f"outcome {side!r} not in tokens={[t.outcome for t in meta.tokens]}"
     )
+
+
+def _polymarket_signed_spread(event: dict[str, Any] | None, slug: str, outcome: str) -> float | None:
+    """The spread the bought outcome gives, read from Polymarket's own market.
+
+    Gamma lists the spread team first in `outcomes` and its signed line in
+    `groupItemTitle` ("Spread -8.5"). That is the only source that cannot be
+    flipped by home/away ordering, since Polymarket's event ordering can differ
+    from the sharp feed's (Xavier listed away on Polymarket, home on the feed).
+    """
+    if not event:
+        return None
+    raw = next(
+        (
+            m
+            for m in event.get("markets") or []
+            if isinstance(m, dict) and str(m.get("slug") or "") == slug
+        ),
+        None,
+    )
+    if raw is None:
+        return None
+    outcomes = raw.get("outcomes") or []
+    if isinstance(outcomes, str):
+        try:
+            import json
+
+            outcomes = json.loads(outcomes)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(outcomes, list) or len(outcomes) < 2:
+        return None
+    m = re.search(r"([+-]?\d+(?:\.\d+)?)\s*$", str(raw.get("groupItemTitle") or ""))
+    if m is None:
+        return None
+    line = float(m.group(1))
+    spread_team = str(outcomes[0]).strip().lower()
+    return line if outcome.strip().lower() == spread_team else -line
+
+
+def spread_sign_problem(
+    event: dict[str, Any] | None,
+    *,
+    slug: str,
+    outcome: str,
+    play_line: float | None,
+) -> str | None:
+    """Why a spread buy is unsafe, or None when Polymarket agrees with the play.
+
+    The play's line is the bought team's own spread. A flipped sign means we
+    would buy the opposite side of the number (Xavier +7.5 bought as -7.5).
+    Fails closed: an unreadable line or a missing market is a skip.
+    """
+    if play_line is None:
+        return "spread line unknown"
+    poly = _polymarket_signed_spread(event, slug, outcome)
+    if poly is None:
+        return "spread line unverified against polymarket"
+    if (play_line * poly < 0) or abs(poly - play_line) > LINE_MATCH_TOLERANCE:
+        return f"spread sign mismatch play={play_line:+g} poly={poly:+g} ({outcome})"
+    return None
 
 
 def _play_line_number(play: SharpPlay) -> float | None:

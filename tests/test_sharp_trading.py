@@ -692,13 +692,17 @@ async def test_match_cfb_spread_fresno(tmp_path: Path) -> None:
                 ("tok-fres-14", "tok-usc-14"),
                 liquidity=9000.0,
             ),
-            _gamma_binary(
-                spread_slug,
-                "0xsp-21",
-                ("Fresno State", "USC"),
-                ("tok-fres-21", "tok-usc-21"),
-                liquidity=2500.0,
-            ),
+            {
+                # Gamma lists the spread team first and its signed line in the title.
+                **_gamma_binary(
+                    spread_slug,
+                    "0xsp-21",
+                    ("USC", "Fresno State"),
+                    ("tok-usc-21", "tok-fres-21"),
+                    liquidity=2500.0,
+                ),
+                "groupItemTitle": "Spread -21.5",
+            },
         ],
     }
     store = CatalogStore(tmp_path / "s.db")
